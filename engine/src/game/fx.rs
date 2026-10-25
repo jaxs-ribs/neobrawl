@@ -108,9 +108,24 @@ impl Game {
                 }
             }
         }
+        for (n, _) in self.motion.glyphs.clone() {
+            let on = self.w.active_in_hierarchy(n);
+            let known = self.motion.snaps.contains_key(&(usize::MAX - n));
+            if on && !known {
+                self.motion.forms.insert(n, now + 0.15);
+                self.motion.snaps.insert(usize::MAX - n, crate::motion::Snap { quad: [[0.0; 2]; 4], text: String::new(), color: [0.0; 4], since: now, button: true });
+            }
+            seen.insert(usize::MAX - n);
+            if !on {
+                seen.remove(&(usize::MAX - n));
+            }
+        }
         let gone: Vec<usize> = self.motion.snaps.keys().copied().filter(|k| !seen.contains(k)).collect();
         for i in gone {
             let s = self.motion.snaps.remove(&i).unwrap();
+            if i > usize::MAX / 2 {
+                continue; // a glyph's bookkeeping entry
+            }
             // shatter only what was switched off (things faded by alpha just fade)
             if self.w.active_in_hierarchy(i) || now - s.since < 0.2 {
                 continue;
@@ -166,13 +181,55 @@ impl Game {
         if hit != self.motion.hover {
             self.motion.hover = hit;
             self.motion.hover_since = self.motion.now;
-            if let Some(b) = hit {
+            let glyph = hit.map(|b| self.motion.glyphs.iter().any(|g| g.0 == b)).unwrap_or(false);
+            if let (Some(b), false) = (hit, glyph) {
                 if let Some(q) = self.ui_screen_quad(b) {
-                    // the spark leaps over and runs around the button
-                    self.motion.trace(true, 0.0, closed(q), 1.6, 0.45, INK);
+                    let (w, h) = ((q[1][0] - q[0][0]).abs(), (q[3][1] - q[0][1]).abs());
+                    if w > 220.0 || h > 120.0 {
+                        // big targets get four corner brackets that snap in
+                        self.brackets(q);
+                    } else {
+                        // the spark leaps over and runs around the button
+                        self.motion.trace(true, 0.0, closed(q), 1.6, 0.45, INK);
+                    }
                     self.motion.arc(true, v3(c[0], c[1], 0.0), center(&q), 1.6, 0.2, 0.16, INK);
                 }
             }
+        }
+    }
+
+    fn brackets(&mut self, q: [[f32; 2]; 4]) {
+        let c = center(&q);
+        // big hit areas are wider than what they show: frame a centred square
+        let half = (q[1][0] - q[0][0]).abs().min((q[3][1] - q[0][1]).abs()) * 0.47;
+        let p = vec![c + v3(-half, -half, 0.0), c + v3(half, -half, 0.0), c + v3(half, half, 0.0), c + v3(-half, half, 0.0)];
+        for k in 0..4 {
+            let (a, prev, next) = (p[k], p[(k + 3) % 4], p[(k + 1) % 4]);
+            let side = |o: V3| {
+                let d = o - a;
+                let l = (d.x * d.x + d.y * d.y).sqrt().max(1.0);
+                a + d * (16.0f32.min(l * 0.2) / l)
+            };
+            self.motion.trace(true, k as f32 * 0.02, vec![side(prev), a, side(next)], 1.8, 0.5, INK);
+        }
+    }
+
+    /// The map that slides into view assembles itself.
+    pub(super) fn fx_map_arrive(&mut self) {
+        let Some(maps) = self.menu.maps else { return };
+        let cm = self.menu.current_map as usize;
+        let Some(&m) = self.w.nodes[maps].children.get(cm) else { return };
+        let mut nodes = Vec::new();
+        self.w.descendants(m, &mut nodes);
+        let pts: Vec<(usize, V3)> = nodes.into_iter().filter(|&n| self.w.nodes[n].sprite.is_some() || self.w.nodes[n].image.is_some()).map(|n| (n, self.w.position(n))).collect();
+        if pts.is_empty() {
+            return;
+        }
+        let mid = pts.iter().fold(V3::ZERO, |a, p| a + p.1) * (1.0 / pts.len() as f32);
+        let now = self.motion.now;
+        for (n, p) in pts {
+            let d = ((p.x - mid.x).powi(2) + (p.y - mid.y).powi(2)).sqrt();
+            self.motion.forms.insert(n, now + 0.08 + (d * 0.01).min(0.25));
         }
     }
 
@@ -185,11 +242,12 @@ impl Game {
 
     /// A button fired.
     pub(super) fn fx_button(&mut self, b: usize) {
+        self.motion.pressed_at.insert(b, self.motion.now);
         let Some(q) = self.ui_screen_quad(b) else { return };
         let c = center(&q);
         let r = ((q[1][0] - q[0][0]).abs().max((q[3][1] - q[0][1]).abs())) * 0.5;
         self.motion.ring(true, c, r * 0.6, r * 1.6, 2.2, 0.5, INK);
-        self.motion.flash(true, c, r * 1.4, 0.3, [0.0, 0.0, 0.0, 0.25]);
+        self.motion.flash(true, c, r * 1.2, 0.25, [0.0, 0.0, 0.0, 0.1]);
         self.motion.burst(true, c, 14, 700.0, 2.4, 0.5, INK, None);
         self.ui_crackle(q, 3);
     }
@@ -276,7 +334,8 @@ impl Game {
             let side = v3(-d.y, d.x, 0.0) * hf(s) * 2.0;
             self.motion.push(Kind::Spark { p: p + d * 0.3, v: d * (6.0 + 10.0 * f) + side, size: 0.035, seek: None, home: None }, false, 0.0, 0.28, col);
         }
-        self.motion.kick = self.motion.kick - d * (0.06 + 0.12 * f);
+        let _ = d;
+        self.motion.add_shake(0.025 + 0.03 * f);
         self.motion.last_action = self.motion.now;
     }
 
@@ -301,35 +360,18 @@ impl Game {
         self.motion.trace_circle(false, 0.0, p, 0.3, std::f32::consts::FRAC_PI_2, 0.022, 0.32, col);
     }
 
-    pub(super) fn fx_kill(&mut self, player: usize, killer: usize) {
+    /// A soul is ended. The original's orbs carry it to the killer; this
+    /// only gives the moment weight: a short catch, a bloom, a ring, a shake.
+    pub(super) fn fx_kill(&mut self, player: usize, _killer: usize) {
         let p = self.w.position(player);
         if p.x == -666.0 {
             return;
         }
         let col = self.soul_color(player);
-        let kcol = self.soul_color(killer);
-        self.motion.hitstop = 5;
-        self.motion.flash(false, p, 2.2, 0.45, col);
-        self.motion.flash(false, p, 1.0, 0.25, [1.0, 1.0, 1.0, 0.9]);
-        self.motion.ring(false, p, 0.3, 3.2, 0.08, 0.55, col);
-        self.motion.ring(false, p, 0.2, 1.8, 0.03, 0.4, INK);
-        // the soul breaks, and what it was flows into the one who ended it
-        let r = 0.3;
-        let q = [p + v3(-r, -r, 0.0), p + v3(r, -r, 0.0), p + v3(r, r, 0.0), p + v3(-r, r, 0.0)];
-        self.motion.shatter(false, q, (3, 3), 5.0, 1.4, col, Some(killer), V3::ZERO);
-        self.motion.burst(false, p, 26, 11.0, 0.05, 1.3, col, Some(killer));
-        for j in 0..6 {
-            let a = j as f32 / 6.0 * std::f32::consts::TAU + hf(self.frame as u32 + j) * 0.5;
-            self.motion.arc(false, p, p + v3(a.cos(), a.sin(), 0.0) * 1.6, 0.03, 0.3, 0.3, INK);
-        }
-        let k = self.w.position(killer);
-        if k.x != -666.0 {
-            self.motion.arc(false, p, k, 0.045, 0.12, 0.4, kcol);
-            // the killer drinks it in
-            self.motion.ring_at(false, 0.6, k, 1.4, 0.25, 0.06, 0.5, kcol);
-        }
-        let d = v3(hf(self.frame as u32), hf(self.frame as u32 ^ 3), 0.0);
-        self.motion.kick = self.motion.kick + d * 0.35;
+        self.motion.hitstop = 2;
+        self.motion.flash(false, p, 1.3, 0.3, col);
+        self.motion.ring(false, p, 0.3, 2.4, 0.06, 0.45, col);
+        self.motion.add_shake(0.16);
         self.motion.last_action = self.motion.now;
     }
 
@@ -350,7 +392,7 @@ impl Game {
             self.motion.arc(false, pos, pos + t * (0.7 * s) + normal * 0.3, 0.02, 0.35, 0.18, INK);
         }
         self.motion.burst(false, pos, 6, 6.0, 0.035, 0.3, INK, None);
-        self.motion.kick = self.motion.kick + normal * 0.05;
+        self.motion.add_shake(0.05);
     }
 
     /// A box comes back: it condenses in.

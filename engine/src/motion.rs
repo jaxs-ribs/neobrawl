@@ -87,8 +87,9 @@ pub struct Motion {
     pub forms: HashMap<usize, f32>,
     pub snaps: HashMap<usize, Snap>,
     pub last_action: f32,
-    /// camera kick (world units), decays every step
-    pub kick: V3,
+    /// camera shake: strength and start time; drawn at render time only
+    pub shake: f32,
+    pub shake_t0: f32,
     pub hover: Option<usize>,
     pub hover_since: f32,
     pub cursor_trail: VecDeque<[f32; 2]>,
@@ -96,6 +97,10 @@ pub struct Motion {
     pub breath: f32,
     pub seed: u32,
     pub booted: bool,
+    /// engine-drawn menu glyphs: (button node, 0 = left, 1 = right, 2 = back)
+    pub glyphs: Vec<(usize, u8)>,
+    /// button node -> last time it fired (for the jab)
+    pub pressed_at: HashMap<usize, f32>,
 }
 
 pub struct Tex {
@@ -219,7 +224,6 @@ impl Motion {
     pub fn step(&mut self, dt: f32, locate: impl Fn(usize, bool) -> Option<V3>) {
         self.now += dt;
         let now = self.now;
-        self.kick = self.kick * 0.78;
         for f in self.fx.iter_mut() {
             if now < f.t0 {
                 continue;
@@ -255,6 +259,39 @@ impl Motion {
         }
         self.fx.retain(|f| now < f.t0 + f.life);
         self.forms.retain(|_, t| now < *t + 3.0);
+    }
+
+    /// Add a smooth, decaying shake (strongest wins).
+    pub fn add_shake(&mut self, amount: f32) {
+        let left = self.shake_offset_amp(self.now);
+        if amount > left {
+            self.shake = amount;
+            self.shake_t0 = self.now;
+        }
+    }
+
+    fn shake_amp_at(&self, t: f32) -> f32 {
+        let a = t - self.shake_t0;
+        if a < 0.0 {
+            return 0.0;
+        }
+        self.shake * (-a * 7.0).exp()
+    }
+
+    fn shake_offset_amp(&self, t: f32) -> f32 {
+        self.shake_amp_at(t)
+    }
+
+    /// Camera offset for the frame being drawn: layered sines, no jitter.
+    pub fn shake_offset(&self) -> V3 {
+        let t = self.render_now;
+        let a = self.shake_amp_at(t);
+        if a < 1e-4 {
+            return V3::ZERO;
+        }
+        let x = (t * 37.0).sin() * 0.6 + (t * 61.0 + 1.3).sin() * 0.4;
+        let y = (t * 43.0 + 0.7).sin() * 0.6 + (t * 71.0 + 2.1).sin() * 0.4;
+        v3(x, y, 0.0) * a
     }
 
     /// Form progress of a node at render time: (scale, alpha, reveal).

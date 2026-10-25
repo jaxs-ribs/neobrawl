@@ -52,7 +52,12 @@ impl Game {
         let ui_seq: std::collections::HashMap<usize, usize> = ui_order.iter().enumerate().map(|(k, &n)| (n, k)).collect();
         for &cam in &cams {
             let c = w.nodes[cam].camera.as_ref().unwrap();
-            let cm = w.matrix(cam);
+            let mut cm = w.matrix(cam);
+            if w.nodes[cam].tag == "MainCamera" {
+                let o = self.motion.shake_offset();
+                cm.0[12] += o.x;
+                cm.0[13] += o.y;
+            }
             let view = cm.inverse_affine();
             let vp = perspective(c.fov, self.screen.w / self.screen.h, c.near, c.far).mul(&view);
             let mut head = [0.0f32; RECORD];
@@ -276,7 +281,6 @@ impl Game {
             // motion graphics in the world
             let tx = crate::motion::Tex { disc, soft, ring };
             self.motion.emit(false, &tx, |p| dist(p), |rec, d| items.push(Item { order: 6, dist: d, seq: 0, rec }));
-            self.filament(|p| dist(p), |rec, d| items.push(Item { order: 5, dist: d, seq: 0, rec }), soft);
             items.sort_by(|a, b| a.order.cmp(&b.order).then(b.dist.partial_cmp(&a.dist).unwrap_or(std::cmp::Ordering::Equal)).then(a.seq.cmp(&b.seq)));
             for it in items {
                 out.extend_from_slice(&it.rec);
@@ -302,6 +306,7 @@ impl Game {
         }
         let tx = crate::motion::Tex { disc: tex_named(w, "BlobBW.png"), soft: tex_named(w, "BlobBWShadow.png"), ring: tex_named(w, "Outer.png") };
         self.motion.emit(true, &tx, |_| 0.0, |rec, _| out.extend_from_slice(&rec));
+        self.menu_glyphs(|rec| out.extend_from_slice(&rec));
         self.cursor_spark(&tx, |rec| out.extend_from_slice(&rec));
     }
 
@@ -438,43 +443,98 @@ impl Game {
         self.motion.form(i)
     }
 
-    /// The tension between rival souls: an almost invisible filament that
-    /// tightens and crackles as they close in, charge, or aim at each other.
-    fn filament(&self, dist: impl Fn(V3) -> f32, mut push: impl FnMut([f32; RECORD], f32), soft: f32) {
-        let alive: Vec<usize> = (0..self.players.len())
-            .filter(|&k| !self.players[k].playback && self.w.active_in_hierarchy(self.players[k].node) && self.w.position(self.players[k].node).x != -666.0 && !self.players[k].single)
-            .collect();
-        for x in 0..alive.len() {
-            for y in x + 1..alive.len() {
-                let (pa, pb) = (&self.players[alive[x]], &self.players[alive[y]]);
-                let (a, b) = (self.w.position(pa.node), self.w.position(pb.node));
-                let d = ((a.x - b.x).powi(2) + (a.y - b.y).powi(2)).sqrt();
-                let near = ((10.0 - d) / 8.0).clamp(0.0, 1.0);
-                let charge = ((pa.charge_timer + pb.charge_timer) / 120.0).clamp(0.0, 1.0);
-                // does either aim line rest on the other?
-                let lock = [(pa, b - a), (pb, a - b)]
-                    .iter()
-                    .map(|(p, to)| {
-                        let l = (to.x * to.x + to.y * to.y).sqrt().max(1e-3);
-                        let dot = (p.touch[1].x * to.x + p.touch[1].y * to.y) / l;
-                        ((dot - 0.96) / 0.04).clamp(0.0, 1.0)
-                    })
-                    .fold(0.0f32, f32::max);
-                let tension = (0.55 * near * near + 0.35 * charge + 0.5 * lock).min(1.0);
-                if tension < 0.04 {
-                    continue;
+    /// The map menu's arrows, drawn as live strokes: they breathe, lean
+    /// toward the cursor on hover with an echo and a crackle, jab when
+    /// pressed, and go quiet at the end of the row.
+    fn menu_glyphs(&self, mut push: impl FnMut([f32; RECORD])) {
+        let now = self.motion.render_now;
+        let flick = (now * 30.0) as u32;
+        for &(n, kind) in &self.motion.glyphs {
+            if !self.w.active_in_hierarchy(n) {
+                continue;
+            }
+            let Some(q) = self.ui_screen_quad(n) else { continue };
+            let c = v3((q[0][0] + q[2][0]) / 2.0, (q[0][1] + q[2][1]) / 2.0, 0.0);
+            let s = ((q[1][0] - q[0][0]).abs().min((q[3][1] - q[0][1]).abs()) * 0.3).clamp(10.0, 60.0);
+            let cm = self.menu.current_map;
+            let enabled = match kind {
+                0 => cm > 0,
+                1 => cm < 3,
+                _ => true,
+            };
+            // forms in with its menu
+            let (fk, fa) = self.motion.form(n).map(|f| (f.0, f.1)).unwrap_or((1.0, 1.0));
+            if fa <= 0.0 {
+                continue;
+            }
+            let hovered = self.motion.hover == Some(n) && enabled;
+            let h = if hovered { crate::motion::ease_out(((now - self.motion.hover_since) / 0.15).min(1.0)) } else { 0.0 };
+            let dir = match kind {
+                0 => v3(-1.0, 0.0, 0.0),
+                1 => v3(1.0, 0.0, 0.0),
+                _ => v3(-1.0, 0.0, 0.0),
+            };
+            // press jab: a damped kick in the arrow's direction
+            let jab = self
+                .motion
+                .pressed_at
+                .get(&n)
+                .map(|&t0| {
+                    let t = now - t0;
+                    if t < 0.0 || t > 0.6 {
+                        0.0
+                    } else {
+                        (t * 22.0).sin() * (-t * 9.0).exp()
+                    }
+                })
+                .unwrap_or(0.0);
+            let breathe = (now * 2.2 + kind as f32).sin() * 0.05;
+            let shift = dir * (s * (breathe + 0.18 * h + 0.6 * jab));
+            let alpha = if enabled { 0.92 } else { 0.18 } * fa;
+            let width = 2.2 + 1.2 * h;
+            let shape = |o: V3, k: f32| -> Vec<V3> {
+                let sk = s * k * fk;
+                match kind {
+                    0 | 1 => {
+                        let sx = if kind == 0 { 1.0 } else { -1.0 };
+                        vec![o + v3(sx * sk * 0.5, sk, 0.0), o + v3(-sx * sk * 0.5, 0.0, 0.0), o + v3(sx * sk * 0.5, -sk, 0.0)]
+                    }
+                    _ => {
+                        // a return arrow: shaft, a half turn up the right side, a short tail
+                        let mut v = vec![o + v3(-sk, -sk * 0.3, 0.0), o + v3(sk * 0.3, -sk * 0.3, 0.0)];
+                        for j in 1..=10 {
+                            let a = -std::f32::consts::FRAC_PI_2 + j as f32 / 10.0 * std::f32::consts::PI;
+                            v.push(o + v3(sk * 0.3 + a.cos() * sk * 0.45, sk * 0.15 + a.sin() * sk * 0.45, 0.0));
+                        }
+                        v.push(o + v3(sk * 0.05, sk * 0.6, 0.0));
+                        v
+                    }
                 }
-                let flick = (self.motion.render_now * 24.0) as u32;
-                // it only shows in flickers, more often the tighter it is
-                if crate::motion::hash(flick ^ 0x51ed) % 100 > (25.0 + 75.0 * tension) as u32 {
-                    continue;
+            };
+            let ink = [0.04, 0.04, 0.06, alpha];
+            let main = shape(c + shift, 1.0);
+            ribbon(&main, width, ink, -1.0, &mut push);
+            if kind == 2 {
+                let tip = main[0];
+                let sk = s * fk;
+                ribbon(&[tip + v3(sk * 0.35, sk * 0.35, 0.0), tip, tip + v3(sk * 0.35, -sk * 0.35, 0.0)], width, ink, -1.0, &mut push);
+            }
+            if h > 0.0 || jab.abs() > 0.05 {
+                // the echo: a fainter twin running ahead
+                let mut ghost = ink;
+                ghost[3] = alpha * 0.3 * h.max(jab.abs());
+                let echo = shape(c + shift + dir * (s * 0.45), 0.85);
+                ribbon(&echo, width * 0.7, ghost, -1.0, &mut push);
+                // and a small crackle off its point
+                let tip = main[main.len() / 2];
+                let hs = crate::motion::hash(flick ^ n as u32);
+                if hs % 3 != 0 {
+                    let end = tip + dir * (s * 0.55) + v3(0.0, crate::motion::hf(hs) * s * 0.35, 0.0);
+                    let pts = arc_points(tip, end, 4, 0.35, hs);
+                    let mut cc = ink;
+                    cc[3] = 0.6 * h.max(jab.abs());
+                    ribbon(&pts, 1.0, cc, -1.0, &mut push);
                 }
-                let segs = ((d / 0.5) as usize).clamp(6, 40);
-                let pts = arc_points(a, b, segs, 0.04 + 0.12 * tension, flick.wrapping_mul(747796405));
-                let mid = dist((a + b) * 0.5);
-                let alpha = 0.03 + 0.32 * tension * tension;
-                ribbon(&pts, 0.09 + 0.1 * tension, [0.0, 0.0, 0.0, alpha * 0.25], soft, |rec| push(rec, mid));
-                ribbon(&pts, 0.008 + 0.014 * tension, [0.03, 0.03, 0.06, alpha], -1.0, |rec| push(rec, mid - 0.001));
             }
         }
     }

@@ -232,10 +232,18 @@ impl Game {
             }
             Fade { what, dur, dir, i, deactivate } => self.fade_step(what, dur, dir, i, deactivate).then_some(Fade { what, dur, dir, i: i + 1, deactivate }),
             MoveMap { dir, i, acc } => {
-                if i >= 9 {
+                // eased slide with a soft overshoot (was a 9-step linear brake)
+                const N: u32 = 16;
+                if i >= N {
                     self.menu.move_map_started = false;
                     return None;
                 }
+                let e = |u: f32| {
+                    let v = u - 1.0;
+                    1.0 + 2.4 * v * v * v + 1.4 * v * v
+                };
+                let step = e((i + 1) as f32 / N as f32) - e(i as f32 / N as f32);
+                let acc = step * 9.0 + acc * 0.0;
                 if let Some(m) = self.menu.maps {
                     if let Some(r) = self.w.nodes[m].rect.as_mut() {
                         r.pos[0] += acc * dir as f32 * 600.0 / 9.0;
@@ -243,7 +251,7 @@ impl Game {
                         self.w.nodes[m].lpos.x += acc * dir as f32 * 600.0 / 9.0;
                     }
                 }
-                Some(MoveMap { dir, i: i + 1, acc: acc - 0.25 })
+                Some(MoveMap { dir, i: i + 1, acc: 0.0 })
             }
             Failsafe { mut wait } => {
                 waiting!(wait, Failsafe { wait });

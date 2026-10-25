@@ -172,7 +172,7 @@ impl Game {
             }
         }
         let cam = self.deaths[d].node;
-        self.tasks.push(Task::CamShake { cam, i: 0, d: v3(0.08, 0.08, 0.0) });
+        let _ = cam; // shake is drawn at render time (motion::shake)
         // teleportPointBlob
         let tag = self.w.nodes[player].tag.clone();
         let idx = tag.chars().last().and_then(|c| c.to_digit(10)).unwrap_or(1) as usize - 1;
@@ -390,42 +390,42 @@ impl Game {
             let pa = self.w.position(a);
             let pb = self.w.position(b);
             let cur = self.w.position(node);
-            let mt = |x: f32, t: f32, d: f32| if (t - x).abs() <= d { t } else { x + (t - x).signum() * d };
-            let np = if self.cam_follow[c].should_follow {
-                // Frame both players with a margin, from the real field of view
-                // and aspect (the original's fixed rates were tuned for phones
-                // and fall far behind a dash on a wide screen).
-                let lens = if self.w.nodes[node].camera.is_some() { Some(node) } else { self.camera_main() };
-                let fov = lens.and_then(|l| self.w.nodes[l].camera.as_ref()).map(|k| k.fov).unwrap_or(60.0);
-                // the lens may sit on a child offset from the follow node
-                let off = lens.map(|l| self.w.position(l) - cur).unwrap_or(V3::ZERO);
-                let t = (fov.to_radians() / 2.0).tan();
-                let aspect = (self.screen.w / self.screen.h).max(0.5);
-                // breathing room grows with the gap, so far-apart players never hug the frame
-                let (hx, hy) = ((pa.x - pb.x).abs() / 2.0, (pa.y - pb.y).abs() / 2.0);
-                let margin = 2.2 + 0.18 * hx.max(hy);
-                let half_h = (hy + margin).max((hx + margin) / aspect);
-                // holding breath: in a lull, or while someone charges, the
-                // camera leans in a little; any action lets it go
-                let idle = ((self.motion.now - self.motion.last_action - 1.2) / 2.5).clamp(0.0, 1.0);
-                let charge = self.players.iter().map(|p| (p.charge_timer / 90.0).clamp(0.0, 1.0)).fold(0.0f32, f32::max);
-                let want_breath = 1.0 - 0.05 * idle - 0.05 * charge;
-                let rate = if want_breath > self.motion.breath { 0.25 } else { 0.02 };
-                self.motion.breath = if self.motion.breath == 0.0 { 1.0 } else { self.motion.breath + (want_breath - self.motion.breath) * rate };
-                let dist = (half_h / t).max(5.75) * self.motion.breath;
-                let mid = (pa + pb) * 0.5;
-                let want = v3(mid.x - off.x, mid.y - off.y, mid.z - dist - off.z);
-                // exponential follow: quick to widen, slow to settle back in
-                let dt = 0.02;
-                let k_xy = 1.0 - (-dt / 0.12f32).exp();
-                let k_z = 1.0 - (-dt / if want.z < cur.z { 0.1f32 } else { 0.6 }).exp();
-                let kick = self.motion.kick;
-                v3(cur.x + (want.x - cur.x) * k_xy + kick.x, cur.y + (want.y - cur.y) * k_xy + kick.y, cur.z + (want.z - cur.z) * k_z)
-            } else if pa.x == -666.0 {
-                v3(mt(cur.x, pb.x, 0.03), mt(cur.y, pb.y, 0.3), mt(cur.z, pb.z - 8.0, 0.05))
-            } else {
-                v3(mt(cur.x, pa.x, 0.03), mt(cur.y, pa.y, 0.3), mt(cur.z, pa.z - 8.0, 0.05))
+            // Frame the living (both, or the survivor while the other is
+            // dead) from the real field of view and aspect, with one smooth
+            // exponential follow (the original crept at phone-tuned rates).
+            let alive_a = pa.x != -666.0;
+            let alive_b = pb.x != -666.0;
+            let (pa, pb) = match (alive_a, alive_b) {
+                (true, true) => (pa, pb),
+                (true, false) => (pa, pa),
+                (false, true) => (pb, pb),
+                (false, false) => (cur, cur),
             };
+            let lens = if self.w.nodes[node].camera.is_some() { Some(node) } else { self.camera_main() };
+            let fov = lens.and_then(|l| self.w.nodes[l].camera.as_ref()).map(|k| k.fov).unwrap_or(60.0);
+            // the lens may sit on a child offset from the follow node
+            let off = lens.map(|l| self.w.position(l) - cur).unwrap_or(V3::ZERO);
+            let t = (fov.to_radians() / 2.0).tan();
+            let aspect = (self.screen.w / self.screen.h).max(0.5);
+            // breathing room grows with the gap, so far-apart players never hug the frame
+            let (hx, hy) = ((pa.x - pb.x).abs() / 2.0, (pa.y - pb.y).abs() / 2.0);
+            let margin = 2.2 + 0.18 * hx.max(hy);
+            let half_h = (hy + margin).max((hx + margin) / aspect);
+            // holding breath: in a lull, or while someone charges, the
+            // camera leans in a little; any action lets it go
+            let idle = ((self.motion.now - self.motion.last_action - 1.2) / 2.5).clamp(0.0, 1.0);
+            let charge = self.players.iter().map(|p| (p.charge_timer / 90.0).clamp(0.0, 1.0)).fold(0.0f32, f32::max);
+            let want_breath = 1.0 - 0.05 * idle - 0.05 * charge;
+            let rate = if want_breath > self.motion.breath { 0.25 } else { 0.02 };
+            self.motion.breath = if self.motion.breath == 0.0 { 1.0 } else { self.motion.breath + (want_breath - self.motion.breath) * rate };
+            let dist = if self.cam_follow[c].should_follow { (half_h / t).max(5.75) * self.motion.breath } else { 8.0 };
+            let mid = (pa + pb) * 0.5;
+            let want = v3(mid.x - off.x, mid.y - off.y, mid.z - dist - off.z);
+            // quick to widen, slow to settle back in
+            let dt = 0.02;
+            let k_xy = 1.0 - (-dt / 0.14f32).exp();
+            let k_z = 1.0 - (-dt / if want.z < cur.z { 0.1f32 } else { 0.6 }).exp();
+            let np = v3(cur.x + (want.x - cur.x) * k_xy, cur.y + (want.y - cur.y) * k_xy, cur.z + (want.z - cur.z) * k_z);
             self.w.set_position(node, np);
         }
     }

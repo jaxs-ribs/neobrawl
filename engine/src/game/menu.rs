@@ -312,7 +312,8 @@ impl Game {
         if cm - dir >= 0 && cm - dir <= 3 && !self.menu.move_map_started {
             self.menu.current_map -= dir;
             self.menu.move_map_started = true;
-            self.tasks.push(Task::MoveMap { dir, i: 0, acc: 2.0 });
+            self.tasks.push(Task::MoveMap { dir, i: 0, acc: 0.0 });
+            self.fx_map_arrive();
         }
         let w = self.menu.woosh.clone();
         self.play(&w, 1.0);
@@ -793,6 +794,20 @@ impl Game {
                 if let Some(t) = self.w.nodes[d].text.as_mut() {
                     t.enabled = false;
                 }
+            }
+        }
+        // the map menu's arrow sprites become engine-drawn, animated glyphs
+        for name in ["ArrowChooser", "ArrowChooser (1)", "MapBack"] {
+            for n in self.w.find_any(name) {
+                if let Some(s) = self.w.nodes[n].sprite.as_mut() {
+                    s.enabled = false;
+                }
+            }
+        }
+        self.motion.glyphs.clear();
+        for (name, kind) in [("MapMenuArrowLeft", 0u8), ("MapMenuArrowRight", 1), ("MapBackButton", 2)] {
+            for n in self.w.find_any(name) {
+                self.motion.glyphs.push((n, kind));
             }
         }
         // touch joysticks are gone on desktop

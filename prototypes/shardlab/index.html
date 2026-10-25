@@ -1,0 +1,723 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shard Lab</title>
+<style>
+  :root { --bg: #f6f6f4; --fg: #111; --dim: #888; --panel: #fff; --line: #e2e2de; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 12px/1.35 ui-monospace, Menlo, monospace; }
+  body { display: grid; grid-template-columns: 1fr 300px; height: 100vh; overflow: hidden; }
+  #stage { position: relative; }
+  canvas#c { width: 100%; height: 100%; display: block; cursor: crosshair; }
+  #hint { position: absolute; left: 12px; top: 10px; color: var(--dim); pointer-events: none; }
+  aside { background: var(--panel); border-left: 1px solid var(--line); overflow-y: auto; padding: 10px 12px 40px; }
+  h2 { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--dim); margin: 14px 0 6px; font-weight: 600; }
+  label { display: grid; grid-template-columns: 1fr 52px; gap: 4px; margin: 4px 0; align-items: center; }
+  label span.v { text-align: right; color: var(--dim); }
+  input[type=range] { grid-column: 1 / 3; width: 100%; }
+  .row { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0; }
+  button { font: inherit; padding: 4px 8px; border: 1px solid var(--line); background: #fafaf8; border-radius: 4px; cursor: pointer; }
+  button.on { background: #111; color: #fff; }
+  .tog { display: flex; align-items: center; gap: 6px; margin: 3px 0; }
+  #metrics div { display: flex; justify-content: space-between; }
+  #metrics b { font-weight: 600; }
+  canvas.plot { width: 100%; height: 46px; display: block; border: 1px solid var(--line); margin: 2px 0 6px; background: #fcfcfb; }
+  .pl { color: var(--dim); font-size: 10px; }
+  @media (max-width: 720px) { body { grid-template-columns: 1fr; grid-template-rows: 55vh 45vh; } aside { border-left: 0; border-top: 1px solid var(--line); } }
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="c"></canvas><div id="hint">click to throw boxes (they stack up) · space = rethrow same seed · . = step when paused</div></div>
+<aside>
+  <div class="row"><button id="b-throw">Throw</button><button id="b-replay">Replay seed</button><button id="b-pause">Pause</button><button id="b-step">Step</button></div>
+  <div class="row"><button id="b-slow">Slow-mo</button><button id="b-overlay">Overlay</button><button id="b-sweep">Sweep 100</button></div>
+
+  <h2>Throw</h2>
+  <div id="g-throw"></div>
+  <h2>Burst split</h2>
+  <div id="g-burst"></div>
+  <h2>Forces</h2>
+  <div id="g-forces"></div>
+  <h2>Links (arcs)</h2>
+  <div id="g-links"></div>
+  <h2>Style (the dance)</h2>
+  <div id="g-style"></div>
+  <h2>Breakdown (bolts)</h2>
+  <div id="g-bolts"></div>
+  <h2>Ablations</h2>
+  <div id="g-abl"></div>
+
+  <h2>Metrics — last shatter</h2>
+  <div id="metrics"></div>
+  <div class="pl">bonded spacing (black, should shrink) · whole cloud Rg (grey)</div><canvas class="plot" id="p-rg"></canvas>
+  <div class="pl">clusters ≥2 (black) · active links (grey)</div><canvas class="plot" id="p-cl"></canvas>
+  <div class="pl">charge Q (black) · kinetic E (grey)</div><canvas class="plot" id="p-q"></canvas>
+  <div class="pl">bolts (ticks)</div><canvas class="plot" id="p-b"></canvas>
+  <div id="sweep"></div>
+</aside>
+<script>
+// ------------------------------------------------------------------ params
+const P = {};
+const SLIDERS = {
+  throw: [
+    ["speed", "throw speed", 20, 100, 70, 1],
+    ["spin", "box spin (deg/tick)", 0, 20, 14, 0.5],
+  ],
+  burst: [
+    ["inherit", "inherited momentum", 0, 0.3, 0.015, 0.005],
+    ["radial", "burst speed (× throw)", 0, 0.5, 0.14, 0.005],
+    ["tail", "heavy tail (higher = most stay close)", 1, 8, 3.5, 0.1],
+    ["aim", "tail follows bounce angle", 0, 1, 0.7, 0.01],
+    ["tangential", "spin → tangential", 0, 1.5, 0.3, 0.01],
+    ["chargePerE", "charge per energy", 0, 3, 1, 0.05],
+  ],
+  forces: [
+    ["kRep", "repulsion (like charge)", 0, 3, 0.15, 0.01],
+    ["repRange", "repulsion range", 0.2, 3, 0.8, 0.05],
+    ["kAtt", "current attraction", 0, 30, 7, 0.1],
+    ["drag", "end drag", 0, 8, 4.5, 0.01],
+    ["dragStart", "start drag (burst flies)", 0, 4, 1.2, 0.01],
+    ["dragRamp", "drag ramp time (s)", 0.1, 4, 0.6, 0.05],
+    ["decay", "charge half-life (s)", 0.3, 10, 1.6, 0.1],
+  ],
+  links: [
+    ["d0", "affinity distance d0", 0.1, 2, 0.8, 0.01],
+    ["v0", "affinity rel-velocity v0", 0.2, 10, 3, 0.1],
+    ["linkRate", "link growth rate", 0.01, 1, 0.4, 0.01],
+    ["snapV", "snap if rel-velocity >", 1, 30, 9, 0.5],
+  ],
+  style: [
+    ["maxLinks", "max arcs per shard", 1, 6, 2, 1],
+    ["dance", "orbit / dance", 0, 40, 6, 0.5],
+    ["swirl", "impact swirl", 0, 40, 2, 0.5],
+    ["flicker", "arc flicker", 0, 0.9, 0.35, 0.01],
+    ["rewire", "partner switching", 0, 1, 0.3, 0.01],
+    ["boltRate", "bolt eagerness", 0, 1, 0.25, 0.01],
+    ["boredom", "attention span (s)", 0.05, 2, 0.3, 0.01],
+    ["cooldown", "re-link cooldown (s)", 0, 3, 0.8, 0.05],
+    ["partKick", "part-ways kick", 0, 10, 1.2, 0.1],
+    ["maxLinkDist", "max arc length (box = 0.56)", 0.1, 3, 0.6, 0.01],
+    ["lives", "break-ups before annihilation", 1, 8, 3, 1],
+    ["lonely", "alone this long → annihilate (s)", 0.1, 4, 1.1, 0.05],
+    ["rave", "spontaneous sparks", 0, 10, 4, 0.5],
+    ["branch", "branching (1 = critical)", 0, 1.2, 0.95, 0.01],
+    ["dropout", "dropout (hidden fraction)", 0, 0.95, 0.55, 0.01],
+    ["raveDist", "rave line max length", 0.2, 3, 1.1, 0.05],
+    ["anim", "animacy: near-attract / far-repel", 0, 6, 4, 0.05],
+    ["animNear", "animacy: attract within", 0.05, 1, 0.3, 0.01],
+    ["animRange", "animacy: range", 0.2, 3, 1.2, 0.05],
+    ["mood", "animacy: mood noise", 0, 1, 0.5, 0.01],
+    ["wander", "animacy: self-propulsion", 0, 3, 2.5, 0.05],
+    ["dart", "animacy: sudden darts / s", 0, 2, 0.8, 0.05],
+    ["maxW", "max line width (units)", 0.01, 0.1, 0.035, 0.005],
+    ["arcW", "arc width (Unity: 0.02 units)", 0.005, 0.1, 0.02, 0.005],
+    ["kink", "arc kink (0 = straight like Unity)", 0, 0.4, 0.04, 0.01],
+    ["hop", "endpoint hop per tick (Unity: 1)", 0, 1, 0.3, 0.01],
+    ["gasp", "last gasp length (s)", 0, 1.5, 0.4, 0.05],
+    ["gaspRange", "last gasp arc reach (×)", 1, 4, 2.2, 0.05],
+    ["gaspCharge", "last gasp charge boost", 0, 2, 0.6, 0.05],
+    ["revive", "times a shard can be re-excited", 0, 4, 1, 1],
+    ["fadeT", "decay time (s)", 0.1, 2, 0.5, 0.05],
+    ["transit", "friend-of-friend pull", 0, 6, 2.5, 0.1],
+  ],
+  bolts: [
+    ["boltThr", "breakdown threshold", 0.2, 20, 1.6, 0.1],
+    ["boltRange", "max bolt length", 0.5, 8, 4, 0.1],
+    ["boltShare", "charge transferred", 0, 1, 0.35, 0.01],
+    ["groundThr", "wall ground threshold", 0.5, 30, 9, 0.5],
+  ],
+};
+const TOGGLES = [["pulse", "half-second pulse (original rhythm)", true], ["att", "current attraction", true], ["rep", "repulsion", true], ["spinOn", "spin inheritance", true], ["decayOn", "charge decay", true], ["bolts", "breakdown bolts", true]];
+
+function slider(root, [k, label, min, max, val, step]) {
+  P[k] = val;
+  const l = document.createElement("label");
+  l.innerHTML = `<span>${label}</span><span class="v"></span><input type="range" min="${min}" max="${max}" step="${step}" value="${val}">`;
+  const inp = l.querySelector("input"), v = l.querySelector(".v");
+  const show = () => (v.textContent = (+inp.value).toFixed(step < 0.1 ? 2 : step < 1 ? 1 : 0));
+  inp.oninput = () => { P[k] = +inp.value; show(); };
+  show();
+  root.appendChild(l);
+}
+for (const [g, list] of Object.entries(SLIDERS)) list.forEach((s) => slider(document.getElementById("g-" + g), s));
+for (const [k, label, on] of TOGGLES) {
+  P[k] = on;
+  const d = document.createElement("label"); d.className = "tog";
+  d.innerHTML = `<input type="checkbox" ${on ? "checked" : ""}> ${label}`;
+  d.querySelector("input").onchange = (e) => (P[k] = e.target.checked);
+  document.getElementById("g-abl").appendChild(d);
+}
+
+// ------------------------------------------------------------------ world
+const DT = 1 / 50, PER_BOX = 13;
+let N = 0;
+const W = { x0: -9, x1: 9, y0: -5.5, y1: 5.5 }; // arena in world units
+let beatStart = 0, beatNext = 0, beatLen = 4, impacts = [], pops = [], age = new Map(), cool = new Map(), impact = null, active = new Set(), vis = new Map(), rng, shards = [], links = new Map(), bolts = [], seed = 1, last = null, boxes = [], t = 0, trace = null;
+let paused = false, slow = false, overlay = false, stepOnce = false;
+
+function mulberry(a) { return () => { a |= 0; a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+
+// add = true keeps what's already on the floor (click); otherwise start clean
+function throwBox(target, s = seed, add = false) {
+  seed = s; rng = mulberry(s);
+  const from = { x: W.x0 + 1.2, y: 0 };
+  const dx = target.x - from.x, dy = target.y - from.y, l = Math.hypot(dx, dy) || 1;
+  boxes.push({ x: from.x, y: from.y, vx: (dx / l) * P.speed, vy: (dy / l) * P.speed, a: 0, spin: P.spin, target });
+  last = { target, seed: s };
+  if (add && trace) return;
+  boxes = boxes.slice(-1); N = 0;
+  shards = []; links = new Map(); bolts = []; t = 0; impact = null; pops = []; active = new Set(); vis = new Map(); age = new Map(); cool = new Map(); prevD.clear();
+  trace = { E: [], Q: [], Rg: [], cl: [], ln: [], b: [], corr: [], ratio: [], E0: 0, Q0: 0, L0: 0, dipFound: false };
+  last = { target, seed: s };
+}
+
+function shatter(box, nx, ny) {
+  // reflect the box velocity about the wall normal
+  const d = box.vx * nx + box.vy * ny;
+  const rvx = box.vx - 2 * d * nx, rvy = box.vy - 2 * d * ny;
+  const speed = Math.hypot(box.vx, box.vy);
+  const E = 0.5 * speed * speed;
+  const spinRad = (P.spinOn ? box.spin : 0) * Math.PI / 180 * 50; // rad/s
+  const imp = { x: box.x, y: box.y, t, lines: [] };
+  const chunks = [], nChunks = 2 + Math.floor(rng() * 3);
+  for (let c = 0; c < nChunks; c++) chunks.push({ ang: rng() * 6.283, u: Math.min(1.2, 0.04 * Math.pow(rng(), -1 / 1.2)), spread: 0.1 + rng() * 0.8, wt: Math.pow(rng(), -1.5) });
+  const wsum = chunks.reduce((a, c) => a + c.wt, 0);
+  const pick = () => { let x = rng() * wsum; for (const c of chunks) { x -= c.wt; if (x <= 0) return c; } return chunks[0]; };
+  for (let i = 0; i < PER_BOX; i++) {
+    const ch = pick();
+    const ang = ch.ang + (rng() - 0.5) * 2 * ch.spread;
+    const r = 0.04 + rng() ** 0.7 * 0.24;
+    const px = box.x + Math.cos(ang) * r, py = box.y + Math.sin(ang) * r;
+    // most shards barely move; a few rocket off (u^tail), biased along the bounce
+    // Pareto: chunk speed × a heavy-tailed personal factor; a rare shard breaks away on its own
+    const u = Math.min(1.4, ch.u * Math.pow(rng(), -1 / 2.5) + (rng() < 0.06 ? 0.05 * Math.pow(rng(), -1 / 1.1) : 0));
+    const rad = P.radial * speed * u;
+    const bounce = Math.atan2(rvy, rvx);
+    let da = ang - bounce; da = Math.atan2(Math.sin(da), Math.cos(da));
+    const dirAng = ang - da * P.aim * Math.pow(u, 0.5);
+    // tangential velocity from the box's spin: v = ω × r (scaled)
+    const tx = -Math.sin(ang), ty = Math.cos(ang);
+    const tan = spinRad * r * P.tangential;
+    shards.push({
+      x: px, y: py,
+      vx: rvx * P.inherit + Math.cos(dirAng) * rad + tx * tan,
+      vy: rvy * P.inherit + Math.sin(dirAng) * rad + ty * tan,
+      imp, lives: P.lives, alone: 0, dead: false, gasp: -1, fade: -1, revived: 0,
+      q: (E / 2500) * P.chargePerE * (0.7 + rng() * 0.6),
+      a: rng() * 6.28, w: (rng() - 0.5) * 20 * (0.3 + rng() ** 2 * 2), cluster: -1,
+      size: 0.035 + 0.075 * rng() ** 2.2,
+      tri: [0, 1, 2].map((k) => { const an = k * 2.09 + (rng() - 0.5) * 1.3, rr = 0.45 + rng() * 0.75; return [Math.cos(an) * rr, Math.sin(an) * rr]; }),
+    });
+  }
+  impact = { x: box.x, y: box.y, t, power: speed / 100 }; impacts.push(impact);
+  boxes = boxes.filter((b) => b !== box); N = shards.length;
+  trace.E0 = energy(); trace.Q0 = totalQ(); trace.L0 = angMom();
+}
+
+const key = (i, j) => (i < j ? i * 4096 + j : j * 4096 + i);
+const live = () => shards.filter((p) => !p.dead);
+const energy = () => live().reduce((s, p) => s + 0.5 * (p.vx * p.vx + p.vy * p.vy), 0);
+const totalQ = () => live().reduce((s, p) => s + p.q, 0);
+function com() { const L = live(), n = Math.max(1, L.length); let x = 0, y = 0, vx = 0, vy = 0; for (const p of L) { x += p.x; y += p.y; vx += p.vx; vy += p.vy; } return { x: x / n, y: y / n, vx: vx / n, vy: vy / n }; }
+function angMom() { const c = com(); return shards.reduce((s, p) => s + ((p.x - c.x) * (p.vy - c.vy) - (p.y - c.y) * (p.vx - c.vx)), 0); }
+function rg() { const c = com(), L = live(); return Math.sqrt(L.reduce((s, p) => s + (p.x - c.x) ** 2 + (p.y - c.y) ** 2, 0) / Math.max(1, L.length)); }
+
+function clusters() {
+  const par = shards.map((_, i) => i);
+  const f = (i) => (par[i] === i ? i : (par[i] = f(par[i])));
+  for (const [k, s] of links) if (s > 0.05) { const i = Math.floor(k / 4096), j = k % 4096; par[f(i)] = f(j); }
+  const groups = new Map();
+  shards.forEach((p, i) => { const r = f(i); p.cluster = r; if (!groups.has(r)) groups.set(r, []); groups.get(r).push(i); });
+  return [...groups.values()];
+}
+
+function step() {
+  t++;
+  for (const box of [...boxes]) {
+    box.x += box.vx * DT; box.y += box.vy * DT; box.a += box.spin;
+    // walls: shatter on contact (the thrown box explodes on the first hit)
+    let n = null;
+    if (box.x > W.x1 - 0.3) n = [-1, 0]; else if (box.x < W.x0 + 0.3) n = [1, 0];
+    else if (box.y > W.y1 - 0.3) n = [0, -1]; else if (box.y < W.y0 + 0.3) n = [0, 1];
+    // or at the clicked target if it's in open space
+    const ex = box.target.x - box.x, ey = box.target.y - box.y;
+    if (!n && (Math.hypot(ex, ey) < 0.4 || ex * box.vx + ey * box.vy < 0)) { const l = Math.hypot(box.vx, box.vy); n = [-box.vx / l, -box.vy / l]; }
+    if (n) shatter(box, n[0], n[1]);
+  }
+  if (!shards.length) return;
+  const qDecay = P.decayOn ? Math.pow(0.5, DT / P.decay) : 1;
+  const since = impact ? (t - impact.t) * DT : 9;
+  // the beat drifts: gaps of 0.25–0.85 s, pulses of uneven length
+  if (t >= beatNext) { beatStart = t; beatLen = 2 + Math.floor(rng() * 6); beatNext = t + 12 + Math.floor(rng() ** 1.5 * 30); }
+  const phase = t - beatStart, beat = !P.pulse || phase < beatLen;
+  // each shard keeps only its strongest few arcs: pairs and short chains, not blobs
+  active = new Set();
+  const deg = new Uint8Array(N);
+  for (const [k, sv] of [...links].sort((a, b) => b[1] - a[1])) {
+    const i = Math.floor(k / 4096), j = k % 4096;
+    if (sv > 0.05 && deg[i] < P.maxLinks && deg[j] < P.maxLinks) { active.add(k); deg[i]++; deg[j]++; }
+  }
+  // partners switch on the beat: some arcs drop so shards find new partners
+  if (P.pulse ? phase === 0 : t % 12 === 0) for (const k of active) if (rng() < P.rewire) { links.set(k, 0); active.delete(k); }
+  vis = new Map();
+  for (const k of active) {
+    const a = shards[Math.floor(k / 4096)], b = shards[k % 4096];
+    const g = a.gasp >= 0 || b.gasp >= 0;
+    vis.set(k, g ? 1 : (rng() < P.flicker ? 0 : 1) * (beat ? 1 : 0.65));
+    for (const [x, y] of [[a, b], [b, a]]) if (x.gasp >= 0 && !x.sparked && y.gasp < 0 && y.fade < 0 && y.revived < P.revive) {
+      x.sparked = true; y.revived++; y.lives++; y.alone = 0; y.q += P.gaspCharge * 0.5;
+    }
+  }
+  const fx = new Float32Array(N), fy = new Float32Array(N);
+  // links: affinity from closeness and co-motion; strength relaxes toward it
+  for (let i = 0; i < N; i++) for (let j = i + 1; j < N; j++) {
+    const a = shards[i], b = shards[j];
+    if (a.dead || b.dead) { links.delete(key(i, j)); continue; }
+    const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || 1e-4;
+    const dv = Math.hypot(b.vx - a.vx, b.vy - a.vy);
+    const k = key(i, j);
+    let s = links.get(k) || 0;
+    const coolUntil = cool.get(k) || 0;
+    const reach = P.maxLinkDist * (a.gasp >= 0 || b.gasp >= 0 ? P.gaspRange : 1);
+    if (dv > P.snapV || t < coolUntil || d > reach || a.dead || b.dead || a.fade >= 0 || b.fade >= 0) s = 0;
+    else {
+      // friends of friends: shared active neighbours boost affinity (arcs hop along chains)
+      let common = 0;
+      for (let m = 0; m < N; m++) if (m !== i && m !== j && active.has(key(i, m)) && active.has(key(j, m))) common++;
+      let viaOne = 0;
+      for (let m = 0; m < N; m++) if (m !== i && m !== j && (active.has(key(i, m)) || active.has(key(j, m)))) viaOne++;
+      const aff = Math.exp(-d / (P.d0 * (1 + P.transit * 0.25 * Math.min(2, viaOne)))) * Math.exp(-dv / P.v0) * (1 + P.transit * common);
+      const target = aff * Math.min(1, (a.q + b.q) * 2);
+      s += (target - s) * P.linkRate;
+    }
+    // boredom: an arc lives a short while, then the pair breaks off and parts ways
+    if (active.has(k)) {
+      const a0 = (age.get(k) || 0) + DT;
+      age.set(k, a0);
+      if (a0 > P.boredom) {
+        s = 0; age.delete(k); cool.set(k, t + Math.round(P.cooldown / DT));
+        a.lives--; b.lives--;
+        const kick = P.partKick, ux0 = dx / d, uy0 = dy / d;
+        // part ways with a sideways twist (a little dance step)
+        a.vx -= (ux0 - uy0 * 0.6) * kick; a.vy -= (uy0 + ux0 * 0.6) * kick;
+        b.vx += (ux0 - uy0 * 0.6) * kick; b.vy += (uy0 + ux0 * 0.6) * kick;
+      }
+    } else age.delete(k);
+    if (s < 0.01) links.delete(k); else links.set(k, s);
+    const ux = dx / d, uy = dy / d;
+    // like-charge repulsion (short range, softened)
+    if (P.rep && d < P.repRange) {
+      const f = P.kRep * (a.q + 0.05) * (b.q + 0.05) / (d * d + 0.04) * (1 - d / P.repRange);
+      fx[i] -= ux * f; fy[i] -= uy * f; fx[j] += ux * f; fy[j] += uy * f;
+    }
+    // animacy: close shards lean in, farther ones drift apart; moods can flip it
+    if (P.anim > 0 && d < P.animRange) {
+      const prof = d < P.animNear ? 1 : -0.45 * (1 - (d - P.animNear) / (P.animRange - P.animNear));
+      const f = P.anim * prof * ((a.mood ?? 1) + (b.mood ?? 1)) / 2;
+      fx[i] += ux * f; fy[i] += uy * f; fx[j] -= ux * f; fy[j] -= uy * f;
+    }
+    // current attraction: an active arc pulls its two shards together
+    if (active.has(k)) {
+      if (P.att) {
+        // pull toward a preferred spacing (spring), so pairs hold apart and dance
+        const f = P.kAtt * s * (d - 0.35);
+        fx[i] += ux * f; fy[i] += uy * f; fx[j] -= ux * f; fy[j] -= uy * f;
+      }
+      // orbit: a sideways push makes bonded shards circle each other
+      const sign = (k % 2) ? 1 : -1, o = P.dance * s * sign;
+      fx[i] += -uy * o; fy[i] += ux * o; fx[j] -= -uy * o; fy[j] -= ux * o;
+    }
+    // links share charge (conduction)
+    if (s > 0.05) { const m = (a.q + b.q) / 2; a.q += (m - a.q) * 0.05 * s; b.q += (m - b.q) * 0.05 * s; }
+  }
+  const groups = clusters();
+  // breakdown: a charged cluster fires a bolt at an outside shard
+  if (P.bolts) {
+    for (const g of groups) {
+      const nl = countLinks(g);
+      const Q = g.reduce((s, i) => s + shards[i].q, 0) * (1 + 0.15 * nl);
+      const c = g.reduce((acc, i) => ({ x: acc.x + shards[i].x / g.length, y: acc.y + shards[i].y / g.length }), { x: 0, y: 0 });
+      let best = -1, bestE = 0;
+      shards.forEach((p, k) => {
+        if (g.includes(k)) return;
+        const d = Math.hypot(p.x - c.x, p.y - c.y);
+        if (d > P.boltRange) return;
+        const E = Q / (d * d + 0.05);
+        if (E > bestE) { bestE = E; best = k; }
+      });
+      if (best >= 0 && bestE > P.boltThr && rng() < P.boltRate * (beat ? 1 : 0.3)) {
+        const src = g.reduce((m, i) => (shards[i].q > shards[m].q ? i : m), g[0]);
+        const moved = shards[src].q * P.boltShare;
+        shards[src].q -= moved; shards[best].q += moved * 0.8;
+        bolts.push({ a: src, b: best, life: 6, w: 1 + Math.min(3, bestE / P.boltThr), cascade: false, born: t });
+        trace.b.push(t);
+      }
+      // grounding into the nearest wall
+      const dw = Math.min(c.x - W.x0, W.x1 - c.x, c.y - W.y0, W.y1 - c.y);
+      if (P.bolts && Q / (dw * dw + 0.05) > P.groundThr && rng() < 0.05) {
+        const wx = c.x - W.x0 === dw ? W.x0 : W.x1 - c.x === dw ? W.x1 : c.x;
+        const wy = c.y - W.y0 === dw ? W.y0 : W.y1 - c.y === dw ? W.y1 : c.y;
+        g.forEach((i) => (shards[i].q *= 0.6));
+        bolts.push({ a: g[0], wall: { x: wx, y: wy }, life: 7, w: 2.5, born: t });
+        trace.b.push(t);
+      }
+    }
+  }
+  const ageOf = (p) => (t - p.imp.t) * DT;
+  for (const imp of new Set(shards.filter((p) => !p.dead).map((p) => p.imp))) {
+    // critical branching: rare spontaneous sparks; each line may light the next from its far end.
+    // With branching near 1, cascade sizes follow a power law: mostly single flickers, rarely a long run.
+    const own = shards.filter((p) => p.imp === imp && !p.dead && p.fade < 0);
+    imp.pending = (imp.pending || []).filter((q) => q.at > t);
+    const due = (imp.pendingNow || []); imp.pendingNow = [];
+    if (own.length >= 2 && rng() < P.rave / 125) due.push({ from: own[Math.floor(rng() * own.length)], gen: 0 });
+    for (const q of [...(imp.queue || [])]) if (q.at <= t) due.push(q);
+    imp.queue = (imp.queue || []).filter((q) => q.at > t);
+    for (const q of due) {
+      const a = q.from; if (a.dead || a.fade >= 0) continue;
+      const near = own.filter((o) => o !== a && Math.hypot(o.x - a.x, o.y - a.y) < P.raveDist);
+      if (!near.length) continue;
+      const b = near[Math.floor(rng() * near.length)];
+      const life = Math.min(30, Math.round(3 * Math.pow(rng(), -1 / 1.6))); // Pareto lifetimes
+      imp.lines.push({ a, b, born: t, life, snap: rng() < 0.3, w: Math.min(1.4, 0.6 * Math.pow(rng(), -1 / 3)), bow: (rng() < 0.5 ? -1 : 1) * (0.08 + rng() * 0.22), show: rng() > P.dropout });
+      // each line tries two children; mean offspring = 2 * branch/2 = branch (critical at 1)
+      for (let c = 0; c < 2; c++) if (rng() < P.branch / 2 && q.gen < 60) imp.queue.push({ from: b, gen: q.gen + 1, at: t + 1 + Math.floor(rng() * 3) });
+    }
+    imp.lines = imp.lines.filter((l) => t - l.born < l.life);
+  }
+  if (P.swirl > 0) {
+    shards.forEach((p, i) => {
+      if (p.dead) return;
+      const fade = Math.exp(-ageOf(p) / 0.9);
+      const rx = p.x - p.imp.x, ry = p.y - p.imp.y, r = Math.hypot(rx, ry) + 0.3;
+      fx[i] += (-ry / r) * P.swirl * fade / Math.sqrt(r); fy[i] += (rx / r) * P.swirl * fade / Math.sqrt(r);
+    });
+  }
+  for (let i = 0; i < N; i++) {
+    const p = shards[i];
+    if (p.dead) continue;
+    let linked = false;
+    for (const k of active) if (Math.floor(k / 4096) === i || k % 4096 === i) { linked = true; break; }
+    p.alone = linked ? 0 : p.alone + DT;
+    if (p.fade >= 0) {
+      p.fade += DT; p.q *= 0.9;
+      if (p.fade > P.fadeT) { p.dead = true; p.x = 1e4 + i * 10; p.y = 1e4; p.vx = p.vy = 0; p.q = 0; }
+    } else if (p.gasp >= 0) {
+      p.gasp += DT;
+      if (p.gasp > P.gasp) { p.gasp = -1; p.fade = 0; }
+    } else if (p.lives <= 0 || (ageOf(p) > 0.4 && p.alone > P.lonely)) {
+      p.gasp = 0; p.sparked = false; p.alone = 0; p.q += P.gaspCharge;
+    }
+  }
+  for (let i = 0; i < N; i++) {
+    const p = shards[i];
+    if (p.dead || p.fade >= 0) continue;
+    p.mood = (p.mood ?? 1) + (1 - (p.mood ?? 1)) * 0.03 + (rng() - 0.5) * P.mood * 0.5;
+    p.mood = Math.max(-0.8, Math.min(2, p.mood));
+    p.hd = (p.hd ?? rng() * 6.283) + (rng() - 0.5) * 0.7;
+    const settle = Math.min(1, ageOf(p) / 0.6); // let the burst play out first
+    const gait = 0.5 + 0.5 * Math.sin(t * 0.4 + i * 1.7); // uneven stride
+    fx[i] += Math.cos(p.hd) * P.wander * gait * settle; fy[i] += Math.sin(p.hd) * P.wander * gait * settle;
+    if (settle >= 1 && rng() < P.dart * DT) { const k = 0.6 + 2.4 * Math.pow(rng(), 3); p.vx += Math.cos(p.hd) * k; p.vy += Math.sin(p.hd) * k; p.w += (rng() - 0.5) * 30; }
+  }
+  // integrate: burst flies first, then drag ramps in so shards glide to rest
+
+  for (let i = 0; i < N; i++) {
+    const p = shards[i];
+    if (p.dead) continue;
+    p.spread = Math.max(p.spread || 0, Math.hypot(p.x - p.imp.x, p.y - p.imp.y));
+    const dragNow = P.dragStart + (P.drag - P.dragStart) * Math.min(1, ageOf(p) / P.dragRamp);
+    const drag = Math.max(0, 1 - dragNow * DT);
+    p.vx = (p.vx + fx[i] * DT) * drag; p.vy = (p.vy + fy[i] * DT) * drag;
+    p.x += p.vx * DT; p.y += p.vy * DT; p.a += p.w * DT; p.q *= qDecay;
+    if (p.x < W.x0) { p.x = W.x0; p.vx = Math.abs(p.vx) * 0.4; } if (p.x > W.x1) { p.x = W.x1; p.vx = -Math.abs(p.vx) * 0.4; }
+    if (p.y < W.y0) { p.y = W.y0; p.vy = Math.abs(p.vy) * 0.4; } if (p.y > W.y1) { p.y = W.y1; p.vy = -Math.abs(p.vy) * 0.4; }
+  }
+  bolts = bolts.filter((b) => --b.life > 0);
+  record(groups);
+}
+
+function countLinks(g) { let n = 0; for (let x = 0; x < g.length; x++) for (let y = x + 1; y < g.length; y++) if ((links.get(key(g[x], g[y])) || 0) > 0.05) n++; return n; }
+
+// ------------------------------------------------------------------ metrics
+const prevD = new Map();
+function record(groups) {
+  trace.E.push(energy()); trace.Q.push(totalQ()); trace.Rg.push(rg());
+  // mean distance between bonded pairs: the clusters' own size
+  let bd = 0, bn = 0;
+  for (const [k, s] of links) if (s > 0.05) { const a = shards[Math.floor(k / 4096)], b = shards[k % 4096]; bd += Math.hypot(a.x - b.x, a.y - b.y); bn++; }
+  (trace.bond ||= []).push(bn ? bd / bn : NaN);
+  trace.cl.push(groups.filter((g) => g.length >= 2).length);
+  trace.ln.push([...links.values()].filter((s) => s > 0.05).length);
+  // co-motion: mean relative speed inside clusters vs between
+  let inS = 0, inN = 0, outS = 0, outN = 0;
+  const pairs = [];
+  for (let i = 0; i < N; i++) for (let j = i + 1; j < N; j++) {
+    const a = shards[i], b = shards[j];
+    const dv = Math.hypot(b.vx - a.vx, b.vy - a.vy);
+    const d = Math.hypot(b.x - a.x, b.y - a.y), k = key(i, j);
+    // compare bonded pairs with unbonded pairs at similar range (< 2 units)
+    if ((links.get(k) || 0) > 0.05) { inS += dv; inN++; } else if (d < 2) { outS += dv; outN++; }
+    pairs.push([links.get(k) || 0, d - (prevD.get(k) ?? d)]); prevD.set(k, d);
+  }
+  trace.ratio.push(inN && outN ? (inS / inN) / (outS / outN) : NaN);
+  // does link strength predict closing distance? (Pearson r over pairs)
+  const n = pairs.length, mx = pairs.reduce((s, p) => s + p[0], 0) / n, my = pairs.reduce((s, p) => s + p[1], 0) / n;
+  let sxy = 0, sxx = 0, syy = 0;
+  for (const [x, y] of pairs) { sxy += (x - mx) * (y - my); sxx += (x - mx) ** 2; syy += (y - my) ** 2; }
+  trace.corr.push(sxx > 1e-9 && syy > 1e-12 ? sxy / Math.sqrt(sxx * syy) : NaN);
+}
+
+function median(a) { const v = [...a].sort((x, y) => x - y); return v.length ? v[v.length >> 1] : 0; }
+function summarize(tr) {
+  // contraction: bonded spacing shrinks by ≥15% from its early value within 3 s
+  const bv = (tr.bond || []).slice(0, 150); let dip = false, ref = NaN;
+  for (let i = 0; i < bv.length; i++) { if (!Number.isFinite(bv[i])) continue; if (!Number.isFinite(ref)) ref = bv[i]; else ref = Math.max(ref, bv[i]); if (bv[i] < ref * 0.85) dip = true; }
+  const mean = (a) => { const v = a.filter((x) => Number.isFinite(x)); return v.length ? v.reduce((s, x) => s + x, 0) / v.length : NaN; };
+  const early = (a) => a.slice(5, 150);
+  return {
+    dip, peakCl: Math.max(0, ...tr.cl), ratio: mean(early(tr.ratio)), corr: mean(early(tr.corr)),
+    bolts: tr.b.length, qLeft: tr.Q0 ? (tr.Q[Math.min(tr.Q.length - 1, 450)] ?? tr.Q.at(-1)) / tr.Q0 : NaN,
+    L0: tr.L0,
+  };
+}
+
+// ------------------------------------------------------------------ render
+const cv = document.getElementById("c"), ctx = cv.getContext("2d");
+let view = { s: 1, ox: 0, oy: 0 };
+function resize() {
+  const r = cv.getBoundingClientRect(), dpr = devicePixelRatio || 1;
+  cv.width = r.width * dpr; cv.height = r.height * dpr;
+  const s = Math.min(cv.width / (W.x1 - W.x0 + 1), cv.height / (W.y1 - W.y0 + 1));
+  view = { s, ox: cv.width / 2, oy: cv.height / 2, dpr };
+}
+addEventListener("resize", resize);
+const sx = (x) => view.ox + x * view.s, sy = (y) => view.oy - y * view.s;
+const COLORS = ["#d33", "#26f", "#e90", "#0a5", "#a3c", "#08a", "#c60", "#555"];
+
+// few, violent kinks: uneven spacing, alternating sides, no smoothing envelope
+function boltPath(x1, y1, x2, y2, jitter, segs) {
+  const dx = x2 - x1, dy = y2 - y1, l = Math.hypot(dx, dy) || 1, nx = -dy / l, ny = dx / l;
+  const ts = []; for (let k = 1; k < segs; k++) ts.push(Math.random()); ts.sort();
+  const pts = [[x1, y1]]; let side = Math.random() < 0.5 ? 1 : -1;
+  for (const tt of ts) { side = -side; const r = side * (0.4 + Math.random() * 0.6) * jitter * Math.min(l, 2); pts.push([x1 + dx * tt + nx * r, y1 + dy * tt + ny * r]); }
+  pts.push([x2, y2]); return pts;
+}
+function blade(x1, y1, x2, y2, bow, w, alpha) {
+  w = Math.min(w, P.maxW);
+  const dx = x2 - x1, dy = y2 - y1, l = Math.hypot(dx, dy) || 1e-4, nx = -dy / l, ny = dx / l;
+  const cx = (x1 + x2) / 2 + nx * bow * l, cy = (y1 + y2) / 2 + ny * bow * l;
+  const n = 18, L = [], R = [];
+  for (let k = 0; k <= n; k++) {
+    const u = k / n, a = (1 - u) * (1 - u), b = 2 * (1 - u) * u, c = u * u;
+    const px = a * x1 + b * cx + c * x2, py = a * y1 + b * cy + c * y2;
+    const tx = 2 * (1 - u) * (cx - x1) + 2 * u * (x2 - cx), ty = 2 * (1 - u) * (cy - y1) + 2 * u * (y2 - cy), tl = Math.hypot(tx, ty) || 1;
+    const hw = w * Math.min(1, u * 10) * Math.pow(1 - u, 0.8) / 2;
+    L.push([px - ty / tl * hw, py + tx / tl * hw]); R.push([px + ty / tl * hw, py - tx / tl * hw]);
+  }
+  ctx.fillStyle = `rgba(10,10,15,${alpha})`;
+  ctx.beginPath(); ctx.moveTo(sx(L[0][0]), sy(L[0][1]));
+  for (const q of L) ctx.lineTo(sx(q[0]), sy(q[1]));
+  for (let k = R.length - 1; k >= 0; k--) ctx.lineTo(sx(R[k][0]), sy(R[k][1]));
+  ctx.closePath(); ctx.fill();
+}
+function strokePts(pts) { ctx.beginPath(); ctx.moveTo(sx(pts[0][0]), sy(pts[0][1])); for (const q of pts.slice(1)) ctx.lineTo(sx(q[0]), sy(q[1])); ctx.stroke(); }
+function jag(x1, y1, x2, y2, jitter, segs) {
+  ctx.lineJoin = "miter"; ctx.miterLimit = 10; ctx.lineCap = "butt";
+  const pts = jitter <= 0 ? [[x1, y1], [x2, y2]] : boltPath(x1, y1, x2, y2, jitter, 2 + (Math.random() < 0.5 ? 1 : 0));
+  strokePts(pts);
+  // a fork snaps off one kink
+  if (pts.length > 2 && Math.random() < jitter * 2) {
+    const q = pts[1 + Math.floor(Math.random() * (pts.length - 2))], l = Math.hypot(x2 - x1, y2 - y1);
+    const an = Math.atan2(y2 - y1, x2 - x1) + (Math.random() < 0.5 ? 1 : -1) * (0.5 + Math.random() * 0.6);
+    const w = ctx.lineWidth; ctx.lineWidth = Math.max(1, w * 0.5);
+    strokePts(boltPath(q[0], q[1], q[0] + Math.cos(an) * l * 0.35, q[1] + Math.sin(an) * l * 0.35, jitter, 2));
+    ctx.lineWidth = w;
+  }
+  ctx.lineJoin = "round"; ctx.lineCap = "round";
+}
+
+function draw() {
+  ctx.fillStyle = "#fbfbf9"; ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.strokeStyle = "#111"; ctx.lineWidth = 3 * view.dpr;
+  ctx.strokeRect(sx(W.x0), sy(W.y1), (W.x1 - W.x0) * view.s, (W.y1 - W.y0) * view.s);
+  for (const box of boxes) {
+    ctx.save(); ctx.translate(sx(box.x), sy(box.y)); ctx.rotate(-box.a * Math.PI / 180);
+    const h = 0.28 * view.s; ctx.fillStyle = "#111"; ctx.fillRect(-h, -h, 2 * h, 2 * h); ctx.restore();
+  }
+  // the game's Ring fx (motion.rs): eased radius, alpha (1-u)^1.6, width thins to 40%, INK
+  impacts = impacts.filter((im) => (t - im.t) * DT < 0.3);
+  for (const im of impacts) {
+    const u = Math.max(0, (t - im.t) * DT / 0.3), e = 1 - (1 - u) ** 3;
+    const r = 0.15 + (0.55 - 0.15) * e;
+    ctx.strokeStyle = `rgba(10,10,15,${0.55 * (1 - u) ** 1.6})`;
+    ctx.lineWidth = 0.035 * (1 - 0.6 * u) * view.s;
+    if (!im.segs) { im.segs = []; let a0 = Math.random() * 6.28; const n = 1 + Math.floor(Math.random() ** 2 * 4); for (let k = 0; k < n; k++) { const len = 0.4 + Math.random() * 1.6; im.segs.push([a0, a0 + len]); a0 += len + 0.3 + Math.random() * 1.2; } }
+    for (const [g0, g1] of im.segs) { ctx.beginPath(); ctx.arc(sx(im.x), sy(im.y), r * view.s, -g1, -g0); ctx.stroke(); }
+  }
+
+  // annihilation pops
+  pops = pops.filter((q) => (t - q.t) * DT < 0.35);
+  for (const q of P.popRing ? pops : []) {
+    const a = (t - q.t) * DT / 0.35;
+    ctx.strokeStyle = `rgba(0,0,0,${0.8 * (1 - a)})`; ctx.lineWidth = 2 * view.dpr;
+    ctx.beginPath(); ctx.arc(sx(q.x), sy(q.y), (0.05 + a * 0.35) * view.s, 0, 7); ctx.stroke();
+    for (let r = 0; r < 4; r++) { const an = r * 1.57 + a; ctx.beginPath(); ctx.moveTo(sx(q.x + Math.cos(an) * a * 0.15), sy(q.y + Math.sin(an) * a * 0.15)); ctx.lineTo(sx(q.x + Math.cos(an) * (0.1 + a * 0.3)), sy(q.y + Math.sin(an) * (0.1 + a * 0.3))); ctx.stroke(); }
+  }
+  // motion streaks
+  ctx.lineCap = "round";
+  for (const p of shards) {
+    if (p.dead) continue;
+    const sp = Math.hypot(p.vx, p.vy); if (sp < 1) continue;
+    ctx.strokeStyle = `rgba(0,0,0,${Math.min(0.35, sp / 40)})`; ctx.lineWidth = 2 * view.dpr;
+    ctx.beginPath(); ctx.moveTo(sx(p.x), sy(p.y)); ctx.lineTo(sx(p.x - p.vx * 0.05), sy(p.y - p.vy * 0.05)); ctx.stroke();
+  }
+  // rave lines (Unity): straight hairlines, fresh random nearby pair every tick
+  for (const imp of new Set(shards.filter((p) => !p.dead && p.fade < 0).map((p) => p.imp))) {
+    const own = shards.filter((p) => p.imp === imp && !p.dead && p.fade < 0);
+    if (own.length < 2) continue;
+    for (const l of imp.lines) {
+      const k = t - l.born, h = l.life / 2;
+      const al = l.snap ? (k < 1 ? 1 : (1 - k / l.life) ** 0.5) : (k < h ? (k + 1) / h : (l.life - k) / h);
+      if (!l.show || !l.a || l.a.dead || l.b.dead) continue;
+      const a = l.a, b = l.b;
+      blade(a.x, a.y, b.x, b.y, l.bow, Math.max(1.5 / view.s, P.arcW * 1.6 * l.w), al * 0.85);
+    }
+  }
+  // arcs: only the capped, currently-visible ones; flicker on the beat
+  for (const k of active) {
+    const v = vis.get(k) || 0;
+    if (((Math.imul(k ^ Math.floor(t / 9), 2654435761) >>> 0) % 1000) / 1000 < P.dropout) continue;
+    if (v <= 0) continue; // flickered off this tick
+    const s0 = links.get(k) || 0;
+    const a = shards[Math.floor(k / 4096)], b = shards[k % 4096];
+    const glow = Math.min(1, 0.35 + s0 * 1.5) * v;
+    // like Unity's LineRendererManager: an endpoint re-picks a nearby shard every tick
+    let p = a, q = b;
+    if (Math.random() < P.hop) {
+      const near = shards.filter((o) => !o.dead && o.fade < 0 && o !== a && Math.hypot(o.x - a.x, o.y - a.y) < P.maxLinkDist);
+      if (near.length) q = near[Math.floor(Math.random() * near.length)];
+      if (Math.random() < 0.5) [p, q] = [q, p];
+    }
+    ctx.strokeStyle = `rgba(0,0,0,${Math.min(1, 0.15 + glow * 0.85)})`;
+    ctx.lineWidth = Math.max(0.75 * view.dpr, P.arcW * view.s * (0.7 + 0.6 * s0));
+    blade(p.x, p.y, q.x, q.y, ((k % 7) / 7 - 0.5) * 0.5 + (k % 2 ? 0.1 : -0.1), Math.max(1.5 / view.s, P.arcW * (1.1 + 0.5 * s0)), Math.min(1, 0.15 + glow * 0.75));
+  }
+  // bolts: thick forked flash
+  for (const b of bolts) {
+    const a = shards[b.a], to = b.wall || shards[b.b], al = b.life / 7;
+    ctx.strokeStyle = `rgba(0,0,0,${al})`; ctx.lineWidth = Math.max(view.dpr, P.arcW * view.s * (1 + b.w * 0.4));
+    blade(a.x, a.y, to.x, to.y, 0.15, Math.max(2 / view.s, P.arcW * 1.6), al);
+  }
+  // shards
+  const ids = [...new Set(shards.map((p) => p.cluster))];
+  for (const p of shards) {
+    if (p.dead) continue;
+    ctx.save(); ctx.translate(sx(p.x), sy(p.y)); ctx.rotate(-p.a);
+    const life = p.fade >= 0 ? 1 - p.fade / P.fadeT : 1;
+    ctx.globalAlpha = life * life;
+    const h = (p.size || 0.07) * view.s * (0.5 + 0.5 * life) * (p.gasp >= 0 ? 1 + 0.15 * Math.sin(p.gasp * 60) : 1);
+    ctx.fillStyle = "#111"; const tr = p.tri || [[-1, -0.6], [1, -0.2], [-0.3, 1]]; ctx.beginPath(); ctx.moveTo(tr[0][0] * h, tr[0][1] * h); ctx.lineTo(tr[1][0] * h, tr[1][1] * h); ctx.lineTo(tr[2][0] * h, tr[2][1] * h); ctx.closePath(); ctx.fill();
+    ctx.restore();
+    if (overlay) {
+      const size = shards.filter((s) => s.cluster === p.cluster).length;
+      if (size >= 2) { ctx.strokeStyle = COLORS[ids.indexOf(p.cluster) % COLORS.length]; ctx.lineWidth = 2 * view.dpr; ctx.beginPath(); ctx.arc(sx(p.x), sy(p.y), (0.15 + p.q * 0.3) * view.s, 0, 7); ctx.stroke(); }
+      else { ctx.strokeStyle = "rgba(0,0,0,.25)"; ctx.lineWidth = 1 * view.dpr; ctx.beginPath(); ctx.arc(sx(p.x), sy(p.y), (0.1 + p.q * 0.3) * view.s, 0, 7); ctx.stroke(); }
+      ctx.strokeStyle = "rgba(0,120,60,.6)"; ctx.beginPath(); ctx.moveTo(sx(p.x), sy(p.y)); ctx.lineTo(sx(p.x + p.vx * 0.08), sy(p.y + p.vy * 0.08)); ctx.stroke();
+    }
+  }
+  if (overlay && shards.length) {
+    const c = com(), r = rg();
+    ctx.strokeStyle = "rgba(0,0,0,.2)"; ctx.setLineDash([4, 4]); ctx.beginPath(); ctx.arc(sx(c.x), sy(c.y), r * view.s, 0, 7); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = "#111"; ctx.fillRect(sx(c.x) - 3, sy(c.y) - 3, 6, 6);
+  }
+  ctx.fillStyle = "#666"; ctx.font = `${11 * view.dpr}px ui-monospace`;
+  ctx.fillText(`t = ${(t * DT).toFixed(2)}s  seed ${seed}${paused ? "  [paused]" : ""}${slow ? "  [slow-mo]" : ""}`, 12 * view.dpr, cv.height - 12 * view.dpr);
+}
+
+function plot(id, series, colors) {
+  const c = document.getElementById(id), g = c.getContext("2d"), dpr = devicePixelRatio || 1;
+  c.width = c.clientWidth * dpr; c.height = c.clientHeight * dpr;
+  g.clearRect(0, 0, c.width, c.height);
+  const n = 500;
+  series.forEach((s, k) => {
+    const max = Math.max(1e-6, ...s);
+    g.strokeStyle = colors[k]; g.lineWidth = 1.2 * dpr; g.beginPath();
+    s.slice(0, n).forEach((v, i) => { const x = (i / n) * c.width, y = c.height - (v / max) * (c.height - 4) - 2; i ? g.lineTo(x, y) : g.moveTo(x, y); });
+    g.stroke();
+  });
+}
+function plotEvents(id, ticks) {
+  const c = document.getElementById(id), g = c.getContext("2d"), dpr = devicePixelRatio || 1;
+  c.width = c.clientWidth * dpr; c.height = c.clientHeight * dpr; g.clearRect(0, 0, c.width, c.height);
+  g.fillStyle = "#111"; const t0 = trace && trace.Rg.length ? t - trace.Rg.length : 0;
+  ticks.forEach((tk) => g.fillRect(((tk - t0) / 500) * c.width, 4, 2 * dpr, c.height - 8));
+}
+function metricsPanel() {
+  if (!trace || !trace.Rg.length) return;
+  const s = summarize(trace), f = (x, d = 2) => (Number.isFinite(x) ? x.toFixed(d) : "—");
+  const ok = (b) => (b ? "✓" : "·");
+  document.getElementById("metrics").innerHTML = [
+    ["E₀ (energy)", f(trace.E0, 0)], ["Q₀ (charge)", f(trace.Q0)], ["L₀ (curl)", f(trace.L0)],
+    [`${ok(s.dip)} clusters contract`, s.dip ? "yes" : "no"],
+    ["peak clusters", s.peakCl],
+    [`${ok(s.ratio < 0.3)} bonded/unbonded rel-vel`, f(s.ratio)],
+    [`${ok(s.corr < -0.1)} link→closing r`, f(s.corr)],
+    ["bolts", s.bolts], ["alive now", live().length + " / " + N],
+    ["median spread (boxes)", (median(shards.map((p) => p.spread || 0)) / 0.56).toFixed(1)],
+    ["max spread (boxes)", (Math.max(0, ...shards.map((p) => p.spread || 0)) / 0.56).toFixed(1)], [`${ok(s.qLeft < 0.05)} Q left @9s`, f(s.qLeft)],
+  ].map(([k, v]) => `<div><span>${k}</span><b>${v}</b></div>`).join("");
+  plot("p-rg", [trace.bond || [], trace.Rg], ["#111", "#aaa"]);
+  plot("p-cl", [trace.cl, trace.ln], ["#111", "#aaa"]);
+  plot("p-q", [trace.Q, trace.E], ["#111", "#aaa"]);
+  plotEvents("p-b", trace.b);
+}
+
+// headless sweep: 100 seeded shatters with current settings
+function sweep() {
+  const res = [];
+  for (let s = 1; s <= 100; s++) {
+    throwBox({ x: 6, y: (s % 7) - 3 }, 1000 + s);
+    for (let i = 0; i < 520; i++) step();
+    res.push(summarize(trace));
+  }
+  const frac = (f) => (res.filter(f).length / res.length * 100).toFixed(0) + "%";
+  const mean = (k) => { const v = res.map((r) => r[k]).filter(Number.isFinite); return (v.reduce((a, b) => a + b, 0) / v.length).toFixed(2); };
+  document.getElementById("sweep").innerHTML = `<h2>Sweep (100 seeds)</h2>
+    <div>clusters contract: <b>${frac((r) => r.dip)}</b> (target ≥70%)</div>
+    <div>bonded/unbonded rel-vel: <b>${mean("ratio")}</b> (target &lt;0.3)</div>
+    <div>link→closing r: <b>${mean("corr")}</b> (target clearly &lt;0)</div>
+    <div>bolts/shatter: <b>${mean("bolts")}</b> · peak clusters: <b>${mean("peakCl")}</b></div>
+    <div>Q left @9s: <b>${mean("qLeft")}</b> (target &lt;0.05)</div>`;
+  window.__lab.lastSweep = res;
+}
+
+// ------------------------------------------------------------------ ui
+const toWorld = (e) => { const r = cv.getBoundingClientRect(), d = devicePixelRatio || 1; return { x: ((e.clientX - r.left) * d - view.ox) / view.s, y: -((e.clientY - r.top) * d - view.oy) / view.s }; };
+cv.addEventListener("click", (e) => throwBox(toWorld(e), Math.floor(Math.random() * 1e6), true));
+const btn = (id, f) => (document.getElementById(id).onclick = f);
+btn("b-throw", () => throwBox({ x: 6 + Math.random() * 2, y: (Math.random() - 0.5) * 6 }, Math.floor(Math.random() * 1e6)));
+btn("b-replay", () => last && throwBox(last.target, last.seed));
+btn("b-pause", (e) => { paused = !paused; e.target.classList.toggle("on", paused); });
+btn("b-step", () => (stepOnce = true));
+btn("b-slow", (e) => { slow = !slow; e.target.classList.toggle("on", slow); });
+btn("b-overlay", (e) => { overlay = !overlay; e.target.classList.toggle("on", overlay); });
+btn("b-sweep", sweep);
+addEventListener("keydown", (e) => { if (e.code === "Space") { e.preventDefault(); last && throwBox(last.target, last.seed); } if (e.key === ".") stepOnce = true; });
+
+let acc = 0, lastT = performance.now(), frame = 0;
+function loop(now) {
+  acc += Math.min(0.1, (now - lastT) / 1000) * (slow ? 0.2 : 1); lastT = now;
+  if (!paused) while (acc >= DT) { step(); acc -= DT; }
+  else if (stepOnce) { step(); stepOnce = false; }
+  draw();
+  if (frame++ % 6 === 0) metricsPanel();
+  requestAnimationFrame(loop);
+}
+window.__lab = { P, get trace() { return trace; }, get shards() { return shards; }, get impact() { return impact; }, summarize, sweep, throwBox, step };
+resize(); throwBox({ x: 7, y: 1.5 }, 1); requestAnimationFrame(loop);
+</script>
+</body>
+</html>
