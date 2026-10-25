@@ -3,6 +3,7 @@
 //! (web/main.js) feeds input, calls `frame()` at 50 Hz and draws `render()`.
 
 pub mod game;
+pub mod motion;
 pub mod physics;
 pub mod render;
 pub mod scene;
@@ -179,6 +180,12 @@ impl Engine {
     }
 
     /// Build draw records; returns their f32 count (read via records_ptr).
+    /// How far (0..1 of a tick) the host is past the last fixed step, so
+    /// motion graphics draw between ticks.
+    pub fn set_subtick(&mut self, a: f32) {
+        self.game.motion.render_now = self.game.motion.now + a.clamp(0.0, 1.0) * crate::game::DT;
+    }
+
     pub fn render(&mut self) -> usize {
         let mut out = std::mem::take(&mut self.records);
         self.game.render(&mut out);

@@ -261,17 +261,32 @@ class Renderer {
         const lines = t[0].replace(/\n+$/, "").split("\n");
         const lh = at.px * 1.15 * k, total = lh * lines.length;
         const c = cmd("text", at.group); const f = vc;
+        // motion: letters write themselves in (reveal 0..1), then hum; a rare
+        // glitch jolts a few letters sideways for a moment
+        const reveal = rec[o + 18], hid = rec[o + 19], T = performance.now() / 1000;
+        const N = lines.reduce((a, l) => a + l.length, 0) || 1;
+        const glitch = hash32((Math.floor(T * 12) * 2654435761) ^ (hid * 40503)) % 160 === 0 ? hash32(hid + Math.floor(T * 12)) : 0;
+        let gi = 0;
         lines.forEach((line, li) => {
           const width = at.measure(line) * k + spacing * Math.max(0, line.length - 1);
           let x = (rw - width) * align[0];
           const top = rh - (rh - total) * (1 - align[1]) - li * lh; // baseline-ish placement from the rect bottom
           const y0 = top - lh;
-          for (let ci = 0; ci < line.length; ci++) {
-            const g = at.glyphs.get(line.charCodeAt(ci)) || at.glyphs.get(63);
-            const px0 = x + (at.measure(line.slice(0, ci)) - 3) * k + spacing * ci, gw = g.pw * k, gh = at.lineH * k;
+          for (let ci = 0; ci < line.length; ci++, gi++) {
+            const lp = reveal >= 1 ? 1 : Math.min(1, Math.max(0, (reveal * (N + 6) - gi) / 6));
+            if (lp <= 0) continue;
+            let code = line.charCodeAt(ci);
+            // still forming: the letter flickers through others before it settles
+            if (lp < 0.85 && code !== 32) { const h = hash32(gi * 7919 + Math.floor(T * 40)); code = line.charCodeAt(h % line.length) || code; if (code === 32) code = line.charCodeAt(ci); }
+            const g = at.glyphs.get(code) || at.glyphs.get(63);
+            const gh = at.lineH * k, gw = g.pw * k;
+            let px0 = x + (at.measure(line.slice(0, ci)) - 3) * k + spacing * ci;
+            let hum = Math.sin(T * 2.3 + gi * 0.9 + hid) * 0.012 * gh - (1 - lp) * (1 - lp) * 0.45 * gh;
+            if (glitch && (gi + glitch) % 3 === 0) { px0 += ((glitch >> 4) % 2 ? 1 : -1) * 0.07 * gh; hum += 0.03 * gh; }
+            const lc = lp < 1 ? [color[0], color[1], color[2], color[3] * lp] : color;
             const pt = (sx, sy) => [P[0][0] + ux[0] * sx + uy[0] * sy, P[0][1] + ux[1] * sx + uy[1] * sy, P[0][2] + ux[2] * sx + uy[2] * sy];
-            const yb = y0 + (lh - gh);
-            quadV([pt(px0, yb), pt(px0 + gw, yb), pt(px0 + gw, yb + gh), pt(px0, yb + gh)], [g.u, 1 - g.v - g.h, g.u + g.w, 1 - g.v], color);
+            const yb = y0 + (lh - gh) + hum;
+            quadV([pt(px0, yb), pt(px0 + gw, yb), pt(px0 + gw, yb + gh), pt(px0, yb + gh)], [g.u, 1 - g.v - g.h, g.u + g.w, 1 - g.v], lc);
           }
           x += 0;
         });
@@ -343,6 +358,7 @@ const dashPlayer = (e) => {
   if (e.key === "Shift") return e.location === 2 ? 1 : 0; // keyboards without a left/right code
   return -1;
 };
+const hash32 = (x) => { x |= 0; x ^= x >>> 16; x = Math.imul(x, 0x7feb352d); x ^= x >>> 15; x = Math.imul(x, 0x846ca68b); return (x ^ (x >>> 16)) >>> 0; };
 const desktop = true; // desktop edition: keyboard, mouse and controllers only
 const axis = (up, left, down, right) => {
   const x = (keys.has(right) ? 1 : 0) - (keys.has(left) ? 1 : 0), y = (keys.has(up) ? 1 : 0) - (keys.has(down) ? 1 : 0);
@@ -433,7 +449,7 @@ async function main() {
     // Esc releases the lock (the browser eats that keydown): treat it as pause
     if (locked && !now && inPlay()) engine.toggle_pause();
     locked = now;
-    canvas.style.cursor = locked ? "none" : "crosshair";
+    canvas.style.cursor = "none";
   });
   const up = (e) => { if (e.button === 0) mouseHeld = false; if (!locked) ptr(2)(e); };
   canvas.addEventListener("pointerup", up);
@@ -441,7 +457,8 @@ async function main() {
   canvas.addEventListener("pointerleave", () => engine.cursor(-1, -1));
   canvas.addEventListener("contextmenu", (e) => e.preventDefault());
   engine.set_desktop(desktop);
-  if (desktop) canvas.style.cursor = "crosshair";
+  // the engine draws the cursor (a spark); the system one would double it
+  if (desktop) canvas.style.cursor = "none";
   addEventListener("keydown", (e) => {
     audio?.unlock();
     if (e.metaKey || e.ctrlKey) return;
@@ -469,6 +486,7 @@ async function main() {
     }
     const p = engine.take_prefs(); if (p) savePrefs(p);
     if (nb.ticks !== textsAt) { texts = JSON.parse(engine.texts()); textsAt = nb.ticks; }
+    engine.set_subtick(acc / TICK);
     const len = engine.render();
     r.draw(new Float32Array(wasm.memory.buffer, engine.records_ptr(), len), texts, family, cssW(), cssH());
     frames++;

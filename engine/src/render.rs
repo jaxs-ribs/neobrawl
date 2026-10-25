@@ -18,7 +18,7 @@ struct Item {
     rec: [f32; RECORD],
 }
 
-fn quad(tex: f32, p: [V3; 4], uv: [f32; 4], color: [f32; 4]) -> [f32; RECORD] {
+pub(crate) fn quad(tex: f32, p: [V3; 4], uv: [f32; 4], color: [f32; 4]) -> [f32; RECORD] {
     let mut r = [0.0; RECORD];
     r[0] = 2.0;
     r[1] = tex;
@@ -87,14 +87,22 @@ impl Game {
                 if let Some(s) = n.sprite.as_ref().filter(|s| s.enabled && s.color[3] > 0.0) {
                     if let Some(sp) = s.sprite.map(|k| &w.sprites[k]) {
                         let q = sp.quad;
-                        let p = [m.point(v3(q[0], q[1], 0.0)), m.point(v3(q[2], q[1], 0.0)), m.point(v3(q[2], q[3], 0.0)), m.point(v3(q[0], q[3], 0.0))];
+                        let mut p = [m.point(v3(q[0], q[1], 0.0)), m.point(v3(q[2], q[1], 0.0)), m.point(v3(q[2], q[3], 0.0)), m.point(v3(q[0], q[3], 0.0))];
                         let uv = [sp.uv[0], sp.uv[1], sp.uv[0] + sp.uv[2], sp.uv[1] + sp.uv[3]];
                         let center = m.point(V3::ZERO);
+                        let mut color = s.color;
+                        if let Some((k, a, _)) = self.form_of(i) {
+                            if a <= 0.0 {
+                                continue;
+                            }
+                            p = p.map(|q| center + (q - center) * k);
+                            color[3] *= a;
+                        }
                         let (seq, d) = match ui {
                             Some(_) => (ui_seq.get(&i).copied().unwrap_or(0), dist(center)),
                             None => (i, dist(center)),
                         };
-                        items.push(Item { order: s.order, dist: d, seq, rec: quad(sp.tex as f32, p, uv, s.color) });
+                        items.push(Item { order: s.order, dist: d, seq, rec: quad(sp.tex as f32, p, uv, color) });
                     }
                 }
                 if let Some(l) = n.line.as_ref().filter(|l| l.enabled && l.points.len() >= 2 && l.colors[0][3] > 0.0) {
@@ -192,7 +200,6 @@ impl Game {
                             let to = v3(cw.x - pos.x, cw.y - pos.y, 0.0);
                             let len = (to.x * to.x + to.y * to.y).sqrt();
                             if len > 0.35 {
-                                let a = to * (1.0 / len);
                                 let mark = v3(cw.x, cw.y, pos.z);
                                 let rad = if ctl.aiming { 0.17 } else { 0.13 };
                                 let mut c = color;
@@ -266,6 +273,10 @@ impl Game {
                     }
                 }
             }
+            // motion graphics in the world
+            let tx = crate::motion::Tex { disc, soft, ring };
+            self.motion.emit(false, &tx, |p| dist(p), |rec, d| items.push(Item { order: 6, dist: d, seq: 0, rec }));
+            self.filament(|p| dist(p), |rec, d| items.push(Item { order: 5, dist: d, seq: 0, rec }), soft);
             items.sort_by(|a, b| a.order.cmp(&b.order).then(b.dist.partial_cmp(&a.dist).unwrap_or(std::cmp::Ordering::Equal)).then(a.seq.cmp(&b.seq)));
             for it in items {
                 out.extend_from_slice(&it.rec);
@@ -289,10 +300,17 @@ impl Game {
                 self.ui_items(i, corners, &m, |rec| out.extend_from_slice(&rec));
             }
         }
+        let tx = crate::motion::Tex { disc: tex_named(w, "BlobBW.png"), soft: tex_named(w, "BlobBWShadow.png"), ring: tex_named(w, "Outer.png") };
+        self.motion.emit(true, &tx, |_| 0.0, |rec, _| out.extend_from_slice(&rec));
+        self.cursor_spark(&tx, |rec| out.extend_from_slice(&rec));
     }
 
     fn ui_items(&self, i: usize, c: [V3; 4], m: &Mat4, mut push: impl FnMut([f32; RECORD])) {
         let n = &self.w.nodes[i];
+        let form = self.form_of(i);
+        if form.map(|f| f.1 <= 0.0).unwrap_or(false) {
+            return;
+        }
         if let Some(img) = n.image.as_ref().filter(|g| g.enabled && g.color[3] * g.tint[3] > 0.0) {
             let color = [img.color[0] * img.tint[0], img.color[1] * img.tint[1], img.color[2] * img.tint[2], img.color[3] * img.tint[3]];
             let (tex, mut uv) = match img.sprite.map(|k| &self.w.sprites[k]) {
@@ -300,6 +318,12 @@ impl Game {
                 None => (-1.0, [0.0, 0.0, 1.0, 1.0]),
             };
             let mut p = c;
+            let mut color = color;
+            if let Some((k, a, _)) = form {
+                let mid = (c[0] + c[1] + c[2] + c[3]) * 0.25;
+                p = p.map(|q| mid + (q - mid) * k);
+                color[3] *= a;
+            }
             if img.kind == 3 {
                 // Filled: shrink along x (horizontal) or y (vertical); radial fills shrink in x too
                 let f = img.fill.clamp(0.0, 1.0);
@@ -332,6 +356,9 @@ impl Game {
             }
             r[16] = t.style as f32;
             r[17] = t.spacing * t.size / 100.0 * unit;
+            // letters write themselves in (reveal), then hum
+            r[18] = form.map(|f| f.2).unwrap_or(1.0);
+            r[19] = 1.0 + i as f32;
             r[20..24].copy_from_slice(&[t.color[0] * t.tint[0], t.color[1] * t.tint[1], t.color[2] * t.tint[2], t.color[3] * t.tint[3]]);
             push(r);
         }
@@ -340,7 +367,7 @@ impl Game {
 
 
 /// A jagged lightning polyline from a to b (deterministic for a given seed).
-fn arc_points(a: V3, b: V3, segments: usize, jitter: f32, mut seed: u32) -> Vec<V3> {
+pub(crate) fn arc_points(a: V3, b: V3, segments: usize, jitter: f32, mut seed: u32) -> Vec<V3> {
     let d = b - a;
     let len = (d.x * d.x + d.y * d.y).sqrt().max(1e-6);
     let nrm = v3(-d.y / len, d.x / len, 0.0);
@@ -358,7 +385,7 @@ fn arc_points(a: V3, b: V3, segments: usize, jitter: f32, mut seed: u32) -> Vec<
 }
 
 /// Constant-width ribbon along a polyline.
-fn ribbon(pts: &[V3], width: f32, color: [f32; 4], tex: f32, mut push: impl FnMut([f32; RECORD])) {
+pub(crate) fn ribbon(pts: &[V3], width: f32, color: [f32; 4], tex: f32, mut push: impl FnMut([f32; RECORD])) {
     for k in 0..pts.len() - 1 {
         ribbon_tapered(&pts[k..k + 2], [width, width], color, tex, &mut push);
     }
@@ -366,7 +393,7 @@ fn ribbon(pts: &[V3], width: f32, color: [f32; 4], tex: f32, mut push: impl FnMu
 
 /// One ribbon segment with per-end widths; v runs across the ribbon so a soft
 /// radial texture sampled at u = 0.5 gives feathered edges.
-fn ribbon_tapered(seg: &[V3], width: [f32; 2], color: [f32; 4], tex: f32, mut push: impl FnMut([f32; RECORD])) {
+pub(crate) fn ribbon_tapered(seg: &[V3], width: [f32; 2], color: [f32; 4], tex: f32, mut push: impl FnMut([f32; RECORD])) {
     let (a, b) = (seg[0], seg[1]);
     let d = b - a;
     let len = (d.x * d.x + d.y * d.y).sqrt();
@@ -404,4 +431,106 @@ fn catmull_rom(p: &[V3], steps: usize) -> Vec<V3> {
 
 fn tex_named(w: &crate::scene::World, file: &str) -> f32 {
     w.textures.iter().position(|t| t.1.ends_with(file)).map(|t| t as f32).unwrap_or(-1.0)
+}
+
+impl Game {
+    fn form_of(&self, i: usize) -> Option<(f32, f32, f32)> {
+        self.motion.form(i)
+    }
+
+    /// The tension between rival souls: an almost invisible filament that
+    /// tightens and crackles as they close in, charge, or aim at each other.
+    fn filament(&self, dist: impl Fn(V3) -> f32, mut push: impl FnMut([f32; RECORD], f32), soft: f32) {
+        let alive: Vec<usize> = (0..self.players.len())
+            .filter(|&k| !self.players[k].playback && self.w.active_in_hierarchy(self.players[k].node) && self.w.position(self.players[k].node).x != -666.0 && !self.players[k].single)
+            .collect();
+        for x in 0..alive.len() {
+            for y in x + 1..alive.len() {
+                let (pa, pb) = (&self.players[alive[x]], &self.players[alive[y]]);
+                let (a, b) = (self.w.position(pa.node), self.w.position(pb.node));
+                let d = ((a.x - b.x).powi(2) + (a.y - b.y).powi(2)).sqrt();
+                let near = ((10.0 - d) / 8.0).clamp(0.0, 1.0);
+                let charge = ((pa.charge_timer + pb.charge_timer) / 120.0).clamp(0.0, 1.0);
+                // does either aim line rest on the other?
+                let lock = [(pa, b - a), (pb, a - b)]
+                    .iter()
+                    .map(|(p, to)| {
+                        let l = (to.x * to.x + to.y * to.y).sqrt().max(1e-3);
+                        let dot = (p.touch[1].x * to.x + p.touch[1].y * to.y) / l;
+                        ((dot - 0.96) / 0.04).clamp(0.0, 1.0)
+                    })
+                    .fold(0.0f32, f32::max);
+                let tension = (0.55 * near * near + 0.35 * charge + 0.5 * lock).min(1.0);
+                if tension < 0.04 {
+                    continue;
+                }
+                let flick = (self.motion.render_now * 24.0) as u32;
+                // it only shows in flickers, more often the tighter it is
+                if crate::motion::hash(flick ^ 0x51ed) % 100 > (25.0 + 75.0 * tension) as u32 {
+                    continue;
+                }
+                let segs = ((d / 0.5) as usize).clamp(6, 40);
+                let pts = arc_points(a, b, segs, 0.04 + 0.12 * tension, flick.wrapping_mul(747796405));
+                let mid = dist((a + b) * 0.5);
+                let alpha = 0.03 + 0.32 * tension * tension;
+                ribbon(&pts, 0.09 + 0.1 * tension, [0.0, 0.0, 0.0, alpha * 0.25], soft, |rec| push(rec, mid));
+                ribbon(&pts, 0.008 + 0.014 * tension, [0.03, 0.03, 0.06, alpha], -1.0, |rec| push(rec, mid - 0.001));
+            }
+        }
+    }
+
+    /// The cursor is a small spark with a tail; over a button it is tethered
+    /// to it by a live arc.
+    fn cursor_spark(&self, tx: &crate::motion::Tex, mut push: impl FnMut([f32; RECORD])) {
+        let Some(c) = self.input.cursor else { return };
+        if c[0] < 0.0 {
+            return;
+        }
+        let now = self.motion.render_now;
+        let ink = [0.04, 0.04, 0.06, 0.9];
+        let tip = v3(c[0], c[1], 0.0);
+        let trail: Vec<V3> = self.motion.cursor_trail.iter().map(|p| v3(p[0], p[1], 0.0)).chain(std::iter::once(tip)).collect();
+        for k in 1..trail.len() {
+            let f0 = (k - 1) as f32 / trail.len() as f32;
+            let f1 = k as f32 / trail.len() as f32;
+            let mut col = ink;
+            col[3] = 0.5 * f1;
+            ribbon_tapered(&trail[k - 1..=k], [2.6 * f0, 2.6 * f1], col, -1.0, &mut push);
+        }
+        let breathe = 1.0 + 0.15 * (now * 5.0).sin();
+        let sz = 3.4 * breathe;
+        if tx.disc >= 0.0 {
+            push(quad(tx.disc, [tip + v3(-sz, -sz, 0.0), tip + v3(sz, -sz, 0.0), tip + v3(sz, sz, 0.0), tip + v3(-sz, sz, 0.0)], [0.0, 0.0, 1.0, 1.0], ink));
+        }
+        let flick = (now * 30.0) as u32;
+        // two tiny crackles around the tip
+        for j in 0..2u32 {
+            let s = crate::motion::hash(flick ^ (j * 911));
+            if s % 3 == 0 {
+                continue;
+            }
+            let a = (s % 628) as f32 / 100.0;
+            let end = tip + v3(a.cos(), a.sin(), 0.0) * 11.0;
+            let pts = arc_points(tip, end, 4, 0.45, s);
+            let mut col = ink;
+            col[3] = 0.6;
+            ribbon(&pts, 1.0, col, -1.0, &mut push);
+        }
+        if let Some(b) = self.motion.hover {
+            if let Some(q) = self.ui_screen_quad(b) {
+                let mid = v3((q[0][0] + q[2][0]) / 2.0, (q[0][1] + q[2][1]) / 2.0, 0.0);
+                // land on the button's edge, not its middle
+                let (hw, hh) = (((q[1][0] - q[0][0]) / 2.0).abs(), ((q[3][1] - q[0][1]) / 2.0).abs());
+                let d = tip - mid;
+                let k = 1.0 / ((d.x.abs() / hw.max(1.0)).max(d.y.abs() / hh.max(1.0))).max(1.0);
+                let land = mid + d * k;
+                let s = crate::motion::hash(flick ^ 0xabc);
+                let pts = arc_points(tip, land, 7, 0.22, s);
+                let since = (now - self.motion.hover_since).max(0.0);
+                let mut col = ink;
+                col[3] = 0.35 + 0.25 * (since * 9.0).sin().abs();
+                ribbon(&pts, 1.2, col, -1.0, &mut push);
+            }
+        }
+    }
 }

@@ -125,7 +125,9 @@ impl Game {
         let pos = self.w.position(n);
         let clip = self.menu.explosion.clone();
         self.play(&clip, 5.0 / 5.0);
-        let _ = pos;
+        if self.w.nodes[other].layer != crate::physics::LAYER_PLAYER {
+            self.fx_impact(pos, normal);
+        }
         let prev = self.boxes[b].prev_vel;
         let other_tag = self.w.nodes[other].tag.clone();
         let other_layer = self.w.nodes[other].layer;
@@ -213,6 +215,7 @@ impl Game {
             body.velocity = V3::ZERO;
         }
         self.switch_to_debris(b, false);
+        self.fx_box_back(n);
         for k in 0..self.boxes[b].debris.len() {
             let d = self.boxes[b].debris[k];
             self.w.nodes[d].lpos = self.boxes[b].debris_pos[k];

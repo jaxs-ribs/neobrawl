@@ -163,6 +163,7 @@ impl Game {
             self.deaths.iter().position(|d| d.node == mc)
         });
         let Some(d) = dm else { return };
+        self.fx_kill(player, killer);
         self.attach_camera(d, false);
         // showScore
         if self.deaths[d].double {
@@ -217,6 +218,7 @@ impl Game {
                 self.phys.forget(player);
             }
         }
+        self.fx_respawn(player);
         self.attach_camera(d, true);
     }
 
@@ -403,14 +405,22 @@ impl Game {
                 let (hx, hy) = ((pa.x - pb.x).abs() / 2.0, (pa.y - pb.y).abs() / 2.0);
                 let margin = 2.2 + 0.18 * hx.max(hy);
                 let half_h = (hy + margin).max((hx + margin) / aspect);
-                let dist = (half_h / t).max(5.75);
+                // holding breath: in a lull, or while someone charges, the
+                // camera leans in a little; any action lets it go
+                let idle = ((self.motion.now - self.motion.last_action - 1.2) / 2.5).clamp(0.0, 1.0);
+                let charge = self.players.iter().map(|p| (p.charge_timer / 90.0).clamp(0.0, 1.0)).fold(0.0f32, f32::max);
+                let want_breath = 1.0 - 0.05 * idle - 0.05 * charge;
+                let rate = if want_breath > self.motion.breath { 0.25 } else { 0.02 };
+                self.motion.breath = if self.motion.breath == 0.0 { 1.0 } else { self.motion.breath + (want_breath - self.motion.breath) * rate };
+                let dist = (half_h / t).max(5.75) * self.motion.breath;
                 let mid = (pa + pb) * 0.5;
                 let want = v3(mid.x - off.x, mid.y - off.y, mid.z - dist - off.z);
                 // exponential follow: quick to widen, slow to settle back in
                 let dt = 0.02;
                 let k_xy = 1.0 - (-dt / 0.12f32).exp();
                 let k_z = 1.0 - (-dt / if want.z < cur.z { 0.1f32 } else { 0.6 }).exp();
-                v3(cur.x + (want.x - cur.x) * k_xy, cur.y + (want.y - cur.y) * k_xy, cur.z + (want.z - cur.z) * k_z)
+                let kick = self.motion.kick;
+                v3(cur.x + (want.x - cur.x) * k_xy + kick.x, cur.y + (want.y - cur.y) * k_xy + kick.y, cur.z + (want.z - cur.z) * k_z)
             } else if pa.x == -666.0 {
                 v3(mt(cur.x, pb.x, 0.03), mt(cur.y, pb.y, 0.3), mt(cur.z, pb.z - 8.0, 0.05))
             } else {

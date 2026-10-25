@@ -204,6 +204,7 @@ impl Game {
                 }
                 self.w.set_active(prev, false);
                 self.w.set_active(new, true);
+                self.fx_form_subtree(new);
                 self.tasks.push(WhiteFade { dir: -1, i: 0 });
                 None
             }

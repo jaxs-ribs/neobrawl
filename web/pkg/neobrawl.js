@@ -207,6 +207,14 @@ export class Engine {
     }
     /**
      * Build draw records; returns their f32 count (read via records_ptr).
+     * How far (0..1 of a tick) the host is past the last fixed step, so
+     * motion graphics draw between ticks.
+     * @param {number} a
+     */
+    set_subtick(a) {
+        wasm.engine_set_subtick(this.__wbg_ptr, a);
+    }
+    /**
      * @returns {number}
      */
     render() {

@@ -256,8 +256,10 @@ impl Game {
         // dash on the press edge, if off cooldown and alive
         let pressed = ctl.active && ctl.dash && !p.dash_held;
         p.dash_held = ctl.active && ctl.dash;
+        let mut ready = false;
         if p.dash_cd > 0 {
             p.dash_cd -= 1;
+            ready = p.dash_cd == 0;
         }
         if p.dash_t > 0 {
             p.dash_t -= 1;
@@ -287,6 +289,11 @@ impl Game {
         if dashed && self.w.position(node).x != -666.0 {
             let clip = self.menu.dash_clip.clone();
             self.play(&clip, 0.8);
+            let dir = self.players[k].dash_dir;
+            self.fx_dash(k, dir);
+        }
+        if ready {
+            self.fx_dash_ready(k);
         }
         let p = &mut self.players[k];
         p.touch[1] = match aim {
@@ -661,6 +668,12 @@ impl Game {
             self.boxes[bi].carried_by = Some(node);
         }
         self.phys.set_ignore(b, node, true);
+        // pick-swing: grabbing a box refills the dash
+        let reset = self.input.desktop && self.players[k].dash_cd > 0;
+        if reset {
+            self.players[k].dash_cd = 0;
+        }
+        self.fx_pickup(k, b, reset);
     }
 
     #[doc(hidden)]
@@ -710,6 +723,7 @@ impl Game {
             body.velocity = body.velocity + v3(angle.x * power, angle.y * power, 0.0);
         }
         self.tasks.push(Task::ThrowRotation { node: b, i: 0, n: (power / 3.0).ceil() as i32 });
+        self.fx_throw(k, angle, power);
         self.tasks.push(Task::Unignore { a: b, b: node, wait: ticks(0.5) });
         if let Some(&bi) = self.box_of.get(&b) {
             self.boxes[bi].being_thrown_pickup = true;

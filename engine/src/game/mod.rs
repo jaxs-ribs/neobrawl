@@ -3,6 +3,7 @@
 //! methods on `Game`; coroutines become `Task`s stepped once per FixedUpdate.
 
 mod boxes;
+mod fx;
 mod matchplay;
 mod menu;
 mod players;
@@ -168,6 +169,7 @@ pub struct Game {
     /// script components whose Start() already ran
     pub started: std::collections::HashSet<(usize, &'static str)>,
     pub was_active: HashMap<usize, bool>,
+    pub motion: crate::motion::Motion,
 }
 
 pub fn field<'a>(w: &'a World, node: usize, script: &str, name: &str) -> &'a Value {
@@ -219,6 +221,7 @@ impl Game {
             pressed: HashMap::new(),
             started: Default::default(),
             was_active: HashMap::new(),
+            motion: Default::default(),
         };
         for i in 0..g.w.nodes.len() {
             if let Some(clip) = g.w.nodes[i].audio.clone() {
@@ -239,6 +242,12 @@ impl Game {
 
     /// One Unity frame at the fixed 50 Hz step.
     pub fn frame(&mut self) {
+        if self.motion.hitstop > 0 {
+            // the world holds still for a beat; only the motion graphics move
+            self.motion.hitstop -= 1;
+            self.fx_step();
+            return;
+        }
         self.frame += 1;
         self.run_enables();
         self.fixed_update();
@@ -248,6 +257,7 @@ impl Game {
         self.update();
         self.relayout();
         self.ui_events();
+        self.fx_step();
     }
 
     pub fn play(&mut self, clip: &str, volume: f32) {
@@ -447,6 +457,7 @@ impl Game {
         for t in touches {
             match t.phase {
                 Phase::Began => {
+                    self.fx_click(t.x, t.y);
                     if let Some(b) = self.button_at(t.x, t.y) {
                         self.pressed.insert(t.id, b);
                     }
@@ -456,6 +467,7 @@ impl Game {
                     if self.button_at(t.x, t.y) != Some(b) {
                         continue;
                     }
+                    self.fx_button(b);
                     for c in self.w.nodes[b].button.clone() {
                         let name = c.arg.map(|a| self.w.nodes[a].name.clone()).unwrap_or_default();
                         let Some(target) = c.target else { continue };

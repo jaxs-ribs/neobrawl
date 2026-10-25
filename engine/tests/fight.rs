@@ -233,6 +233,11 @@ fn shift_dash_bursts_then_cools_down() {
     // walking 7 ticks covers ~1 unit; the dash adds ~2.9
     assert!(moved > 2.4, "dash distance {moved}");
     let k = e.game().player_of[&p1];
+    if e.game().players[k].picked_box.is_some() {
+        // dashed into a box: picking it up refills the dash (pick-swing)
+        assert_eq!(e.game().players[k].dash_cd, 0, "pickup refills the dash");
+        return;
+    }
     assert!(e.game().players[k].dash_cd > 0, "cooldown running");
     // pressing again during cooldown does nothing
     e.dash(0, true);
@@ -263,4 +268,21 @@ fn orbit_aim_throws_along_the_reticle_regardless_of_camera() {
     e.frame();
     let v = e.game().w.nodes[b].body.as_ref().unwrap().velocity;
     assert!(v.y > 15.0 && v.x.abs() < 1.0, "thrown straight up: {v:?}");
+}
+
+#[test]
+fn picking_up_a_box_refills_the_dash() {
+    let mut e = start_match(6);
+    e.set_desktop(true);
+    let (p1, _) = player_nodes(&e);
+    let k = e.game().player_of[&p1];
+    let b = {
+        let g = e.game();
+        g.boxes.iter().find(|b| g.w.active_in_hierarchy(b.node)).unwrap().node
+    };
+    e.game_mut().players[k].dash_cd = 40;
+    e.game_mut().pick_box_up_pub(k, b);
+    assert_eq!(e.game().players[k].dash_cd, 0);
+    // and the moment is drawn
+    assert!(!e.game().motion.fx.is_empty(), "pickup leaves motion graphics");
 }
