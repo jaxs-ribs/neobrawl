@@ -98,7 +98,7 @@ impl Engine {
     /// AI temperament for a slot: 0 wanders, 1-3 fights (easy, normal, hard).
     pub fn set_ai_level(&mut self, slot: usize, level: u8) {
         if let Some(a) = self.game.ai.get_mut(slot) {
-            a.level = level.min(3);
+            a.level = level.min(4);
         }
     }
 

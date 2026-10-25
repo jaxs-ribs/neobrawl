@@ -68,6 +68,14 @@ struct Fight {
     recover_until: u64,
     /// this shot's aim error (drawn once per box, like a person's miss)
     err: Option<f32>,
+    // showcase (level 4): a tempo of phases, and the opponent's last throw
+    /// 0 probe (feel out, hold the shot), 1 bait (dance in their lane, dash
+    /// out of their loaded aim), 2 press (close in and throw)
+    tempo: u8,
+    tempo_until: u64,
+    enemy_threw_at: u64,
+    enemy_had_box: bool,
+    swung: bool,
 }
 
 /// How well it reads a charging opponent: per-tick juke hazard at full
@@ -76,7 +84,8 @@ fn read(l: u8) -> (f32, f32) {
     match l {
         1 => (0.015, 0.5),
         2 => (0.03, 0.65),
-        _ => (0.05, 0.75),
+        3 => (0.05, 0.75),
+        _ => (0.065, 0.8),
     }
 }
 
@@ -104,7 +113,9 @@ fn level(l: u8) -> Level {
     match l {
         1 => Level { react: 16, flinch: 17.0, aim_err: 0.22, dodge_p: 0.35, range: 5.5, cadence: 11, beat: 15, settle: 22, recover: 24, turn: 0.045, tol: 0.12 },
         2 => Level { react: 12, flinch: 13.0, aim_err: 0.11, dodge_p: 0.6, range: 5.0, cadence: 8, beat: 11, settle: 16, recover: 18, turn: 0.065, tol: 0.08 },
-        _ => Level { react: 9, flinch: 10.0, aim_err: 0.045, dodge_p: 0.8, range: 4.6, cadence: 5, beat: 7, settle: 11, recover: 14, turn: 0.09, tol: 0.05 },
+        3 => Level { react: 9, flinch: 10.0, aim_err: 0.045, dodge_p: 0.8, range: 4.6, cadence: 5, beat: 7, settle: 11, recover: 14, turn: 0.09, tol: 0.05 },
+        // showcase: still human-limited, at the very top end
+        _ => Level { react: 6, flinch: 8.0, aim_err: 0.03, dodge_p: 0.9, range: 5.0, cadence: 4, beat: 4, settle: 7, recover: 9, turn: 0.14, tol: 0.045 },
     }
 }
 
@@ -445,6 +456,24 @@ impl Game {
                 let gap = 12.0 + ((hf(seed ^ 9) * 0.5 + 0.5).max(0.02)).powf(-0.7) * 10.0;
                 w.fight.strafe_until = t + gap.min(90.0) as u64;
             }
+            // showcase tempo: probe, bait and press in turn, never the same twice
+            let show = w.level >= 4;
+            let enemy_box = self.players[eo].picked_box.is_some();
+            if w.fight.enemy_had_box && !enemy_box {
+                w.fight.enemy_threw_at = t; // they just let go: a window opens
+            }
+            w.fight.enemy_had_box = enemy_box;
+            let punish = show && t.saturating_sub(w.fight.enemy_threw_at) < 30 && w.fight.enemy_threw_at > 0;
+            if show && t >= w.fight.tempo_until {
+                let r = (hash(seed ^ 0x4141) % 100) as u8;
+                let next = if r < 38 { 2 } else if r < 70 { 0 } else { 1 };
+                w.fight.tempo = if next == w.fight.tempo { (next + 1) % 3 } else { next };
+                w.fight.tempo_until = t + 60 + (hash(seed ^ 0x4242) % 90) as u64;
+            }
+            if show && w.fight.tempo == 1 && t + 30 < w.fight.strafe_until {
+                // baiting: erratic, short strafes in their lane
+                w.fight.strafe_until = t + 6 + (hash(seed ^ 0x4343) % 10) as u64;
+            }
             let tangent = v3(-dir.y, dir.x, 0.0) * w.fight.strafe;
 
             if carrying {
@@ -455,7 +484,23 @@ impl Game {
                     mv = tangent * 1.4 - dir * 0.3;
                 }
                 // 2) ranging and the shot: a little further off while they're armed
-                let range = if armed { lv.range + 0.8 } else { lv.range - 0.6 };
+                let range = if show {
+                    if punish {
+                        3.4
+                    } else {
+                        [6.6, 4.4, 3.6][w.fight.tempo as usize]
+                    }
+                } else if armed {
+                    lv.range + 0.8
+                } else {
+                    lv.range - 0.6
+                };
+                // a fresh box with the dash refilled: swing out to a flank angle
+                if show && !w.fight.swung && self.players[k].dash_cd == 0 && w.fight.tempo == 2 && mv == V3::ZERO {
+                    w.fight.swung = true;
+                    mv = tangent;
+                    dash = true;
+                }
                 let radial = dir * ((dist - range) * 0.6).clamp(-1.0, 1.0);
                 // a blocked lane for a moment: go find a spot with a clear shot
                 if w.fight.blocked > 8 && (w.fight.spot.is_none() || t % 12 == 0) {
@@ -536,7 +581,10 @@ impl Game {
                     w.fight.blocked = 0;
                     w.fight.spot = None;
                 }
-                let ready = !lost && aiming && w.fight.settled >= lv.settle && charge >= w.fight.want_charge && lane && flight_time(dist, power_for(charge)).is_some();
+                // probing holds the loaded shot (feeling them out) unless a window opens
+                let holding = show && w.fight.tempo == 0 && !punish && dist > 4.0;
+                let settle_need = if punish { 3 } else { lv.settle };
+                let ready = !lost && !holding && aiming && w.fight.settled >= settle_need && charge >= w.fight.want_charge && lane && flight_time(dist, power_for(charge)).is_some();
                 if ready && w.fight.hold_aim == 0 {
                     w.fight.hold_aim = 3;
                 }
@@ -549,6 +597,7 @@ impl Game {
                         w.fight.carry_since = None;
                         w.fight.settled = 0;
                         w.fight.err = None;
+                        w.fight.swung = false;
                     }
                 }
             } else if t < w.fight.recover_until {

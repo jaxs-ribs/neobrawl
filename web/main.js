@@ -837,6 +837,7 @@ async function main() {
   perf.show(params.has("perf"));
   addEventListener("keydown", (e) => { if (e.code === "F3") { e.preventDefault(); perf.show(!perf.shown); } });
   const loop = (now) => {
+    if (nb.capturing) { last = now; requestAnimationFrame(loop); return; } // the recorder drives the frames
     const dtFrame = now - last;
     acc += Math.min(0.25, dtFrame / 1000); last = now;
     let steps = 0;
@@ -881,6 +882,55 @@ async function main() {
   };
   requestAnimationFrame(loop);
   nb.ready = true;
+  // ---- recording (recordings/tool): offline capture at an exact frame rate,
+  // each frame posted to the recorder's server, and the same audio code
+  // rendered offline from a per-frame log of what the live loop would play
+  nb.capture = async (seconds, fps) => {
+    nb.capturing = true; let a2 = 0; nb.audioLog = []; engine.drain_sounds(); engine.drain_cues(); // nothing from before the take
+    for (let i = 0; i < seconds * fps; i++) {
+      a2 += 1 / fps;
+      while (a2 >= TICK) { engine.frame(); a2 -= TICK; nb.ticks++; }
+      nb.audioLog.push([engine.drain_sounds(), engine.drain_cues(), engine.mix(), engine.music()]);
+      if (nb.ticks !== textsAt) { const v = engine.texts_version(); if (v !== textsVer) { texts = JSON.parse(engine.texts()); textsVer = v; } textsAt = nb.ticks; }
+      engine.set_subtick(a2 / TICK);
+      const len = engine.render();
+      r.draw(new Float32Array(wasm.memory.buffer, engine.records_ptr(), len), texts, family, cssW(), cssH());
+      if (nb.capStop) break;
+      // promise-based readback (toBlob is throttled in a hidden page)
+      const bmp = await createImageBitmap(canvas);
+      const oc = nb.oc || (nb.oc = new OffscreenCanvas(canvas.width, canvas.height)), ox = oc.getContext("2d");
+      ox.drawImage(bmp, 0, 0); bmp.close();
+      const blob = await oc.convertToBlob({ type: "image/jpeg", quality: 0.94 });
+      await fetch("/frame?i=" + i, { method: "POST", body: blob });
+      nb.capFrame = i;
+    }
+    nb.capDone = true; nb.capturing = false;
+  };
+  nb.renderAudio = async (fps) => {
+    const log = nb.audioLog, dur = log.length / fps + 1.5, rate = 48000;
+    const ctx = new OfflineAudioContext(2, Math.ceil(dur * rate), rate);
+    const A = new Audio(Object.values(assets.audio).map((a) => [a.name, a.file]), ctx);
+    A.load();
+    for (let t = 0; t < 200 && A.buffers.size < A.files.length; t++) await new Promise((res) => setTimeout(res, 50));
+    log.forEach(([snd, q, m, mu], i) => {
+      ctx.suspend(i / fps).then(() => {
+        if (snd !== "[]") for (const [c, v] of JSON.parse(snd)) A.shot(c, v);
+        if (q !== "[]") for (const [n, p, a] of JSON.parse(q)) A.cue(n, p, a);
+        A.mix(m); A.music(JSON.parse(mu));
+        ctx.resume();
+      });
+    });
+    const buf = await ctx.startRendering();
+    // 16-bit stereo WAV
+    const n = buf.length, out = new DataView(new ArrayBuffer(44 + n * 4)), L = buf.getChannelData(0), Rt = buf.getChannelData(1);
+    const w = (o, str) => { for (let k = 0; k < str.length; k++) out.setUint8(o + k, str.charCodeAt(k)); };
+    w(0, "RIFF"); out.setUint32(4, 36 + n * 4, true); w(8, "WAVE"); w(12, "fmt "); out.setUint32(16, 16, true); out.setUint16(20, 1, true); out.setUint16(22, 2, true);
+    out.setUint32(24, rate, true); out.setUint32(28, rate * 4, true); out.setUint16(32, 4, true); out.setUint16(34, 16, true); w(36, "data"); out.setUint32(40, n * 4, true);
+    let peak = 0;
+    for (let k = 0; k < n; k++) { const a = Math.max(-1, Math.min(1, L[k])), b = Math.max(-1, Math.min(1, Rt[k])); peak = Math.max(peak, Math.abs(a), Math.abs(b)); out.setInt16(44 + k * 4, a * 32767, true); out.setInt16(46 + k * 4, b * 32767, true); }
+    await fetch("/audio", { method: "POST", body: out.buffer });
+    return { frames: log.length, buffers: A.buffers.size + "/" + A.files.length, peak: +peak.toFixed(3), errors: nb.errors.join(";") };
+  };
   // ?practice: straight into target practice on Map 2
   if (params.has("practice")) {
     document.documentElement.style.setProperty("--font", family);
