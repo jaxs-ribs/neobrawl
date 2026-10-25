@@ -50,9 +50,18 @@ impl Game {
         let cams: Vec<usize> = (0..w.nodes.len()).filter(|&i| w.nodes[i].camera.is_some() && w.active_in_hierarchy(i)).collect();
         let ui_order = self.ui_draw_order();
         let ui_seq: std::collections::HashMap<usize, usize> = ui_order.iter().enumerate().map(|(k, &n)| (n, k)).collect();
+        let lerp = self.interp_offsets();
+        let shift = |i: usize, mut m: Mat4| {
+            if let Some(o) = lerp.get(&i) {
+                m.0[12] += o.x;
+                m.0[13] += o.y;
+                m.0[14] += o.z;
+            }
+            m
+        };
         for &cam in &cams {
             let c = w.nodes[cam].camera.as_ref().unwrap();
-            let mut cm = w.matrix(cam);
+            let mut cm = shift(cam, w.matrix(cam));
             if w.nodes[cam].tag == "MainCamera" {
                 let o = self.motion.shake_offset();
                 cm.0[12] += o.x;
@@ -80,7 +89,7 @@ impl Game {
                 if !interesting || !w.active_in_hierarchy(i) {
                     continue;
                 }
-                let m = if ui.is_some() { self.layout.matrix(w, i) } else { w.matrix(i) };
+                let m = if ui.is_some() { self.layout.matrix(w, i) } else { shift(i, w.matrix(i)) };
                 if let Some((mesh, mat, true)) = n.mesh {
                     let mut r = [0.0; RECORD];
                     r[1] = mesh as f32;

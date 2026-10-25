@@ -155,7 +155,9 @@ fn desktop_mouse_aims_at_the_cursor_and_click_release_throws() {
         .find(|&(s, c)| {
             let g = e.game();
             let d = neobrawl::shared::math::v3(c, s, 0.0);
-            g.phys.raycast(&g.w, a + d * 0.4, d, 6.0, 1 | (1 << 8) | (1 << 11)).is_none()
+            // the lane must be clear for the box's full width, not just its centre
+            let side = neobrawl::shared::math::v3(-s, c, 0.0);
+            [-0.48f32, 0.0, 0.48].iter().all(|&o| g.phys.raycast(&g.w, a + d * 0.4 + side * o, d, 6.0, 1 | (1 << 8) | (1 << 11)).is_none())
         })
         .unwrap();
     e.game_mut().w.set_position(p2, neobrawl::shared::math::v3(a.x + dir.1 * 4.0, a.y + dir.0 * 4.0, a.z));

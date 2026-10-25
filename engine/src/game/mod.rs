@@ -170,6 +170,11 @@ pub struct Game {
     pub started: std::collections::HashSet<(usize, &'static str)>,
     pub was_active: HashMap<usize, bool>,
     pub motion: crate::motion::Motion,
+    /// velocity of the box that made the last kill (the orbs fly with it)
+    pub kill_impulse: V3,
+    /// positions of moving things at the start of the current tick; the
+    /// renderer draws between this and now so 120 Hz frames don't judder
+    pub prev_pos: HashMap<usize, V3>,
 }
 
 pub fn field<'a>(w: &'a World, node: usize, script: &str, name: &str) -> &'a Value {
@@ -222,6 +227,8 @@ impl Game {
             started: Default::default(),
             was_active: HashMap::new(),
             motion: Default::default(),
+            kill_impulse: V3::ZERO,
+            prev_pos: HashMap::new(),
         };
         for i in 0..g.w.nodes.len() {
             if let Some(clip) = g.w.nodes[i].audio.clone() {
@@ -248,6 +255,7 @@ impl Game {
             self.fx_step();
             return;
         }
+        self.snapshot_movers();
         self.frame += 1;
         self.run_enables();
         self.fixed_update();
@@ -258,6 +266,41 @@ impl Game {
         self.relayout();
         self.ui_events();
         self.fx_step();
+    }
+
+    fn snapshot_movers(&mut self) {
+        self.prev_pos.clear();
+        let mut movers: Vec<usize> = self.players.iter().map(|p| p.node).collect();
+        movers.extend(self.cam_follow.iter().map(|c| c.node));
+        movers.extend(self.boxes.iter().map(|b| b.node).filter(|&n| self.w.nodes[n].body.as_ref().map(|b| b.constraints != crate::scene::FREEZE_ALL).unwrap_or(false)));
+        for n in movers {
+            if self.w.active_in_hierarchy(n) {
+                self.prev_pos.insert(n, self.w.position(n));
+            }
+        }
+    }
+
+    /// Render-time offset for a node: where it was a fraction of a tick ago.
+    pub fn interp_offsets(&self) -> HashMap<usize, V3> {
+        let a = ((self.motion.render_now - self.motion.now) / DT).clamp(0.0, 1.0);
+        let mut out = HashMap::new();
+        if self.motion.hitstop > 0 {
+            return out;
+        }
+        for (&n, &prev) in &self.prev_pos {
+            let cur = self.w.position(n);
+            let d = cur - prev;
+            if d.length() > 3.0 || prev.x == -666.0 || cur.x == -666.0 {
+                continue; // teleports snap
+            }
+            let off = d * (a - 1.0);
+            let mut sub = Vec::new();
+            self.w.descendants(n, &mut sub);
+            for s in sub {
+                out.insert(s, off);
+            }
+        }
+        out
     }
 
     pub fn play(&mut self, clip: &str, volume: f32) {

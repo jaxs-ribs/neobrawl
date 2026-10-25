@@ -26,6 +26,8 @@ pub enum Kind {
     Trace { pts: Vec<V3>, w: f32 },
     /// a soft disc that blooms and fades
     Flash { c: V3, r: f32 },
+    /// a short tapered stroke that fades (dart trails)
+    Streak { a: V3, b: V3, w: f32 },
 }
 
 #[derive(Clone, Debug)]
@@ -401,6 +403,10 @@ impl Motion {
                         let ap = arc_points(hp, tip, 4, 0.5, s);
                         ribbon(&ap, w * 0.6, hc, -1.0, |rec| push(rec, d - 0.001));
                     }
+                }
+                Kind::Streak { a, b, w } => {
+                    col[3] *= (1.0 - u) * (1.0 - u);
+                    ribbon_tapered(&[*a, *b], [0.0, w * (1.0 - 0.5 * u)], col, -1.0, |rec| push(rec, depth(*b)));
                 }
                 Kind::Flash { c, r } => {
                     let rr = r * (0.6 + 0.6 * ease_out(u));

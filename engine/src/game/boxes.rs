@@ -144,6 +144,7 @@ impl Game {
                 self.drop_box(k);
             }
             let killer = self.boxes[b].carried_by;
+            self.kill_impulse = prev;
             self.death(other, killer);
         }
         self.box_single_explode(b);

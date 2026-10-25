@@ -22,7 +22,7 @@ pub enum Task {
     Respawn { dm: usize, player: usize, wait: u32 },
     CamShake { cam: usize, i: u32, d: V3 },
     OrbFly { blob: usize, orb: usize, killer: usize, v: V3, i: u32 },
-    OrbSeek { blob: usize, orb: usize, killer: usize, step: f32 },
+    OrbSeek { blob: usize, orb: usize, killer: usize, step: f32, v: V3 },
     OrbScale { orb: usize, j: u32 },
     ShowerScaleUp { s: usize, i: u32, wait: u32 },
     PauseFade { pause: usize, fade_in: bool, i: u32 },
@@ -140,16 +140,28 @@ impl Game {
                 Some(CamShake { cam, i: i + 1, d: -d })
             }
             OrbFly { blob, orb, killer, v, i } => {
-                if i >= 100 {
+                // physical: thrown back along the hit, braked by drag, while
+                // the killer's pull quietly starts to win
+                const PHYSICAL: u32 = 20;
+                let p = self.w.position(orb);
+                let k = self.w.position(killer);
+                let to = v3(k.x - p.x, k.y - p.y, 0.0);
+                let l = to.length().max(1e-4);
+                let pull = to * ((i as f32 / PHYSICAL as f32).powi(2) * 0.012 / l);
+                let v = v * 0.86 + pull;
+                self.w.translate_world(orb, v);
+                if i >= PHYSICAL {
+                    // the change of domain: a breath of ink, then it is a soul
+                    let col = self.soul_color(killer);
+                    let mut c = col;
+                    c[3] = 0.5;
+                    self.motion.ring(false, p, 0.03, 0.22, 0.012, 0.25, c);
+                    self.tasks.push(OrbSeek { blob, orb, killer, step: 0.02, v });
                     return None;
                 }
-                if i == 33 {
-                    self.tasks.push(OrbSeek { blob, orb, killer, step: 0.1 });
-                }
-                self.w.translate_world(orb, v * (1.0 / (i as f32).sqrt()));
                 Some(OrbFly { blob, orb, killer, v, i: i + 1 })
             }
-            OrbSeek { blob, orb, killer, mut step } => self.orb_seek(blob, orb, killer, &mut step).then_some(OrbSeek { blob, orb, killer, step }),
+            OrbSeek { blob, orb, killer, mut step, mut v } => self.orb_seek(blob, orb, killer, &mut step, &mut v).then_some(OrbSeek { blob, orb, killer, step, v }),
             OrbScale { orb, j } => {
                 let s = self.w.nodes[orb].lscale;
                 if j < 20 {

@@ -241,9 +241,11 @@ impl Game {
         let p = &mut self.players[k];
         p.prev2 = p.prev;
         p.prev = p.touch;
-        // a short acceleration ramp (~60 ms to full speed) keeps it snappy but smooth
+        // a short ramp keeps it smooth but never floaty: quicker to brake
+        // and to reverse than to get going
         let target = if ctl.active { ctl.mv } else { V2::ZERO };
-        let a = 1.0 - (-DT / 0.06).exp();
+        let braking = target.is_zero() || (target.x * p.cmd.x + target.y * p.cmd.y) < 0.0;
+        let a = 1.0 - (-DT / if braking { 0.025 } else { 0.04 }).exp();
         p.cmd = v2(p.cmd.x + (target.x - p.cmd.x) * a, p.cmd.y + (target.y - p.cmd.y) * a);
         if p.cmd.len() < 0.01 && target.is_zero() {
             p.cmd = V2::ZERO;
@@ -721,6 +723,19 @@ impl Game {
         }
         if let Some(body) = self.w.nodes[b].body.as_mut() {
             body.velocity = body.velocity + v3(angle.x * power, angle.y * power, 0.0);
+        }
+        // the box leaves from inside your body: whatever it overlaps right now
+        // (the wall you hug, a neighbour) must not deflect the throw
+        if let Some(gb) = crate::physics::geometry(&self.w, b) {
+            let touching: Vec<usize> = (0..self.w.nodes.len())
+                .filter(|&o| o != b && o != node && self.w.nodes[o].collider.as_ref().map(|c| c.enabled && !c.trigger).unwrap_or(false) && self.w.active_in_hierarchy(o))
+                .filter(|&o| crate::physics::layers_collide(self.w.nodes[b].layer, self.w.nodes[o].layer))
+                .filter(|&o| crate::physics::geometry(&self.w, o).and_then(|g| crate::physics::collide(&gb, &g, 0.0)).map(|c| c.depth > 0.0).unwrap_or(false))
+                .collect();
+            for o in touching {
+                self.phys.set_ignore(b, o, true);
+                self.tasks.push(Task::Unignore { a: b, b: o, wait: ticks(0.25) });
+            }
         }
         self.tasks.push(Task::ThrowRotation { node: b, i: 0, n: (power / 3.0).ceil() as i32 });
         self.fx_throw(k, angle, power);

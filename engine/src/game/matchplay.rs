@@ -256,22 +256,33 @@ impl Game {
             y += self.rng.rangef(-0.3, 0.3);
             let k = self.rng.rangef(1.1, 3.0) / 10.0;
             let orb = self.w.nodes[parent].children[i];
-            self.tasks.push(Task::OrbFly { blob: b, orb, killer, v: v3(x * k, y * k, 0.0), i: 1 });
+            // pushed on along the hit (heavier hits throw them further), plus a spread
+            let hit = self.kill_impulse;
+            let hs = hit.length();
+            let along = if hs > 1e-3 { hit * ((0.06 + 0.004 * hs.min(80.0)) * self.rng.rangef(0.6, 1.3) / hs) } else { V3::ZERO };
+            let v = v3(x * k * 0.55, y * k * 0.55, 0.0) + along;
+            self.tasks.push(Task::OrbFly { blob: b, orb, killer, v, i: 1 });
             self.tasks.push(Task::OrbScale { orb, j: 0 });
         }
     }
 
     /// moveTowardsNearestPlayer; returns false when the orb arrived.
-    pub(super) fn orb_seek(&mut self, b: usize, orb: usize, killer: usize, step: &mut f32) -> bool {
+    /// The soul phase: a dart that steers into the killer, faster and
+    /// faster, leaving a fading streak.
+    pub(super) fn orb_seek(&mut self, b: usize, orb: usize, killer: usize, step: &mut f32, v: &mut V3) -> bool {
         let t = self.w.position(orb);
         let k = self.w.position(killer);
-        let reached = (t.x - k.x).abs() <= 0.1 && (t.y - k.y).abs() <= 0.1;
         let target = k + v3(0.0, 0.0, 1.0);
-        let d = target - t;
+        let d = v3(target.x - t.x, target.y - t.y, 0.0);
         let l = d.length();
-        let np = if l <= *step || l < 1e-6 { target } else { t + d * (*step / l) };
+        let want = if l > 1e-6 { d * (*step / l) } else { V3::ZERO };
+        *v = *v + (want - *v) * 0.3;
+        let reached = l <= (0.12f32).max(v.length()) || k.x == -666.0;
+        let np = if reached { target } else { t + *v };
         self.w.set_position(orb, np);
-        *step += 0.02;
+        *step = (*step + 0.025).min(0.6);
+        let col = self.soul_color(killer);
+        self.motion.push(crate::motion::Kind::Streak { a: t, b: np, w: 0.05 }, false, 0.0, 0.16, col);
         if !reached {
             return true;
         }
