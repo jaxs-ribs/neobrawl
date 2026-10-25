@@ -309,7 +309,7 @@ fn circle_obb(c: [f32; 2], r: f32, bc: [f32; 2], ax: [f32; 2], ay: [f32; 2], h: 
     Some(Contact { normal: [v[0] / dist, v[1] / dist], depth, point: closest })
 }
 
-fn ray_geo(o: [f32; 2], d: [f32; 2], g: &Geo) -> Option<f32> {
+pub fn ray_geo(o: [f32; 2], d: [f32; 2], g: &Geo) -> Option<f32> {
     match g {
         Geo::Circle { c, r } => {
             let m = [o[0] - c[0], o[1] - c[1]];

@@ -390,15 +390,18 @@ impl Game {
         self.motion.ring_at(false, 0.45, p, 0.2, 1.2, 0.05, 0.4, col);
     }
 
-    /// A thrown box hit something that isn't a soul.
-    pub(super) fn fx_impact(&mut self, pos: V3, normal: V3) {
-        self.motion.ring(false, pos, 0.1, 0.9, 0.04, 0.3, INK);
-        let t = v3(-normal.y, normal.x, 0.0);
-        for s in [-1.0f32, 1.0] {
-            self.motion.arc(false, pos, pos + t * (0.7 * s) + normal * 0.3, 0.02, 0.35, 0.18, INK);
-        }
-        self.motion.burst(false, pos, 6, 6.0, 0.035, 0.3, INK, None);
+    /// A thrown box hit something that isn't a soul: the shards carry the
+    /// moment; this is only the broken impact ring and a small shake.
+    pub(super) fn fx_impact(&mut self, pos: V3, _normal: V3) {
+        let mut col = INK;
+        col[3] = 0.55 / 0.6; // Ring already draws at 60%
+        self.motion.ring(false, pos, 0.15, 0.55, 0.035 / 0.65, 0.3, col);
         self.motion.add_shake(0.05);
+    }
+
+    #[doc(hidden)]
+    pub fn fx_debug_impact(&mut self, x: f32, y: f32, z: f32) {
+        self.fx_impact(v3(x, y, z), V3::ZERO);
     }
 
     /// A box comes back: its outline is drawn, then it fills in.

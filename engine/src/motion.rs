@@ -9,7 +9,7 @@
 
 use std::collections::{HashMap, VecDeque};
 
-use crate::render::{arc_points, quad, ribbon, ribbon_tapered, RECORD};
+use crate::render::{arc_points, blade, quad, ribbon, ribbon_tapered, RECORD};
 use crate::shared::math::{v3, V3};
 
 #[derive(Clone, Debug)]
@@ -156,13 +156,22 @@ impl Motion {
 
     /// Sparks flying out from c.
     pub fn burst(&mut self, screen: bool, c: V3, n: usize, speed: f32, size: f32, life: f32, color: [f32; 4], seek: Option<usize>) {
-        for k in 0..n {
+        for _ in 0..n {
             let s = self.next_seed();
-            let a = hf(s) * std::f32::consts::PI + k as f32;
-            let sp = speed * (0.4 + 0.6 * (hf(s ^ 77) * 0.5 + 0.5));
+            // dropout: some never show; the rest are heavy-tailed in speed and
+            // size (most small and slow, the odd one big and fast), and their
+            // directions are not an even fan
+            if (hash(s ^ 31) % 100) < 40 {
+                continue;
+            }
+            let a = (hf(s) * 0.5 + 0.5) * std::f32::consts::TAU;
+            let tail = |x: u32, k: f32| ((hf(x) * 0.5 + 0.5).max(1e-3)).powf(-1.0 / k);
+            let sp = speed * (0.35 * tail(s ^ 77, 2.2)).min(1.6);
+            let sz = size * (0.6 * tail(s ^ 55, 3.0)).min(2.2);
             let v = v3(a.cos() * sp, a.sin() * sp, 0.0);
-            let l = life * (0.6 + 0.4 * (hf(s ^ 99) * 0.5 + 0.5));
-            self.push(Kind::Spark { p: c, v, size, seek, home: None }, screen, 0.0, l, color);
+            let l = life * (0.5 + 0.5 * (hf(s ^ 99) * 0.5 + 0.5));
+            let delay = (hf(s ^ 41) * 0.5 + 0.5).powi(3) * 0.08;
+            self.push(Kind::Spark { p: c, v, size: sz, seek, home: None }, screen, delay, l, color);
         }
     }
 
@@ -212,7 +221,7 @@ impl Motion {
                     let out = p - center;
                     let ol = (out.x * out.x + out.y * out.y).sqrt().max(1e-4);
                     let dir = v3(out.x / ol, out.y / ol, 0.0);
-                    let k = speed * (0.5 + 0.5 * (hf(s2) * 0.5 + 0.5));
+                    let k = speed * (0.3 * ((hf(s2) * 0.5 + 0.5).max(1e-3)).powf(-1.0 / 2.5)).min(1.4);
                     let v = dir * k + v3(hf(s2 ^ 3), hf(s2 ^ 4), 0.0) * (speed * 0.35) + push_dir;
                     let spin = hf(s2 ^ 9) * 9.0;
                     let l = life * (0.7 + 0.3 * (hf(s2 ^ 13) * 0.5 + 0.5));
@@ -321,34 +330,37 @@ impl Motion {
             let mut col = f.color;
             match &f.kind {
                 Kind::Ring { c, r0, r1, w } => {
+                    // never a perfect circle: 1-4 arcs with irregular gaps
                     let r = r0 + (r1 - r0) * ease_out(u);
-                    col[3] *= (1.0 - u).powf(1.6);
-                    let n = 48;
-                    let pts: Vec<V3> = (0..=n)
-                        .map(|k| {
-                            let a = k as f32 / n as f32 * std::f32::consts::TAU;
-                            *c + v3(a.cos() * r, a.sin() * r, 0.0)
-                        })
-                        .collect();
+                    col[3] *= 0.6 * (1.0 - u).powf(1.6);
                     let d = depth(*c);
-                    ribbon(&pts, w * (1.0 - 0.6 * u), col, -1.0, |rec| push(rec, d));
+                    let segs = 1 + ((hf(f.seed ^ 3) * 0.5 + 0.5).powi(2) * 4.0) as u32;
+                    let mut a0 = (hf(f.seed ^ 5) * 0.5 + 0.5) * std::f32::consts::TAU;
+                    for s in 0..segs {
+                        let len = 0.4 + (hf(f.seed ^ (s * 7 + 11)) * 0.5 + 0.5) * 1.6;
+                        let n = ((len / 0.12) as usize).max(3);
+                        let pts: Vec<V3> = (0..=n)
+                            .map(|k| {
+                                let a = a0 + len * k as f32 / n as f32;
+                                *c + v3(a.cos() * r, a.sin() * r, 0.0)
+                            })
+                            .collect();
+                        ribbon(&pts, w * 0.65 * (1.0 - 0.6 * u), col, -1.0, |rec| push(rec, d));
+                        a0 += len + 0.3 + (hf(f.seed ^ (s * 13 + 17)) * 0.5 + 0.5) * 1.2;
+                    }
                 }
                 Kind::Arc { a, b, w, jitter } => {
-                    // dies in stutters, like a real discharge
-                    let on = hash(f.seed ^ flick) % 5 != 0 || u < 0.3;
-                    if !on {
+                    // a katana blade with a bow fixed for its life; it dies by
+                    // dropping out in stutters, more often as it ages
+                    let epoch = (self.render_now * 25.0) as u32;
+                    if u > 0.25 && (hash(f.seed ^ epoch) % 1000) as f32 / 1000.0 < u * 0.8 {
                         continue;
                     }
-                    let len = ((b.x - a.x).powi(2) + (b.y - a.y).powi(2)).sqrt();
-                    let segs = ((len / (w * 6.0)).ceil() as usize).clamp(4, 14);
-                    let pts = arc_points(*a, *b, segs, *jitter, f.seed ^ flick.wrapping_mul(2654435761));
+                    let bow = (if f.seed & 1 == 1 { 1.0 } else { -1.0 }) * (0.08 + (hf(f.seed ^ 9) * 0.5 + 0.5) * 0.22) * (0.5 + jitter.min(1.0));
                     let d = depth((*a + *b) * 0.5);
-                    let fade = (1.0 - u).powf(0.7);
-                    let mut halo = col;
-                    halo[3] *= 0.22 * fade;
-                    col[3] *= fade;
-                    ribbon(&pts, w * 4.0, halo, tex.soft, |rec| push(rec, d));
-                    ribbon(&pts, *w, col, -1.0, |rec| push(rec, d - 0.001));
+                    col[3] *= (1.0 - u).powf(0.7);
+                    let cap = if f.screen { 3.5 } else { crate::shards::MAX_W * 1.4 };
+                    blade(*a, *b, bow, w * 1.6, cap, col, |rec| push(rec, d));
                 }
                 Kind::Shard { p, v, rot, spin, tri, .. } => {
                     let pp = *p + *v * ahead;
@@ -391,7 +403,18 @@ impl Motion {
                     let hp = *path.last().unwrap();
                     let d = depth(hp);
                     col[3] *= fade;
-                    ribbon(&path, *w, col, -1.0, |rec| push(rec, d));
+                    // thin at the tail, full at the head; a gap or two where the ink skipped
+                    let m = path.len() - 1;
+                    let gaps = [(hf(f.seed ^ 21) * 0.5 + 0.5) * 0.8 + 0.1, (hf(f.seed ^ 23) * 0.5 + 0.5) * 0.8 + 0.1];
+                    let two = f.seed % 3 == 0;
+                    for k in 0..m {
+                        let g = k as f32 / n as f32;
+                        if (g - gaps[0]).abs() < 0.025 || (two && (g - gaps[1]).abs() < 0.02) {
+                            continue;
+                        }
+                        let (w0, w1) = (*w * (0.25 + 0.75 * k as f32 / m as f32), *w * (0.25 + 0.75 * (k + 1) as f32 / m as f32));
+                        ribbon_tapered(&path[k..=k + 1], [w0, w1], col, -1.0, |rec| push(rec, d));
+                    }
                     // the racing spark at the head, with a crackle
                     if u < 0.62 && tex.disc >= 0.0 {
                         let sz = w * 3.0;
@@ -409,8 +432,9 @@ impl Motion {
                     ribbon_tapered(&[*a, *b], [0.0, w * (1.0 - 0.5 * u)], col, -1.0, |rec| push(rec, depth(*b)));
                 }
                 Kind::Flash { c, r } => {
-                    let rr = r * (0.6 + 0.6 * ease_out(u));
-                    col[3] *= (1.0 - u).powi(2);
+                    // ink on paper, not glow: barely there
+                    let rr = r * 0.7 * (0.6 + 0.6 * ease_out(u));
+                    col[3] *= 0.3 * (1.0 - u).powi(2);
                     if tex.soft >= 0.0 {
                         push(quad(tex.soft, [*c + v3(-rr, -rr, 0.0), *c + v3(rr, -rr, 0.0), *c + v3(rr, rr, 0.0), *c + v3(-rr, rr, 0.0)], [0.0, 0.0, 1.0, 1.0], col), depth(*c));
                     }

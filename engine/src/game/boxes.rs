@@ -88,22 +88,6 @@ impl Game {
                     self.tasks.push(Task::BoxRespawn { b, wait: 0 });
                 }
             }
-            // LineRendererManager.FixedUpdate
-            let bx = &mut self.boxes[b];
-            if bx.raving {
-                match bx.rave_timer % 25 {
-                    0 => {
-                        self.tasks.push(Task::RaveLine { b, index: 0, j: 0, a: 0.0, r1: 0, r2: 0 });
-                        self.tasks.push(Task::RaveLine { b, index: 1, j: 0, a: 0.0, r1: 0, r2: 0 });
-                    }
-                    15 => {
-                        self.tasks.push(Task::RaveLine { b, index: 2, j: 0, a: 0.0, r1: 0, r2: 0 });
-                        self.tasks.push(Task::RaveLine { b, index: 3, j: 0, a: 0.0, r1: 0, r2: 0 });
-                    }
-                    20 => self.tasks.push(Task::RaveLine { b, index: 4, j: 0, a: 0.0, r1: 0, r2: 0 }),
-                    _ => {}
-                }
-            }
             self.boxes[b].rave_timer += 1;
         }
     }
@@ -169,18 +153,12 @@ impl Game {
         let pos = self.w.position(n);
         let prev = self.boxes[b].prev_vel;
         let refl = self.boxes[b].reflected;
-        for k in 0..self.boxes[b].debris.len() {
-            let d = self.boxes[b].debris[k];
-            let p = pos + prev * (1.0 / 200.0);
-            self.w.set_position(d, p);
-            // AddForce(reflected / 80, Impulse) on a 0.1 kg body
-            let mass = self.w.nodes[d].body.as_ref().map(|x| x.mass).unwrap_or(0.1).max(1e-3);
-            let spin = self.rng.range(-400, 400) as f32;
-            if let Some(body) = self.w.nodes[d].body.as_mut() {
-                body.velocity = body.velocity + refl * (1.0 / 80.0 / mass);
-                body.spin = spin;
-            }
+        // Shard Lab: 13 ink shards replace the mesh debris and its rave lines
+        if let Some(dp) = self.boxes[b].debris_parent {
+            self.w.set_active(dp, false);
         }
+        let speed = (prev.x * prev.x + prev.y * prev.y).sqrt();
+        self.shards.shatter(pos.x, pos.y, pos.z, [refl.x, refl.y], speed, 14.0);
     }
 
     fn switch_to_debris(&mut self, b: usize, on: bool) {

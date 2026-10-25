@@ -7,6 +7,7 @@ pub mod motion;
 pub mod physics;
 pub mod render;
 pub mod scene;
+pub mod shards;
 pub mod shared;
 pub mod ui;
 
@@ -184,6 +185,16 @@ impl Engine {
     /// motion graphics draw between ticks.
     pub fn set_subtick(&mut self, a: f32) {
         self.game.motion.render_now = self.game.motion.now + a.clamp(0.0, 1.0) * crate::game::DT;
+    }
+
+    /// Debug: shatter a box's worth of shards at a world point, flying
+    /// back along (vx, vy), as if a throw at that speed hit something.
+    #[doc(hidden)]
+    pub fn debug_shatter(&mut self, x: f32, y: f32, vx: f32, vy: f32) {
+        let sp = (vx * vx + vy * vy).sqrt();
+        let z = self.game.players.first().map(|p| self.game.w.position(p.node).z).unwrap_or(0.0);
+        self.game.shards.shatter(x, y, z, [vx, vy], sp, 14.0);
+        self.game.fx_debug_impact(x, y, z);
     }
 
     pub fn render(&mut self) -> usize {

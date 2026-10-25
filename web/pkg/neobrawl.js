@@ -215,6 +215,17 @@ export class Engine {
         wasm.engine_set_subtick(this.__wbg_ptr, a);
     }
     /**
+     * Debug: shatter a box's worth of shards at a world point, flying
+     * back along (vx, vy), as if a throw at that speed hit something.
+     * @param {number} x
+     * @param {number} y
+     * @param {number} vx
+     * @param {number} vy
+     */
+    debug_shatter(x, y, vx, vy) {
+        wasm.engine_debug_shatter(this.__wbg_ptr, x, y, vx, vy);
+    }
+    /**
      * @returns {number}
      */
     render() {

@@ -175,6 +175,8 @@ pub struct Game {
     /// positions of moving things at the start of the current tick; the
     /// renderer draws between this and now so 120 Hz frames don't judder
     pub prev_pos: HashMap<usize, V3>,
+    /// Shard Lab debris and electricity
+    pub shards: crate::shards::ShardSim,
 }
 
 pub fn field<'a>(w: &'a World, node: usize, script: &str, name: &str) -> &'a Value {
@@ -229,6 +231,7 @@ impl Game {
             motion: Default::default(),
             kill_impulse: V3::ZERO,
             prev_pos: HashMap::new(),
+            shards: crate::shards::ShardSim::new(0x5eed),
         };
         for i in 0..g.w.nodes.len() {
             if let Some(clip) = g.w.nodes[i].audio.clone() {
@@ -261,11 +264,75 @@ impl Game {
         self.fixed_update();
         self.phys.step(&mut self.w, DT);
         self.dispatch_physics_events();
+        self.shards_step();
         self.step_tasks();
         self.update();
         self.relayout();
         self.ui_events();
         self.fx_step();
+    }
+
+    /// Step the debris; shards bounce off the arena's solid shapes.
+    fn shards_step(&mut self) {
+        if self.shards.shards.is_empty() {
+            self.shards.step(|_, _, _, _| None);
+            return;
+        }
+        let w = &self.w;
+        // static solids near any shard, with a bounding radius for a cheap reject
+        let mask = 1u32 | (1 << 8) | (1 << crate::physics::LAYER_BOX);
+        let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+        for s in self.shards.shards.iter().filter(|s| !s.dead) {
+            lo = [lo[0].min(s.x), lo[1].min(s.y)];
+            hi = [hi[0].max(s.x), hi[1].max(s.y)];
+        }
+        let mut geos = Vec::new();
+        for i in 0..w.nodes.len() {
+            let Some(c) = w.nodes[i].collider.as_ref() else { continue };
+            if !c.enabled || c.trigger || mask & (1 << w.nodes[i].layer) == 0 || !w.active_in_hierarchy(i) {
+                continue;
+            }
+            let Some(g) = crate::physics::geometry(w, i) else { continue };
+            let (cx, cy, r) = match &g {
+                crate::physics::Geo::Circle { c, r } => (c[0], c[1], *r),
+                crate::physics::Geo::Obb { c, h, .. } => (c[0], c[1], (h[0] * h[0] + h[1] * h[1]).sqrt()),
+                crate::physics::Geo::Poly { n, p } => {
+                    let n = *n as usize;
+                    let (sx, sy) = p[..n].iter().fold((0.0, 0.0), |a, q| (a.0 + q[0], a.1 + q[1]));
+                    let (cx, cy) = (sx / n as f32, sy / n as f32);
+                    let r = p[..n].iter().map(|q| ((q[0] - cx).powi(2) + (q[1] - cy).powi(2)).sqrt()).fold(0.0f32, f32::max);
+                    (cx, cy, r)
+                }
+            };
+            if cx + r < lo[0] - 2.0 || cx - r > hi[0] + 2.0 || cy + r < lo[1] - 2.0 || cy - r > hi[1] + 2.0 {
+                continue;
+            }
+            geos.push((g, cx, cy, r));
+        }
+        self.shards.step(|x0, y0, x1, y1| {
+            let (dx, dy) = (x1 - x0, y1 - y0);
+            let len = (dx * dx + dy * dy).sqrt();
+            if len < 1e-6 {
+                return None;
+            }
+            let d = [dx / len, dy / len];
+            let mut best: Option<f32> = None;
+            for (g, cx, cy, r) in &geos {
+                // segment vs bounding circle first
+                let (ox, oy) = (cx - x0, cy - y0);
+                let along = (ox * d[0] + oy * d[1]).clamp(0.0, len);
+                let (px, py) = (x0 + d[0] * along - cx, y0 + d[1] * along - cy);
+                if px * px + py * py > r * r {
+                    continue;
+                }
+                if let Some(t) = crate::physics::ray_geo([x0, y0], d, g) {
+                    if t <= len && best.map(|b| t / len < b).unwrap_or(true) {
+                        best = Some(t / len);
+                    }
+                }
+            }
+            best
+        });
     }
 
     fn snapshot_movers(&mut self) {
@@ -570,6 +637,7 @@ impl Game {
             "tasks": self.tasks.len(),
             "boxesShattered": self.boxes.iter().filter(|b| b.raving).count(),
             "cursor": self.input.cursor,
+            "shards": { "live": self.shards.live(), "bonds": self.shards.active.len(), "lines": self.shards.imps.iter().map(|i| i.lines.len()).sum::<usize>(), "impacts": self.shards.imps.len() },
             "camera": self.camera_main().map(|c| { let p = self.w.position(c); [p.x, p.y, p.z] }),
             "screen": [self.screen.w, self.screen.h],
         })

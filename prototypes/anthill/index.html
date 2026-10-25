@@ -1,0 +1,520 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Anthill</title>
+<style>
+  :root { --bg: #fbfbfb; --ink: #111; --dim: #8a8a8a; }
+  html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; font: 12px/1.4 system-ui, sans-serif; color: var(--ink); user-select: none; }
+  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; cursor: crosshair; }
+  #ui { position: fixed; left: 16px; top: 14px; display: flex; flex-direction: column; gap: 6px; max-width: calc(100vw - 32px); }
+  h1 { font-weight: 300; letter-spacing: .45em; font-size: 15px; margin: 0 0 4px; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; color: var(--dim); }
+  .row label { display: flex; gap: 6px; align-items: center; }
+  input[type=range] { width: 90px; accent-color: #111; }
+  button { font: inherit; background: none; border: 1px solid #ccc; border-radius: 3px; padding: 2px 8px; cursor: pointer; color: var(--ink); }
+  button:hover { border-color: #111; }
+  #stat { color: var(--dim); }
+  #hint { position: fixed; right: 16px; bottom: 12px; color: var(--dim); text-align: right; pointer-events: none; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui">
+  <h1>ANTHILL</h1>
+  <div class="row">
+    <button data-p="seed">garden</button><button data-p="maze">labyrinth</button><button data-p="mega">megastructure</button><button data-p="swarm">swarm</button><button data-p="raid">raid · 2014 vs 35</button>
+  </div>
+  <div class="row">
+    <label>order <input id="order" type="range" min="2" max="6" value="5"></label>
+    <label>loops <input id="loops" type="range" min="0" max="40" value="4"></label>
+    <label>ants <input id="ants" type="range" min="0" max="4000" step="1" value="2014"></label>
+    <label><select id="sym"><option value="rot">C4 rotate</option><option value="mir">D2 mirror</option></select></label>
+    <button id="reseed">reseed</button>
+  </div>
+  <div id="stat"></div>
+</div>
+<div id="hint">scroll to zoom · drag to pan · click to drop an intruder</div>
+<script>
+const cv = document.getElementById("c"), g = cv.getContext("2d");
+const INK = "#111", RED = "rgb(255,32,32)", BLUE = "rgb(64,128,255)";
+const CELL = 2.4; // one wall length, as in the game (lens 2.4, box 0.86)
+let W = 0, H = 0, dpr = 1;
+const view = { x: 0, y: 0, s: 30 }; // s = px per world unit
+let map = null, ants = [], intruders = [], stock = 20, seed = 7, kills = 0, target = 2014, born = 0, lost = 0, births = [];
+
+// ---------------------------------------------------------------- hilbert
+function d2xy(n, d) {
+  let x = 0, y = 0, t = d;
+  for (let s = 1; s < n; s *= 2) {
+    const rx = 1 & (t / 2), ry = 1 & (t ^ rx);
+    if (ry === 0) { if (rx === 1) { x = s - 1 - x; y = s - 1 - y; } const tmp = x; x = y; y = tmp; }
+    x += s * rx; y += s * ry; t = Math.floor(t / 4);
+  }
+  return [x, y];
+}
+const hash = (a, b, c, d) => { let h = (a * 374761393 + b * 668265263 + c * 2147483647 + d * 1274126177) | 0; h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h ^ (h >>> 16)) >>> 0) / 4294967296; };
+
+// ---------------------------------------------------------------- map
+function build(order, loops, sym) {
+  const n = 1 << order, N = 2 * n;
+  // quadrant k maps local cell (x, y) to a global cell; all four curves start at the centre
+  const maps = sym === "rot"
+    ? [(x, y) => [n + x, n + y], (x, y) => [n - 1 - y, n + x], (x, y) => [n - 1 - x, n - 1 - y], (x, y) => [n + y, n - 1 - x]]
+    : [(x, y) => [n + x, n + y], (x, y) => [n - 1 - x, n + y], (x, y) => [n - 1 - x, n - 1 - y], (x, y) => [n + x, n - 1 - y]];
+  const open = new Set();
+  const ek = (a, b) => { const [p, q] = a[0] * N + a[1] < b[0] * N + b[1] ? [a, b] : [b, a]; return p[0] + "," + p[1] + "|" + q[0] + "," + q[1]; };
+  const local = [];
+  for (let d = 0; d < n * n; d++) local.push(d2xy(n, d));
+  const paths = maps.map((m) => local.map(([x, y]) => m(x, y)));
+  for (const p of paths) for (let i = 1; i < p.length; i++) open.add(ek(p[i - 1], p[i]));
+  // symmetric shortcuts: chosen once in local space, applied to every quadrant
+  for (let x = 0; x < n; x++) for (let y = 0; y < n; y++) for (const [dx, dy] of [[1, 0], [0, 1]]) {
+    if (x + dx >= n || y + dy >= n) continue;
+    if (hash(seed, x, y, dx) < loops / 100) for (const m of maps) open.add(ek(m(x, y), m(x + dx, y + dy)));
+  }
+  // Districts: the quadrant is cut into blocks; each block keeps the curve's
+  // topology but reads it at its own scale. Because a Hilbert curve visits
+  // every aligned 2^j square in one go, dissolving the walls inside those
+  // squares turns fine labyrinth into rooms of size 2^j while the whole stays
+  // one curve. Chosen in local space, so all four quadrants agree.
+  const B = Math.max(4, n >> 2), lb = Math.log2(B);
+  const rooms = [], roomOf = new Map();
+  for (let bx = 0; bx < n; bx += B) for (let by = 0; by < n; by += B) {
+    const h = hash(seed, bx, by, 99);
+    if (bx === 0 && by === 0) continue; // the approach to the hill stays a fine maze
+    const j = h < 0.45 ? 0 : h < 0.7 ? 1 : h < 0.88 ? 2 : Math.min(lb, 3);
+    if (j === 0) continue;
+    const R = 1 << j, pat = Math.floor(hash(seed, bx, by, 7) * 7);
+    for (let x0 = bx; x0 < bx + B; x0 += R) for (let y0 = by; y0 < by + B; y0 += R) {
+      for (let x = x0; x < x0 + R; x++) for (let y = y0; y < y0 + R; y++) {
+        for (const m of maps) {
+          if (x + 1 < x0 + R) open.add(ek(m(x, y), m(x + 1, y)));
+          if (y + 1 < y0 + R) open.add(ek(m(x, y), m(x, y + 1)));
+        }
+      }
+      for (const m of maps) {
+        const a = m(x0, y0), b = m(x0 + R - 1, y0 + R - 1);
+        const room = { x: Math.min(a[0], b[0]), y: Math.min(a[1], b[1]), R, pat, j };
+        rooms.push(room);
+        for (let x = 0; x < R; x++) for (let y = 0; y < R; y++) roomOf.set((room.x + x) * N + room.y + y, room);
+      }
+    }
+  }
+  // the colony chamber: the four centre cells open into each other
+  const cc = [[n - 1, n - 1], [n, n - 1], [n, n], [n - 1, n]];
+  for (let i = 0; i < 4; i++) open.add(ek(cc[i], cc[(i + 1) % 4]));
+  // exits: each curve's end opens through the outer wall
+  const exits = paths.map((p) => p[p.length - 1]);
+  // walls: every grid edge that isn't open (lens shapes on cell edges)
+  const walls = [];
+  const inside = (c) => c[0] >= 0 && c[1] >= 0 && c[0] < N && c[1] < N;
+  for (let x = 0; x <= N; x++) for (let y = 0; y < N; y++) {
+    const a = [x - 1, y], b = [x, y];
+    if (inside(a) && inside(b) && open.has(ek(a, b))) continue;
+    if (exits.some((e) => (e[0] === a[0] || e[0] === b[0]) && e[1] === y && (x === 0 || x === N))) continue;
+    walls.push([x, y, x, y + 1]);
+  }
+  for (let y = 0; y <= N; y++) for (let x = 0; x < N; x++) {
+    const a = [x, y - 1], b = [x, y];
+    if (inside(a) && inside(b) && open.has(ek(a, b))) continue;
+    if (exits.some((e) => e[0] === x && (e[1] === a[1] || e[1] === b[1]) && (y === 0 || y === N))) continue;
+    walls.push([x, y, x + 1, y]);
+  }
+  // boxes: one tucked into the outer corner of every turn; resource gardens
+  // (a pair along the walls) on a rhythm of straight runs
+  const boxes = [], gardens = [];
+  const period = 5 + order;
+  const cellIndex = new Map();
+  paths.forEach((p, q) => p.forEach((c, i) => cellIndex.set(c[0] * N + c[1], [q, i])));
+  for (const rm of rooms) {
+    const cx = rm.x + rm.R / 2, cy = rm.y + rm.R / 2, R = rm.R, put = (x, y, s, rot = 0) => boxes.push([cx + x, cy + y, s, rot]);
+    const S = 0.3;
+    switch (rm.pat) {
+      case 0: // lattice, centre cross left open
+        for (let x = 0; x < R; x++) for (let y = 0; y < R; y++) { const dx = x - R / 2 + 0.5, dy = y - R / 2 + 0.5; if (Math.abs(dx) > 0.6 && Math.abs(dy) > 0.6) put(dx, dy, S); }
+        break;
+      case 1: { // ring of boxes turned to face the middle
+        const k = 4 * R;
+        for (let i = 0; i < k; i++) { const a = (i / k) * 6.283; put(Math.cos(a) * R * 0.36, Math.sin(a) * R * 0.36, S * 0.8, a); }
+        break;
+      }
+      case 2: // both diagonals
+        for (let i = 0; i < R; i++) { const d = i - R / 2 + 0.5; put(d, d, S, Math.PI / 4); if (Math.abs(d) > 0.1) put(d, -d, S, Math.PI / 4); }
+        break;
+      case 3: // concentric square rings, every other one
+        for (let ring = 0.5; ring < R / 2; ring += 1) { const m2 = Math.max(1, Math.round(ring * 2)); for (let i = 0; i < m2; i++) { const t = -ring + (i + 0.5) * (2 * ring / m2); put(t, ring, S * 0.7); put(-t, -ring, S * 0.7); put(ring, -t, S * 0.7); put(-ring, t, S * 0.7); } ring += 1; }
+        break;
+      case 4: // diamond checker of 45-degree boxes
+        for (let x = 0; x < R; x++) for (let y = 0; y < R; y++) if ((x + y) % 2 === 0) put(x - R / 2 + 0.5, y - R / 2 + 0.5, S * 0.75, Math.PI / 4);
+        break;
+      case 5: { // four spiral arms (C4)
+        const k = 3 * R;
+        for (let arm = 0; arm < 4; arm++) for (let i = 1; i < k; i++) { const u = i / k, a = arm * Math.PI / 2 + u * 3.2, rr = u * R * 0.46; put(Math.cos(a) * rr, Math.sin(a) * rr, S * (0.45 + 0.4 * u), a); }
+        break;
+      }
+      default: // a tight 2x2 knot in the middle, sentries at the corners
+        for (const [x, y] of [[-0.17, -0.17], [0.17, -0.17], [0.17, 0.17], [-0.17, 0.17]]) put(x, y, S);
+        for (const [x, y] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) put(x * (R / 2 - 0.5), y * (R / 2 - 0.5), S * 0.7, Math.PI / 4);
+    }
+    // every room is a food source
+    const at = cellIndex.get(Math.floor(cx) * N + Math.floor(cy));
+    if (at) gardens.push({ q: at[0], i: at[1], amt: 2 * R, cap: 2 * R, cells: [] });
+  }
+  paths.forEach((p, q) => {
+    for (let i = 1; i < p.length - 1; i++) {
+      const [a, b, c] = [p[i - 1], p[i], p[i + 1]];
+      if (roomOf.has(b[0] * N + b[1])) continue;
+      const din = [b[0] - a[0], b[1] - a[1]], dout = [c[0] - b[0], c[1] - b[1]];
+      const cx = b[0] + 0.5, cy = b[1] + 0.5;
+      if (din[0] !== dout[0] || din[1] !== dout[1]) {
+        // outer corner = forward along din, away from dout
+        boxes.push([cx + (din[0] - dout[0]) * 0.27, cy + (din[1] - dout[1]) * 0.27, 0.3, 0]);
+      } else if (i % period === 0) {
+        const sx = -din[1], sy = din[0];
+        const res = { q, i, amt: 4, cap: 4, cells: [[cx + sx * 0.3, cy + sy * 0.3], [cx - sx * 0.3, cy - sy * 0.3]] };
+        gardens.push(res);
+      }
+    }
+  });
+  return { n, N, paths, walls, boxes, gardens, rooms, pher: paths.map((p) => new Float32Array(p.length)), alarm: paths.map((p) => new Float32Array(p.length)) };
+}
+const w2 = (gx) => (gx - map.N / 2) * CELL; // grid -> world
+
+// ---------------------------------------------------------------- ants
+function newAnt(q, t) {
+  const [x, y] = pathPoint(q, t, 0);
+  return { q, t, x: x + (Math.random() - 0.5) * 0.6, y: y + (Math.random() - 0.5) * 0.6, vx: 0, vy: 0, dir: 1, v: 1.6 + Math.random() * 1.6, carry: false, goal: pickGoal(q), aggro: 0, wob: Math.random() * 6.28, dead: false };
+}
+function spawnAnts(k) {
+  target = k;
+  ants = [];
+  for (let j = 0; j < k; j++) {
+    const q = j % 4, len = map.paths[q].length;
+    ants.push(newAnt(q, Math.random() * Math.min(len - 1, 40)));
+  }
+}
+function pickGoal(q) {
+  const gs = map.gardens.filter((g) => g.q === q && g.amt > 0);
+  if (!gs.length) return Math.floor(Math.random() * (map.paths[q].length - 1));
+  return gs[Math.floor(Math.random() * gs.length)].i;
+}
+function pathPoint(q, t, lat) {
+  const p = map.paths[q], i = Math.max(0, Math.min(p.length - 2, Math.floor(t))), f = t - i;
+  const dx = p[i + 1][0] - p[i][0], dy = p[i + 1][1] - p[i][1];
+  return [w2(p[i][0] + dx * f + 0.5 - dy * lat), w2(p[i][1] + dy * f + 0.5 + dx * lat)];
+}
+function antPos(a) { return [a.x, a.y]; }
+function antPosOld(a) {
+  const p = map.paths[a.q], i = Math.max(0, Math.min(p.length - 2, Math.floor(a.t))), f = a.t - i;
+  const x = p[i][0] + (p[i + 1][0] - p[i][0]) * f + 0.5, y = p[i][1] + (p[i + 1][1] - p[i][1]) * f + 0.5;
+  // drift off the centre line a little so a column reads as a crowd
+  const s = Math.sin(a.wob) * 0.22;
+  const dx = p[i + 1][0] - p[i][0], dy = p[i + 1][1] - p[i][1];
+  return [w2(x - dy * s), w2(y + dx * s)];
+}
+function nearestIndex(q, wx, wy) {
+  const p = map.paths[q]; let best = 0, bd = 1e9;
+  for (let i = 0; i < p.length; i++) { const dx = w2(p[i][0] + 0.5) - wx, dy = w2(p[i][1] + 0.5) - wy, d = dx * dx + dy * dy; if (d < bd) { bd = d; best = i; } }
+  return [best, Math.sqrt(bd)];
+}
+function raiderPos(z) {
+  const p = map.paths[z.q], i = Math.max(0, Math.min(p.length - 2, Math.floor(z.t))), f = z.t - i;
+  return [w2(p[i][0] + (p[i + 1][0] - p[i][0]) * f + 0.5 + z.ox), w2(p[i][1] + (p[i + 1][1] - p[i][1]) * f + 0.5 + z.oy)];
+}
+function step(dt) {
+  // raiders walk the curve inward from the exits toward the colony
+  for (const z of intruders) if (z.alive && z.raid) { z.t = Math.max(0, z.t - z.v * dt); [z.x, z.y] = raiderPos(z); if (z.t === 0) z.home = true; }
+  const live = intruders.filter((z) => z.alive);
+  for (const z of live) z.idx = map.paths.map((_, q) => nearestIndex(q, z.x, z.y)[0]);
+  for (const P of map.pher) for (let i = 0; i < P.length; i++) P[i] *= 0.996;
+  for (const A of map.alarm) for (let i = 0; i < A.length; i++) A[i] *= 0.97;
+  for (const a of ants) {
+    const len = map.paths[a.q].length;
+    a.wob += dt * (2 + a.v);
+    const [ax, ay] = antPos(a);
+    const ci = Math.round(a.t);
+    // stuck in the crowd? the point on the curve waits for its ant
+    const [px0, py0] = pathPoint(a.q, a.t, Math.sin(a.wob) * 0.28);
+    const lag = Math.hypot(px0 - ax, py0 - ay), go = lag < 0.8 ? 1 : 0.15;
+    const dt0 = dt; dt = dt0 * go;
+    let tgt = null, td = 1e9;
+    if (live.length) {
+      for (const z of live) { const d = Math.hypot(ax - z.x, ay - z.y); if (d < td) { td = d; tgt = z; } }
+      // sees an intruder, or smells the alarm others laid down
+      if (td < 4.5 || map.alarm[a.q][ci] > 0.35) a.aggro = 2.5;
+      // raiders (players) cut down the ants they reach; one blow each
+    if (td < 0.3 && tgt.alive && tgt.raid && (tgt.cd = (tgt.cd || 0) - dt) <= 0) {
+      a.dead = true; tgt.cd = 0.18; lost++;
+      flashes.push({ x: ax, y: ay, t: 0.3, red: true });
+      continue;
+    }
+    if (td < 0.35 && tgt.alive) {
+        // one touch kills (raiders take a few touches)
+        tgt.hp -= 1;
+        if (tgt.hp <= 0) { tgt.alive = false; tgt.t2 = 0; kills++; flashes.push({ x: tgt.x, y: tgt.y, t: 0 }); }
+      }
+    }
+    if (a.aggro > 0 && tgt) {
+      a.aggro -= dt;
+      map.alarm[a.q][ci] = Math.min(1, map.alarm[a.q][ci] + dt * 3);
+      const target = tgt.idx[a.q];
+      a.dir = target > a.t ? 1 : -1;
+      a.t += a.dir * a.v * 1.8 * dt;
+    } else {
+      a.aggro = 0;
+      if (!a.carry) {
+        a.dir = a.goal > a.t ? 1 : -1;
+        a.t += a.dir * a.v * dt;
+        if (Math.abs(a.t - a.goal) < 0.1) {
+          const gd = map.gardens.find((g) => g.q === a.q && g.i === a.goal && g.amt > 0);
+          if (gd) { gd.amt--; a.carry = true; } else a.goal = pickGoal(a.q);
+        }
+      } else {
+        a.t -= a.v * 0.8 * dt;
+        map.pher[a.q][ci] = Math.min(1, map.pher[a.q][ci] + dt * 0.8);
+        if (a.t <= 0) { a.t = 0; a.carry = false; stock++; a.goal = pickGoal(a.q); }
+      }
+    }
+    a.t = Math.max(0, Math.min(len - 1.001, a.t));
+    dt = dt0;
+  }
+  // bodies: each ant is pulled to its point on the curve and shoved by its
+  // neighbours; near the hill the shove fades and they pack in
+  const cs = 0.45, grid = new Map(), key = (x, y) => (Math.floor(x / cs) + 4096) * 8192 + Math.floor(y / cs) + 4096;
+  for (const a of ants) { const k = key(a.x, a.y); let b = grid.get(k); if (!b) grid.set(k, (b = [])); b.push(a); }
+  const rs = 0.34;
+  for (const a of ants) {
+    const [tx, ty] = pathPoint(a.q, a.t, Math.sin(a.wob) * 0.28);
+    let fx = (tx - a.x) * 9, fy = (ty - a.y) * 9;
+    const hill = Math.hypot(a.x, a.y), crowd = Math.min(1, Math.max(0.12, (hill - 3) / 7));
+    const gx = Math.floor(a.x / cs), gy = Math.floor(a.y / cs);
+    for (let ox = -1; ox <= 1; ox++) for (let oy = -1; oy <= 1; oy++) {
+      const b = grid.get((gx + ox + 4096) * 8192 + gy + oy + 4096); if (!b) continue;
+      for (const o of b) {
+        if (o === a) continue;
+        const dx = a.x - o.x, dy = a.y - o.y, d2 = dx * dx + dy * dy;
+        if (d2 > rs * rs || d2 < 1e-8) continue;
+        const d = Math.sqrt(d2), push = (1 - d / rs) * 40 * crowd;
+        fx += (dx / d) * push; fy += (dy / d) * push;
+      }
+    }
+    a.vx = a.vx * 0.82 + fx * dt; a.vy = a.vy * 0.82 + fy * dt;
+    const sp = Math.hypot(a.vx, a.vy), mx = 7;
+    if (sp > mx) { a.vx *= mx / sp; a.vy *= mx / sp; }
+    a.x += a.vx * dt; a.y += a.vy * dt;
+  }
+  ants = ants.filter((a) => !a.dead);
+  // the hill is alive: hauled food becomes new ants, born at the centre
+  for (let k = 0; k < 6 && ants.length < target && stock > 0; k++) {
+    stock--; born++;
+    const q = Math.floor(Math.random() * 4);
+    ants.push(newAnt(q, 0));
+    if (Math.random() < 0.15) births.push({ t: 0 });
+  }
+  births.forEach((b) => (b.t += dt));
+  births = births.filter((b) => b.t < 0.8);
+  // and food grows back in the gardens
+  for (const gd of map.gardens) if (gd.amt < gd.cap && Math.random() < dt * 0.12) gd.amt++;
+  for (const z of intruders) if (!z.alive) z.t2 += dt;
+  intruders = intruders.filter((z) => z.alive || z.t2 < 1.2);
+}
+function raid(k) {
+  intruders = [];
+  for (let j = 0; j < k; j++) {
+    const q = j % 4, len = map.paths[q].length;
+    // a loose column per exit
+    intruders.push({ raid: true, q, t: len - 1 - Math.floor(j / 4) * 0.45, v: 1.1 + Math.random() * 0.3, ox: (Math.random() - 0.5) * 0.4, oy: (Math.random() - 0.5) * 0.4, alive: true, hp: 40, t2: 0, x: 0, y: 0 });
+  }
+  kills = 0;
+}
+
+// ---------------------------------------------------------------- drawing
+function lens(ctx, x0, y0, x1, y1, s) {
+  const mx = (x0 + x1) / 2, my = (y0 + y1) / 2, dx = x1 - x0, dy = y1 - y0, L = Math.hypot(dx, dy);
+  const nx = -dy / L, ny = dx / L, b = L * 0.105 * s; // ~0.25 bulge on a 2.4 lens, like the game
+  // pull tips in a hair so neighbouring lenses touch only at points
+  const ix = dx * 0.015, iy = dy * 0.015;
+  ctx.moveTo(x0 + ix, y0 + iy);
+  ctx.quadraticCurveTo(mx + nx * b, my + ny * b, x1 - ix, y1 - iy);
+  ctx.quadraticCurveTo(mx - nx * b, my - ny * b, x0 + ix, y0 + iy);
+}
+function box(ctx, x, y, s, rot = 0) {
+  // rounded square with gently concave sides and a round hole (even-odd)
+  const h = s / 2, r = s * 0.2, k = s * 0.045, c = Math.cos(rot), sn = Math.sin(rot);
+  const P = (dx, dy) => [x + dx * c - dy * sn, y + dx * sn + dy * c];
+  const M = (dx, dy) => ctx.moveTo(...P(dx, dy));
+  const Q = (ax, ay, bx, by) => ctx.quadraticCurveTo(...P(ax, ay), ...P(bx, by));
+  M(-h + r, -h);
+  Q(0, -h + k, h - r, -h); Q(h, -h, h, -h + r);
+  Q(h - k, 0, h, h - r); Q(h, h, h - r, h);
+  Q(0, h - k, -h + r, h); Q(-h, h, -h, h - r);
+  Q(-h + k, 0, -h, -h + r); Q(-h, -h, -h + r, -h);
+  ctx.closePath();
+  ctx.moveTo(x + s * 0.33, y);
+  ctx.arc(x, y, s * 0.33, 0, Math.PI * 2, true);
+}
+// static layer, re-rendered crisp for the current view
+let cache = null, cacheView = null, dirty = true, settle = 0;
+function renderStatic() {
+  const c = cache || (cache = document.createElement("canvas"));
+  c.width = W * dpr; c.height = H * dpr;
+  const ctx = c.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.translate(W / 2 - view.x * view.s, H / 2 + view.y * view.s);
+  ctx.scale(view.s, -view.s);
+  const px = 1 / view.s, cell = CELL * view.s;
+  const vis = (x, y, pad) => Math.abs(x - view.x) < W / 2 / view.s + pad && Math.abs(y - view.y) < H / 2 / view.s + pad;
+  const drawAll = (shadow) => {
+    ctx.beginPath();
+    if (cell < 5) {
+      // far away the lenses become hairlines: the curve itself shows
+      ctx.lineWidth = Math.max(px, CELL * 0.08);
+      for (const [x0, y0, x1, y1] of map.walls) { const a = w2(x0), b = w2(y0), c2 = w2(x1), d = w2(y1); if (!vis((a + c2) / 2, (b + d) / 2, CELL)) continue; ctx.moveTo(a, b); ctx.lineTo(c2, d); }
+      ctx.strokeStyle = shadow ? "rgba(0,0,0,0.12)" : INK; ctx.stroke();
+      if (!shadow) { ctx.beginPath(); for (const [x, y, s] of map.boxes) { const wx = w2(x), wy = w2(y), h = s * CELL * 0.5; ctx.rect(wx - h, wy - h, h * 2, h * 2); } ctx.fillStyle = INK; ctx.fill(); }
+      return;
+    }
+    for (const [x0, y0, x1, y1] of map.walls) { const a = w2(x0), b = w2(y0), c2 = w2(x1), d = w2(y1); if (!vis((a + c2) / 2, (b + d) / 2, CELL)) continue; lens(ctx, a, b, c2, d, 1); }
+    for (const [x, y, s, rot] of map.boxes) { const wx = w2(x), wy = w2(y); if (vis(wx, wy, 1)) box(ctx, wx, wy, s * CELL, rot); }
+    // the hill: a rosette of lenses around a diamond box
+    for (let k = 0; k < 8; k++) { const a = k * Math.PI / 4 + Math.PI / 8, c = Math.cos(a), sn = Math.sin(a); lens(ctx, c * 0.62, sn * 0.62, c * 2.3, sn * 2.3, 1.15); }
+    box(ctx, 0, 0, 0.62, Math.PI / 4);
+    for (const gd of map.gardens) for (const [x, y] of gd.cells) { const wx = w2(x), wy = w2(y); if (vis(wx, wy, 1)) box(ctx, wx, wy, 0.3 * CELL); }
+    ctx.fillStyle = shadow ? "rgba(0,0,0,0.16)" : INK;
+    ctx.fill("evenodd");
+  };
+  // soft offset shadow first, like the sprites' blurred shadow copies
+  if (cell >= 5) {
+    ctx.save(); ctx.translate(0.07, -0.07); ctx.filter = `blur(${Math.max(0.5, 0.06 * view.s)}px)`; drawAll(true); ctx.restore();
+    ctx.filter = "none";
+  }
+  drawAll(false);
+  cacheView = { ...view }; dirty = false;
+}
+let flashes = [], t0 = performance.now();
+function frame(now) {
+  const dt = Math.min(0.05, (now - t0) / 1000); t0 = now;
+  if (intro) {
+    // slow pull-back from the colony to the whole structure
+    intro.t += dt;
+    const u = Math.min(1, intro.t / 6), e = 1 - Math.pow(1 - u, 3);
+    view.s = intro.s0 * Math.pow(intro.s1 / intro.s0, e); dirty = true;
+    if (u >= 1) intro = null;
+  }
+  step(dt);
+  settle -= dt;
+  if (!W || !H) { if (innerWidth) resize(); requestAnimationFrame(frame); return; }
+  if (!isFinite(view.s) || view.s <= 0) view.s = Math.min(W, H) / (map.N * CELL * 1.08);
+  if (dirty && (settle <= 0 || !cache)) renderStatic();
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.fillStyle = "#fbfbfb"; g.fillRect(0, 0, cv.width, cv.height);
+  // static layer (scaled live while zooming, re-rendered when settled)
+  if (cache && cache.width > 0 && cache.height > 0) {
+    const k = view.s / cacheView.s;
+    g.setTransform(dpr * k, 0, 0, dpr * k, dpr * (W / 2 - (view.x - cacheView.x) * view.s - W / 2 * k), dpr * (H / 2 + (view.y - cacheView.y) * view.s - H / 2 * k));
+    g.drawImage(cache, 0, 0, cache.width / dpr, cache.height / dpr);
+  }
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.translate(W / 2 - view.x * view.s, H / 2 + view.y * view.s);
+  g.scale(view.s, -view.s);
+  const px = 1 / view.s;
+  // pheromone: faint red ink along the paths they haul over; alarm in a hotter tone
+  for (let q = 0; q < 4; q++) {
+    const p = map.paths[q], P = map.pher[q], A = map.alarm[q];
+    for (let i = 0; i < p.length; i++) {
+      const v = P[i], al = A[i];
+      if (v < 0.04 && al < 0.04) continue;
+      const x = w2(p[i][0] + 0.5), y = w2(p[i][1] + 0.5);
+      if (al > 0.04) { g.fillStyle = `rgba(255,32,32,${0.18 * al})`; g.beginPath(); g.arc(x, y, CELL * 0.42, 0, 6.283); g.fill(); }
+      if (v > 0.04) { g.fillStyle = `rgba(255,32,32,${0.12 * v})`; g.fillRect(x - CELL * 0.05, y - CELL * 0.05, CELL * 0.1, CELL * 0.1); }
+    }
+  }
+  // births: soft hairline rings breathing out of the colony mouth
+  g.lineWidth = Math.max(px, 0.02);
+  for (const b of births) { const u = b.t / 0.8; g.strokeStyle = `rgba(255,32,32,${0.35 * (1 - u)})`; g.beginPath(); g.arc(0, 0, 0.3 + u * 1.4, 0, 6.283); g.stroke(); }
+  // ants
+  const r = Math.max(0.09, 1.6 * px);
+  g.fillStyle = RED; g.beginPath();
+  for (const a of ants) { const [x, y] = antPos(a); g.moveTo(x + r, y); g.arc(x, y, r, 0, 6.283); }
+  g.fill();
+  if (view.s > 12) {
+    g.fillStyle = INK; g.beginPath();
+    for (const a of ants) if (a.carry) { const [x, y] = antPos(a); g.rect(x - r * 0.7, y + r * 0.9, r * 1.4, r * 1.4); }
+    g.fill();
+  }
+  // intruders
+  for (const z of intruders) {
+    const al = z.alive ? 1 : Math.max(0, 1 - z.t2);
+    g.fillStyle = `rgba(64,128,255,${al})`; g.beginPath(); g.arc(z.x, z.y, 0.16, 0, 6.283); g.fill();
+    if (z.alive && !z.raid) { g.strokeStyle = "rgba(64,128,255,0.25)"; g.lineWidth = px; g.beginPath(); g.arc(z.x, z.y, 4.5, 0, 6.283); g.stroke(); }
+  }
+  for (const f of flashes) {
+    f.t += dt; const u = f.t / 0.6;
+    if (u < 1) { g.strokeStyle = f.red ? `rgba(255,32,32,${(1 - u) * 0.8})` : `rgba(64,128,255,${1 - u})`; g.lineWidth = Math.max(px, 0.04); g.beginPath(); g.arc(f.x, f.y, 0.2 + u * 1.6, 0, 6.283); g.stroke(); }
+  }
+  flashes = flashes.filter((f) => f.t < 0.6);
+  document.getElementById("stat").textContent = `${map.N}×${map.N} cells · ${map.walls.length} walls · ${map.boxes.length + map.gardens.length * 2} boxes · ${ants.length} ants · food ${stock} · born ${born} · lost ${lost}` + (intruders.some((z) => z.raid) || kills ? ` · raiders ${intruders.filter((z) => z.alive).length} left, ${intruders.filter((z) => z.alive && z.home).length} reached the hill` : "");
+  requestAnimationFrame(frame);
+}
+
+// ---------------------------------------------------------------- input
+function resize() {
+  const was = W;
+  dpr = Math.min(devicePixelRatio || 1, 2); W = innerWidth; H = innerHeight; cv.width = Math.max(1, W * dpr); cv.height = Math.max(1, H * dpr); dirty = true;
+  // a pane that opened at zero size gets its framing once it has one
+  if (!was && W && map) { const fit = Math.min(W, H) / (map.N * CELL * 1.08); if (intro) intro.s1 = fit, intro.s0 = Math.max(fit * 6, 40); else view.s = fit; }
+}
+addEventListener("resize", resize);
+const toWorld = (e) => [view.x + (e.clientX - W / 2) / view.s, view.y - (e.clientY - H / 2) / view.s];
+cv.addEventListener("wheel", (e) => {
+  e.preventDefault(); intro = null;
+  const [wx, wy] = toWorld(e), k = Math.exp(-e.deltaY * 0.0015);
+  view.s = Math.max(0.25, Math.min(140, view.s * k));
+  view.x = wx - (e.clientX - W / 2) / view.s; view.y = wy + (e.clientY - H / 2) / view.s;
+  dirty = true; settle = 0.12;
+}, { passive: false });
+let drag = null;
+cv.addEventListener("pointerdown", (e) => { drag = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y, moved: false }; cv.setPointerCapture(e.pointerId); });
+cv.addEventListener("pointermove", (e) => {
+  if (!drag) return;
+  const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+  if (Math.hypot(dx, dy) > 4) drag.moved = true;
+  if (drag.moved) { intro = null; view.x = drag.vx - dx / view.s; view.y = drag.vy + dy / view.s; dirty = true; settle = 0.12; }
+});
+cv.addEventListener("pointerup", (e) => {
+  if (drag && !drag.moved) { const [x, y] = toWorld(e); intruders.push({ x, y, alive: true, hp: 1, t2: 0 }); }
+  drag = null;
+});
+let intro = null;
+function regen(opts = {}) {
+  const order = +document.getElementById("order").value, loops = +document.getElementById("loops").value, sym = document.getElementById("sym").value;
+  map = build(order, loops, sym); stock = 20; born = 0; lost = 0; intruders = []; kills = 0;
+  spawnAnts(+document.getElementById("ants").value);
+  const fit = Math.min(W, H) / (map.N * CELL * 1.08);
+  if (opts.intro) intro = { t: 0, s0: Math.max(fit * 6, 40), s1: fit }; else view.s = fit;
+  view.x = 0; view.y = 0; dirty = true;
+}
+const presets = {
+  seed: { order: 4, loops: 8, ants: 600, sym: "rot" },
+  maze: { order: 4, loops: 0, ants: 500, sym: "rot" },
+  mega: { order: 6, loops: 6, ants: 2500, sym: "mir" },
+  swarm: { order: 5, loops: 30, ants: 4000, sym: "rot" },
+  raid: { order: 5, loops: 6, ants: 2014, sym: "rot", raid: 35 },
+};
+document.querySelectorAll("[data-p]").forEach((b) => b.addEventListener("click", () => {
+  const p = presets[b.dataset.p];
+  for (const k of ["order", "loops", "ants", "sym"]) document.getElementById(k).value = p[k];
+  regen({ intro: true });
+  if (p.raid) raid(p.raid);
+}));
+["order", "loops", "sym"].forEach((id) => document.getElementById(id).addEventListener("change", () => regen()));
+document.getElementById("ants").addEventListener("change", () => spawnAnts(+document.getElementById("ants").value));
+document.getElementById("reseed").addEventListener("click", () => { seed = (seed * 48271) % 2147483647; regen(); });
+resize();
+regen({ intro: true });
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

@@ -301,6 +301,7 @@ impl Game {
             // motion graphics in the world
             let tx = crate::motion::Tex { disc, soft, ring };
             self.motion.emit(false, &tx, |p| dist(p), |rec, d| items.push(Item { order: 6, dist: d, seq: 0, rec }));
+            self.shard_items(|p| dist(p), |rec, d| items.push(Item { order: 4, dist: d, seq: 0, rec }));
             items.sort_by(|a, b| a.order.cmp(&b.order).then(b.dist.partial_cmp(&a.dist).unwrap_or(std::cmp::Ordering::Equal)).then(a.seq.cmp(&b.seq)));
             for it in items {
                 out.extend_from_slice(&it.rec);
@@ -611,6 +612,126 @@ impl Game {
                 col[3] = 0.35 + 0.25 * (since * 9.0).sin().abs();
                 ribbon(&pts, 1.2, col, -1.0, &mut push);
             }
+        }
+    }
+}
+
+/// A katana blade: a filled quadratic curve that bows sideways by `bow` x
+/// its length, thick at the root and tapering to a point.
+pub(crate) fn blade(a: V3, b: V3, bow: f32, w: f32, cap: f32, color: [f32; 4], mut push: impl FnMut([f32; RECORD])) {
+    let w = w.min(cap);
+    let (dx, dy) = (b.x - a.x, b.y - a.y);
+    let l = (dx * dx + dy * dy).sqrt().max(1e-4);
+    let (nx, ny) = (-dy / l, dx / l);
+    let c = v3((a.x + b.x) / 2.0 + nx * bow * l, (a.y + b.y) / 2.0 + ny * bow * l, (a.z + b.z) / 2.0);
+    const N: usize = 18;
+    let mut prev: Option<(V3, V3)> = None;
+    for k in 0..=N {
+        let u = k as f32 / N as f32;
+        let (p0, p1, p2) = ((1.0 - u) * (1.0 - u), 2.0 * (1.0 - u) * u, u * u);
+        let p = a * p0 + c * p1 + b * p2;
+        let t = (c - a) * (2.0 * (1.0 - u)) + (b - c) * (2.0 * u);
+        let tl = (t.x * t.x + t.y * t.y).sqrt().max(1e-6);
+        let hw = w * (u * 10.0).min(1.0) * (1.0 - u).powf(0.8) / 2.0;
+        let off = v3(-t.y / tl * hw, t.x / tl * hw, 0.0);
+        let (lft, rgt) = (p + off, p - off);
+        if let Some((pl, pr)) = prev {
+            push(quad(-1.0, [pl, lft, rgt, pr], [0.0, 0.0, 1.0, 1.0], color));
+        }
+        prev = Some((lft, rgt));
+    }
+}
+
+impl Game {
+    /// Shard Lab: ink shards, their rave cascades, bonds and bolts.
+    fn shard_items(&self, dist: impl Fn(V3) -> f32, mut push: impl FnMut([f32; RECORD], f32)) {
+        use crate::shards::{unkey, ARC_W, DROPOUT, FADE_T, HOP, MAX_LINK_DIST, MAX_W};
+        let sim = &self.shards;
+        if sim.shards.is_empty() {
+            return;
+        }
+        const INK: [f32; 3] = [0.04, 0.04, 0.06];
+        let ink = |a: f32| [INK[0], INK[1], INK[2], a.clamp(0.0, 1.0)];
+        let min_w = 0.012;
+        let ahead = (self.motion.render_now - self.motion.now).clamp(0.0, 0.02);
+        let pos = |i: usize| {
+            let s = &sim.shards[i];
+            v3(s.x + s.vx * ahead, s.y + s.vy * ahead, s.z)
+        };
+        let t = sim.t;
+        let h = |x: u32| crate::motion::hash(x);
+        // motion streaks behind fast shards
+        for (i, p) in sim.shards.iter().enumerate() {
+            let sp = (p.vx * p.vx + p.vy * p.vy).sqrt();
+            if p.dead || sp < 1.0 {
+                continue;
+            }
+            let a = pos(i);
+            let b = a - v3(p.vx, p.vy, 0.0) * 0.05;
+            ribbon(&[b, a], 0.012, ink((sp / 40.0).min(0.35)), -1.0, |rec| push(rec, dist(a)));
+        }
+        // rave cascades (within each impact)
+        for imp in &sim.imps {
+            for l in &imp.lines {
+                if !l.show || sim.shards[l.a].dead || sim.shards[l.b].dead {
+                    continue;
+                }
+                let k = (t - l.born) as f32;
+                let life = l.life as f32;
+                let half = life / 2.0;
+                let al = if l.snap { if k < 1.0 { 1.0 } else { (1.0 - k / life).max(0.0).sqrt() } } else if k < half { (k + 1.0) / half } else { (life - k) / half };
+                let (a, b) = (pos(l.a), pos(l.b));
+                blade(a, b, l.bow, (ARC_W * 1.6 * l.w).max(min_w), MAX_W, ink(al * 0.85), |rec| push(rec, dist(a)));
+            }
+        }
+        // bonds: hidden in 9-tick dropout epochs; an endpoint hops about
+        for &k in &sim.active {
+            if (h(k ^ (t / 9) as u32).wrapping_mul(2654435761) % 1000) as f32 / 1000.0 < DROPOUT {
+                continue;
+            }
+            let v = sim.vis.get(&k).copied().unwrap_or(0.0);
+            if v <= 0.0 {
+                continue;
+            }
+            let s0 = sim.links.get(&k).copied().unwrap_or(0.0);
+            let (i, j) = unkey(k);
+            let glow = (0.35 + s0 * 1.5).min(1.0) * v;
+            let (mut p, mut q) = (i, j);
+            let hk = h(k ^ (t as u32).wrapping_mul(747796405));
+            if (hk % 1000) as f32 / 1000.0 < HOP {
+                let a = &sim.shards[i];
+                let near: Vec<usize> = (0..sim.shards.len())
+                    .filter(|&o| o != i && !sim.shards[o].dead && sim.shards[o].fade < 0.0 && ((sim.shards[o].x - a.x).powi(2) + (sim.shards[o].y - a.y).powi(2)).sqrt() < MAX_LINK_DIST)
+                    .collect();
+                if !near.is_empty() {
+                    q = near[(hk / 1000) as usize % near.len()];
+                }
+                if hk & 1 == 1 {
+                    std::mem::swap(&mut p, &mut q);
+                }
+            }
+            let bow = ((k % 7) as f32 / 7.0 - 0.5) * 0.5 + if k % 2 == 1 { 0.1 } else { -0.1 };
+            let (a, b) = (pos(p), pos(q));
+            blade(a, b, bow, (ARC_W * (1.1 + 0.5 * s0)).max(min_w), MAX_W, ink(0.15 + glow * 0.75), |rec| push(rec, dist(a)));
+        }
+        // breakdown bolts
+        for bo in &sim.bolts {
+            let (a, b) = (pos(bo.a), pos(bo.b));
+            blade(a, b, 0.15, ARC_W * 1.6, MAX_W, ink(bo.life as f32 / 7.0), |rec| push(rec, dist(a)));
+        }
+        // the shards themselves
+        for (i, p) in sim.shards.iter().enumerate() {
+            if p.dead {
+                continue;
+            }
+            let life = if p.fade >= 0.0 { 1.0 - p.fade / FADE_T } else { 1.0 };
+            let shiver = if p.gasp >= 0.0 { 1.0 + 0.15 * (p.gasp * 60.0).sin() } else { 1.0 };
+            let hs = p.size * (0.5 + 0.5 * life) * shiver;
+            let c = pos(i);
+            let (sn, cs) = (p.a + p.w * ahead).sin_cos();
+            let pt = |q: [f32; 2]| c + v3((q[0] * cs - q[1] * sn) * hs, (q[0] * sn + q[1] * cs) * hs, 0.0);
+            let (a, b, cc) = (pt(p.tri[0]), pt(p.tri[1]), pt(p.tri[2]));
+            push(quad(-1.0, [a, b, cc, cc], [0.0, 0.0, 1.0, 1.0], [0.067, 0.067, 0.067, life * life]), dist(c) - 0.002);
         }
     }
 }
