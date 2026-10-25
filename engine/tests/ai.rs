@@ -59,3 +59,37 @@ fn hard_beats_easy() {
     }
     assert!(hard > easy * 2 && hard >= 6, "hard {hard} vs easy {easy}");
 }
+
+/// MGE pacing: after a kill the victim is back within ~0.6 s, at the
+/// spawn farthest from the killer, and the camera swoops.
+#[test]
+fn respawn_is_instant_and_far_from_the_killer() {
+    let mut e = match_with_ai(2, 3);
+    let p1 = e.game().players.iter().find(|p| e.game().w.nodes[p.node].tag == "PlayerOneScreen1").map(|p| p.node).unwrap();
+    // let the fighter kill player 1
+    let mut died_at = None;
+    for f in 0..(50 * 20) {
+        e.direct(0, 0.0, 0.0, 0.0, 0.0, false, true, true);
+        e.frame();
+        if e.game().w.position(p1).x == -666.0 {
+            died_at = Some(f);
+            break;
+        }
+    }
+    let died_at = died_at.expect("the fighter got a kill");
+    let mut back = None;
+    for f in 0..60 {
+        e.frame();
+        if e.game().w.position(p1).x != -666.0 {
+            back = Some(f);
+            break;
+        }
+    }
+    let back = back.expect("respawned");
+    assert!(back <= 30, "back in {back} ticks after dying at {died_at}");
+    let killer = e.game().last_killer[&p1];
+    let me = e.game().w.position(p1);
+    let them = e.game().w.position(killer);
+    assert!((me - them).length() > 6.0, "respawned far from the killer: {}", (me - them).length());
+    assert!(e.game().cam_follow.iter().any(|c| c.swoop.is_some()), "the camera is swooping");
+}

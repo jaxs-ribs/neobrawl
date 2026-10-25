@@ -125,7 +125,7 @@ impl Game {
                 self.rave_line_step(b, index, &mut j, &mut a, &mut r1, &mut r2).then_some(RaveLine { b, index, j, a, r1, r2 })
             }
             Respawn { dm, player, mut wait } => {
-                if wait == super::ticks(3.0) {
+                if wait == super::ticks(super::matchplay::RESPAWN_SECS) {
                     self.set_aimer(false);
                 }
                 waiting!(wait, Respawn { dm, player, wait });

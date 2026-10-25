@@ -33,7 +33,14 @@ pub struct CamFollow {
     pub players: [Option<usize>; 2],
     pub should_follow: bool,
     pub started: bool,
+    /// a respawn swoop in flight: start time (s) and where it left from
+    pub swoop: Option<(f32, V3)>,
 }
+
+/// MGE pacing: back in the fight half a second after dying.
+pub const RESPAWN_SECS: f32 = 0.55;
+/// The respawn swoop's length (s).
+const SWOOP_SECS: f32 = 0.85;
 
 #[derive(Clone, Debug, Default)]
 pub struct Blob {
@@ -184,7 +191,8 @@ impl Game {
         }
         self.w.set_position(player, v3(-666.0, -666.0, -666.0));
         self.phys.forget(player);
-        self.tasks.push(Task::Respawn { dm: d, player, wait: ticks(3.0) });
+        self.last_killer.insert(player, killer);
+        self.tasks.push(Task::Respawn { dm: d, player, wait: ticks(RESPAWN_SECS) });
     }
 
     pub(super) fn attach_camera(&mut self, d: usize, on: bool) {
@@ -211,12 +219,38 @@ impl Game {
         self.set_aimer(true);
         if !self.deaths[d].intro_fight {
             if let Some(sp) = self.deaths[d].spawn_points {
-                let n = self.w.nodes[sp].children.len() as i32;
-                let r = self.rng.range(0, n) as usize;
-                let p = self.w.position(self.w.nodes[sp].children[r]);
-                self.w.set_position(player, p);
-                self.phys.forget(player);
+                // the spawn farthest from whoever is alive (the killer first):
+                // straight back in, but never into their lap
+                let threats: Vec<V3> = self
+                    .last_killer
+                    .get(&player)
+                    .map(|&k| vec![self.w.position(k)])
+                    .unwrap_or_default()
+                    .into_iter()
+                    .chain(self.players.iter().filter(|p| p.node != player).map(|p| self.w.position(p.node)))
+                    .filter(|p| p.x != -666.0)
+                    .collect();
+                let kids = self.w.nodes[sp].children.clone();
+                let p = kids
+                    .iter()
+                    .map(|&c| self.w.position(c))
+                    .max_by(|a, b| {
+                        let da = threats.iter().map(|t| (*t - *a).length()).fold(f32::MAX, f32::min);
+                        let db = threats.iter().map(|t| (*t - *b).length()).fold(f32::MAX, f32::min);
+                        da.partial_cmp(&db).unwrap()
+                    });
+                if let Some(p) = p {
+                    self.w.set_position(player, p);
+                    self.phys.forget(player);
+                }
             }
+        }
+        // the camera swoops from the kill to the new fight
+        let now = self.motion.now;
+        let cam = self.deaths[d].node;
+        if let Some(c) = self.cam_follow.iter_mut().find(|c| c.node == cam) {
+            let from = self.w.position(cam);
+            c.swoop = Some((now, from));
         }
         self.fx_respawn(player);
         self.attach_camera(d, true);
@@ -433,14 +467,31 @@ impl Game {
             let want_breath = 1.0 - 0.05 * idle - 0.05 * charge;
             let rate = if want_breath > self.motion.breath { 0.25 } else { 0.02 };
             self.motion.breath = if self.motion.breath == 0.0 { 1.0 } else { self.motion.breath + (want_breath - self.motion.breath) * rate };
-            let dist = if self.cam_follow[c].should_follow { (half_h / t).max(5.75) * self.motion.breath } else { 8.0 };
+            // during a death: punch in on the killer
+            let dist = if self.cam_follow[c].should_follow { (half_h / t).max(5.75) * self.motion.breath } else { 6.8 };
             let mid = (pa + pb) * 0.5;
             let want = v3(mid.x - off.x, mid.y - off.y, mid.z - dist - off.z);
             // quick to widen, slow to settle back in
             let dt = 0.02;
             let k_xy = 1.0 - (-dt / 0.14f32).exp();
-            let k_z = 1.0 - (-dt / if want.z < cur.z { 0.1f32 } else { 0.6 }).exp();
-            let np = v3(cur.x + (want.x - cur.x) * k_xy, cur.y + (want.y - cur.y) * k_xy, cur.z + (want.z - cur.z) * k_z);
+            let punch = !self.cam_follow[c].should_follow;
+            let k_z = 1.0 - (-dt / if want.z < cur.z { 0.1f32 } else if punch { 0.12 } else { 0.6 }).exp();
+            let mut np = v3(cur.x + (want.x - cur.x) * k_xy, cur.y + (want.y - cur.y) * k_xy, cur.z + (want.z - cur.z) * k_z);
+            // the respawn swoop: an eased arc from the kill to the new framing,
+            // pulling back mid-flight and curving off the straight line
+            if let Some((t0, from)) = self.cam_follow[c].swoop {
+                let u = (self.motion.now - t0) / SWOOP_SECS;
+                if u >= 1.0 {
+                    self.cam_follow[c].swoop = None;
+                } else {
+                    let e = u * u * u * (u * (u * 6.0 - 15.0) + 10.0); // smootherstep
+                    let travel = v3(want.x - from.x, want.y - from.y, 0.0);
+                    let tl = (travel.x * travel.x + travel.y * travel.y).sqrt();
+                    let side = if tl > 1e-3 { v3(-travel.y / tl, travel.x / tl, 0.0) } else { V3::ZERO };
+                    let lift = (std::f32::consts::PI * u).sin();
+                    np = from + (want - from) * e + side * (lift * tl * 0.18) - v3(0.0, 0.0, lift * (2.0 + tl * 0.25));
+                }
+            }
             self.w.set_position(node, np);
         }
     }

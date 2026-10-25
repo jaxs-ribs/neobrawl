@@ -189,6 +189,8 @@ pub struct Game {
     pub cues: Vec<(&'static str, f32, f32)>,
     /// where thrown boxes end, per thrower node: [soul, box, other] (tuning)
     pub throw_ends: HashMap<usize, [u32; 3]>,
+    /// who ended each soul last (for choosing its respawn)
+    pub last_killer: HashMap<usize, usize>,
 }
 
 pub fn field<'a>(w: &'a World, node: usize, script: &str, name: &str) -> &'a Value {
@@ -248,6 +250,7 @@ impl Game {
             ai: Default::default(),
             cues: Vec::new(),
             throw_ends: HashMap::new(),
+            last_killer: HashMap::new(),
         };
         for i in 0..g.w.nodes.len() {
             if let Some(clip) = g.w.nodes[i].audio.clone() {
