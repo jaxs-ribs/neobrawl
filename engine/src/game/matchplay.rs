@@ -390,11 +390,27 @@ impl Game {
             let cur = self.w.position(node);
             let mt = |x: f32, t: f32, d: f32| if (t - x).abs() <= d { t } else { x + (t - x).signum() * d };
             let np = if self.cam_follow[c].should_follow {
-                let zx = (pa.x - pb.x).abs() * 1.1;
-                let zy = (pa.y - pb.y).abs() * 1.6;
-                let zoom = zx.max(zy);
+                // Frame both players with a margin, from the real field of view
+                // and aspect (the original's fixed rates were tuned for phones
+                // and fall far behind a dash on a wide screen).
+                let lens = if self.w.nodes[node].camera.is_some() { Some(node) } else { self.camera_main() };
+                let fov = lens.and_then(|l| self.w.nodes[l].camera.as_ref()).map(|k| k.fov).unwrap_or(60.0);
+                // the lens may sit on a child offset from the follow node
+                let off = lens.map(|l| self.w.position(l) - cur).unwrap_or(V3::ZERO);
+                let t = (fov.to_radians() / 2.0).tan();
+                let aspect = (self.screen.w / self.screen.h).max(0.5);
+                // breathing room grows with the gap, so far-apart players never hug the frame
+                let (hx, hy) = ((pa.x - pb.x).abs() / 2.0, (pa.y - pb.y).abs() / 2.0);
+                let margin = 2.2 + 0.18 * hx.max(hy);
+                let half_h = (hy + margin).max((hx + margin) / aspect);
+                let dist = (half_h / t).max(5.75);
                 let mid = (pa + pb) * 0.5;
-                v3(mt(cur.x, mid.x, 0.04), mt(cur.y, mid.y, 0.4), mt(cur.z, -5.75 - zoom / 3.0, 0.4))
+                let want = v3(mid.x - off.x, mid.y - off.y, mid.z - dist - off.z);
+                // exponential follow: quick to widen, slow to settle back in
+                let dt = 0.02;
+                let k_xy = 1.0 - (-dt / 0.12f32).exp();
+                let k_z = 1.0 - (-dt / if want.z < cur.z { 0.1f32 } else { 0.6 }).exp();
+                v3(cur.x + (want.x - cur.x) * k_xy, cur.y + (want.y - cur.y) * k_xy, cur.z + (want.z - cur.z) * k_z)
             } else if pa.x == -666.0 {
                 v3(mt(cur.x, pb.x, 0.03), mt(cur.y, pb.y, 0.3), mt(cur.z, pb.z - 8.0, 0.05))
             } else {

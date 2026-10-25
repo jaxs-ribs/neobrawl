@@ -30,6 +30,10 @@ pub struct Player {
     pub hide_anchor: bool,
     pub aim_mask: u32,
     pub last_hit: V3,
+    /// eased (width, alpha) of the aim line, by what it is pointing at
+    pub aim_form: [f32; 2],
+    /// the aim sprite's authored (y scale, alpha)
+    pub aim_base: Option<(f32, f32)>,
     pub collided_box: Option<usize>,
     pub picked_box: Option<usize>,
     pub pickup_tutorial: bool,
@@ -577,12 +581,50 @@ impl Game {
         if let Some(h) = &hit {
             self.players[k].last_hit = h.point;
         }
+        // the line takes on what it touches: thin and soft on walls, firmer
+        // on a box, heaviest and faintly trembling on a soul
+        let target = match hit.as_ref().map(|h| self.hit_kind(h.node)) {
+            Some(2) => [1.0, 1.0],
+            Some(1) => [0.45, 1.0],
+            _ => [0.0, 0.8],
+        };
+        let p = &mut self.players[k];
+        for j in 0..2 {
+            p.aim_form[j] += (target[j] - p.aim_form[j]) * 0.25;
+        }
+        if p.aim_form[1] == 0.0 {
+            p.aim_form = target;
+        }
+        if let Some(s) = self.w.nodes[aimer].sprite.as_ref() {
+            let base = *p.aim_base.get_or_insert((self.w.nodes[aimer].lscale.y, s.color[3]));
+            let tremble = 1.0 + 0.06 * ((p.aim_form[0] - 0.5).max(0.0) * 2.0) * (self.frame as f32 * 0.9).sin();
+            let wy = base.0 * (1.0 + 0.4 * p.aim_form[0]) * tremble;
+            let a = base.1 * p.aim_form[1];
+            self.w.nodes[aimer].lscale.y = wy;
+            self.w.nodes[aimer].sprite.as_mut().unwrap().color[3] = a;
+        }
         let last = self.players[k].last_hit;
         let mut sx = -(last - pos).length() * 12.5;
         if p_single(&self.players[k]) && hit.is_none() {
             sx = -1000.0;
         }
         self.w.nodes[anchor].lscale.x = sx;
+    }
+
+    /// 2 = a player, 1 = a box, 0 = anything else.
+    fn hit_kind(&self, mut n: usize) -> u8 {
+        loop {
+            if self.player_of.contains_key(&n) {
+                return 2;
+            }
+            if self.boxes.iter().any(|b| b.node == n) {
+                return 1;
+            }
+            match self.w.nodes[n].parent {
+                Some(p) => n = p,
+                None => return 0,
+            }
+        }
     }
 
     fn carry_box(&mut self, k: usize) {

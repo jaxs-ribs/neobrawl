@@ -186,8 +186,7 @@ impl Game {
                         items.push(Item { order: 4, dist: d - 0.01, seq: p.node, rec: quad(ring, q, [0.0, 0.0, 1.0, 1.0], c) });
                     }
                     // cursor aim (League-style): a mark on the exact point under the
-                    // cursor, and a guide from the player through it and beyond,
-                    // since only the direction counts for the throw
+                    // cursor; the black aim line carries the direction
                     if ctl.active && ctl.use_cursor && ring >= 0.0 {
                         if let Some(cw) = self.cursor_world(pk) {
                             let to = v3(cw.x - pos.x, cw.y - pos.y, 0.0);
@@ -200,22 +199,6 @@ impl Game {
                                 c[3] = if ctl.aiming { 0.9 } else { 0.6 };
                                 let q = [mark + v3(-rad, -rad, 0.0), mark + v3(rad, -rad, 0.0), mark + v3(rad, rad, 0.0), mark + v3(-rad, rad, 0.0)];
                                 items.push(Item { order: 4, dist: d - 0.01, seq: p.node, rec: quad(ring, q, [0.0, 0.0, 1.0, 1.0], c) });
-                                // dashed guide: solid up to the mark, fading extrapolation past it
-                                let reach = len.max(4.0) + 3.0;
-                                let (dash, gap) = (0.22, 0.16);
-                                let mut s0 = 0.35;
-                                while s0 < reach {
-                                    let s1 = (s0 + dash).min(reach);
-                                    // leave a hole where the mark sits
-                                    if !(s1 > len - rad && s0 < len + rad) {
-                                        let fade = if s0 < len { 1.0 } else { (1.0 - (s0 - len) / (reach - len)).max(0.0) };
-                                        let mut lc = color;
-                                        lc[3] = (if ctl.aiming { 0.55 } else { 0.25 }) * fade;
-                                        let seg = [pos + a * s0, pos + a * s1];
-                                        ribbon(&seg, if ctl.aiming { 0.03 } else { 0.02 }, lc, -1.0, |rec| items.push(Item { order: 4, dist: d - 0.005, seq: p.node, rec }));
-                                    }
-                                    s0 = s1 + gap;
-                                }
                             }
                         }
                     }

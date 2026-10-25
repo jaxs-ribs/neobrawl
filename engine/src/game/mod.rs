@@ -515,6 +515,7 @@ impl Game {
             "tasks": self.tasks.len(),
             "boxesShattered": self.boxes.iter().filter(|b| b.raving).count(),
             "cursor": self.input.cursor,
+            "camera": self.camera_main().map(|c| { let p = self.w.position(c); [p.x, p.y, p.z] }),
             "screen": [self.screen.w, self.screen.h],
         })
     }
