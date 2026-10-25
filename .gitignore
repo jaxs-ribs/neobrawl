@@ -1,0 +1,3 @@
+engine/target/
+*.apk
+.DS_Store

@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>NeoBrawl</title>
+<style>
+  :root { --bg: #fbfbfb; --fg: #111; --dim: #777; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); overflow: hidden;
+    font: 14px/1.4 system-ui, sans-serif; touch-action: none; user-select: none; -webkit-user-select: none; }
+  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+  #overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center; padding: 16px; }
+  #overlay[hidden] { display: none; }
+  #overlay h1 { font-weight: 300; letter-spacing: .4em; margin: 0 0 .5em; }
+  #overlay p { color: var(--dim); margin: .25em 0; }
+  #help { position: fixed; right: 12px; bottom: 10px; font-size: 12px; color: var(--dim); text-align: right; pointer-events: none; }
+  #help kbd { font: 11px ui-monospace, monospace; border: 1px solid #ccc; border-radius: 3px; padding: 0 3px; }
+  #debug { position: fixed; left: 8px; top: 8px; font: 11px/1.35 ui-monospace, monospace; color: #070;
+    background: #fffd; padding: 6px 8px; white-space: pre; pointer-events: none; }
+  @media (hover: none) { #help { display: none; } }
+</style>
+</head>
+<body>
+<canvas id="screen"></canvas>
+<div id="overlay"><div><h1>NEOBRAWL</h1><p id="status">loading…</p></div></div>
+<div id="help">P1 <kbd>WASD</kbd> move · <kbd>F</kbd><kbd>G</kbd><kbd>H</kbd><kbd>T</kbd> aim (hold, release to throw)<br>
+P2 <kbd>←↑↓→</kbd> move · <kbd>J</kbd><kbd>K</kbd><kbd>L</kbd><kbd>I</kbd> aim · gamepads: left stick move, right stick aim</div>
+<div id="debug" hidden></div>
+<script type="module" src="./main.js"></script>
+</body>
+</html>
