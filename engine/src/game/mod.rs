@@ -187,6 +187,8 @@ pub struct Game {
     pub ai: [ai::Wanderer; 2],
     /// synthesised sound cues for the host: (name, pan -1..1, amount)
     pub cues: Vec<(&'static str, f32, f32)>,
+    /// where thrown boxes end, per thrower node: [soul, box, other] (tuning)
+    pub throw_ends: HashMap<usize, [u32; 3]>,
 }
 
 pub fn field<'a>(w: &'a World, node: usize, script: &str, name: &str) -> &'a Value {
@@ -245,6 +247,7 @@ impl Game {
             bodies: Vec::new(),
             ai: Default::default(),
             cues: Vec::new(),
+            throw_ends: HashMap::new(),
         };
         for i in 0..g.w.nodes.len() {
             if let Some(clip) = g.w.nodes[i].audio.clone() {

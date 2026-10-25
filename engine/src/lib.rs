@@ -83,6 +83,13 @@ impl Engine {
     }
 
     /// Desktop mode: players use `direct` controls; on-screen joysticks hide.
+    /// AI temperament for a slot: 0 wanders, 1-3 fights (easy, normal, hard).
+    pub fn set_ai_level(&mut self, slot: usize, level: u8) {
+        if let Some(a) = self.game.ai.get_mut(slot) {
+            a.level = level.min(3);
+        }
+    }
+
     /// Hand an input slot (0 = P1, 1 = P2) to the wandering AI, or back.
     pub fn set_ai(&mut self, slot: usize, on: bool) {
         if let Some(a) = self.game.ai.get_mut(slot) {

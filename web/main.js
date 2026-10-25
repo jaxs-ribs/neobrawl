@@ -667,6 +667,9 @@ async function main() {
   engine.set_desktop(desktop);
   // ?snake: you never stop; WASD / the stick only turn you
   if (params.has("snake")) engine.set_snake(true);
+  // the AI opponent fights (?ai=1 easy, 2 normal, 3 hard - the default);
+  // ?wander makes it a peaceful traveller instead
+  engine.set_ai_level(1, params.has("wander") ? 0 : Math.max(1, Math.min(3, +(params.get("ai") || 3) || 3)));
   // the engine draws the cursor (a spark); the system one would double it
   if (desktop) canvas.style.cursor = "none";
   addEventListener("keydown", (e) => {

@@ -114,6 +114,14 @@ impl Game {
             self.fx_flex(other, pos, normal);
         }
         let prev = self.boxes[b].prev_vel;
+        if let Some(th) = self.boxes[b].carried_by {
+            let e = self.throw_ends.entry(th).or_insert([0; 3]);
+            match self.w.nodes[other].layer {
+                crate::physics::LAYER_PLAYER => e[0] += 1,
+                crate::physics::LAYER_BOX => e[1] += 1,
+                _ => e[2] += 1,
+            }
+        }
         let other_tag = self.w.nodes[other].tag.clone();
         let other_layer = self.w.nodes[other].layer;
         if other_tag == "Wall" {

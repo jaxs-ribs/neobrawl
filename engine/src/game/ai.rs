@@ -13,6 +13,11 @@ use super::{Direct, Game, V2};
 #[derive(Clone, Debug, Default)]
 pub struct Wanderer {
     pub on: bool,
+    /// 0 = wanders only; 1-3 = fights (easy, normal, hard)
+    pub level: u8,
+    /// counters for tuning: throws, dodges, pre-emptive dashes, ticks armed, ticks lane blocked
+    pub stats: [u32; 5],
+    fight: Fight,
     target: Option<V3>,
     /// ticks spent on the current target / making no progress
     age: u32,
@@ -27,20 +32,114 @@ pub struct Wanderer {
 
 const MASK: u32 = 1 | (1 << 8) | (1 << crate::physics::LAYER_BOX);
 
-impl Game {
-    fn clear_path(&self, from: V3, to: V3, half: f32) -> bool {
+/// The fighter's memory.
+#[derive(Clone, Debug, Default)]
+struct Fight {
+    /// what it saw of each other soul, a few ticks late (reaction time)
+    seen: std::collections::VecDeque<Vec<(usize, V3)>>,
+    strafe: f32,
+    strafe_until: u64,
+    /// the charge it is aiming for (ticks) and the shot it is lining up
+    want_charge: f32,
+    aim: V3,
+    hold_aim: u32,
+    releasing: u32,
+    dodge: V3,
+    dodge_until: u64,
+    /// ticks the lane has been blocked, and a spot with a clear shot
+    blocked: u32,
+    spot: Option<V3>,
+}
+
+struct Level {
+    react: usize,
+    aim_err: f32,
+    dodge_p: f32,
+    range: f32,
+}
+
+fn level(l: u8) -> Level {
+    match l {
+        1 => Level { react: 14, aim_err: 0.22, dodge_p: 0.35, range: 5.5 },
+        2 => Level { react: 9, aim_err: 0.11, dodge_p: 0.65, range: 5.0 },
+        _ => Level { react: 5, aim_err: 0.045, dodge_p: 0.92, range: 4.6 },
+    }
+}
+
+/// Box physics: power 1.11 per tick of charge (min 20, max 100), drag 5,
+/// so a box covers d in -ln(1 - 5d/v0)/5 s and reaches at most v0/5.
+fn power_for(ticks: f32) -> f32 {
+    (ticks * 1.11).max(20.0).min(100.0)
+}
+fn flight_time(d: f32, v0: f32) -> Option<f32> {
+    let k = 1.0 - 5.0 * d / v0;
+    (k > 0.08).then(|| -k.ln() / 5.0)
+}
+
+/// The arena's solid shapes, gathered once per tick: (shape, centre, radius).
+pub(super) struct Solids(Vec<(crate::physics::Geo, f32, f32, f32)>);
+
+impl Solids {
+    /// Is the corridor from `from` to `to`, `half` wide each side, clear?
+    fn clear(&self, from: V3, to: V3, half: f32) -> bool {
         let d = to - from;
         let l = (d.x * d.x + d.y * d.y).sqrt();
         if l < 1e-3 {
             return true;
         }
-        let dir = v3(d.x / l, d.y / l, 0.0);
-        let side = v3(-dir.y, dir.x, 0.0);
-        [-half, 0.0, half].iter().all(|&o| self.phys.raycast(&self.w, from + side * o, dir, l, MASK).is_none())
+        let dir = [d.x / l, d.y / l];
+        let side = [-dir[1], dir[0]];
+        for (g, cx, cy, r) in &self.0 {
+            // corridor vs bounding circle first
+            let (ox, oy) = (cx - from.x, cy - from.y);
+            let along = (ox * dir[0] + oy * dir[1]).clamp(0.0, l);
+            let (px, py) = (from.x + dir[0] * along - cx, from.y + dir[1] * along - cy);
+            if (px * px + py * py).sqrt() > r + half {
+                continue;
+            }
+            for o in [-half, 0.0, half] {
+                let start = [from.x + side[0] * o, from.y + side[1] * o];
+                if crate::physics::ray_geo(start, dir, g).map(|t| t <= l).unwrap_or(false) {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+}
+
+impl Game {
+    pub(super) fn solids(&self) -> Solids {
+        let w = &self.w;
+        let mut out = Vec::new();
+        for i in 0..w.nodes.len() {
+            let Some(c) = w.nodes[i].collider.as_ref() else { continue };
+            if !c.enabled || c.trigger || MASK & (1 << w.nodes[i].layer) == 0 || !w.active_in_hierarchy(i) {
+                continue;
+            }
+            let Some(g) = crate::physics::geometry(w, i) else { continue };
+            let (cx, cy, r) = match &g {
+                crate::physics::Geo::Circle { c, r } => (c[0], c[1], *r),
+                crate::physics::Geo::Obb { c, h, .. } => (c[0], c[1], (h[0] * h[0] + h[1] * h[1]).sqrt()),
+                crate::physics::Geo::Poly { n, p } => {
+                    let n = *n as usize;
+                    let (sx, sy) = p[..n].iter().fold((0.0, 0.0), |a, q| (a.0 + q[0], a.1 + q[1]));
+                    let (cx, cy) = (sx / n as f32, sy / n as f32);
+                    let r = p[..n].iter().map(|q| ((q[0] - cx).powi(2) + (q[1] - cy).powi(2)).sqrt()).fold(0.0f32, f32::max);
+                    (cx, cy, r)
+                }
+            };
+            out.push((g, cx, cy, r));
+        }
+        Solids(out)
     }
 
     /// Run the wanderers before the tick consumes input.
     pub(super) fn ai_step(&mut self) {
+        if !self.ai.iter().any(|a| a.on) {
+            return;
+        }
+        let solids = self.solids();
         for slot in 0..2 {
             if !self.ai[slot].on {
                 continue;
@@ -55,6 +154,13 @@ impl Game {
             let others: Vec<V3> = (0..self.players.len()).filter(|&o| o != k).map(|o| self.w.position(self.players[o].node)).filter(|p| p.x != -666.0).collect();
             let seed = (self.frame as u32).wrapping_mul(2654435761) ^ (slot as u32 * 7919);
             let carrying = self.players[k].picked_box.is_some();
+            if self.ai[slot].level > 0 {
+                let mut w = std::mem::take(&mut self.ai[slot]);
+                let d = self.fight_step(slot, k, &mut w, &solids);
+                self.input.direct[slot] = d;
+                self.ai[slot] = w;
+                continue;
+            }
             let mut w = std::mem::take(&mut self.ai[slot]);
             w.age += 1;
             // progress check
@@ -82,7 +188,7 @@ impl Game {
                     let a = (hf(s) * 0.5 + 0.5) * std::f32::consts::TAU;
                     let r = 2.5 + (hf(s ^ 9) * 0.5 + 0.5) * 6.5;
                     let p = me + v3(a.cos() * r, a.sin() * r, 0.0);
-                    if !self.clear_path(me, p, 0.32) {
+                    if !solids.clear(me, p, 0.32) {
                         continue;
                     }
                     let crowd = others.iter().map(|o| (*o - p).length()).fold(f32::MAX, f32::min);
@@ -123,7 +229,7 @@ impl Game {
                 for off in [0.0f32, 0.35, -0.35, 0.7, -0.7, 1.1, -1.1, 1.6, -1.6, 2.3, -2.3] {
                     let a = base + off;
                     let d = v3(a.cos(), a.sin(), 0.0);
-                    if self.clear_path(me, me + d * 1.1, 0.28) {
+                    if solids.clear(me, me + d * 1.1, 0.28) {
                         dir = d;
                         break;
                     }
@@ -136,10 +242,251 @@ impl Game {
                 && l > 4.0
                 && self.players[k].dash_cd == 0
                 && hash(seed ^ 77) % 140 == 0
-                && self.clear_path(me, me + dir * 3.2, 0.3);
+                && solids.clear(me, me + dir * 3.2, 0.3);
             let mv = if w.rest > 0 { V2::ZERO } else { V2 { x: dir.x, y: dir.y } };
             self.input.direct[slot] = Direct { active: true, mv, aim: V2::ZERO, aiming: false, use_cursor: false, dash };
             self.ai[slot] = w;
         }
+    }
+}
+
+impl Game {
+    /// The fighter: get a box, hold a range while slipping sideways out of
+    /// your aim, charge just enough for the distance, lead the shot, throw
+    /// only down a clear lane - and get out of the way of anything coming.
+    fn fight_step(&mut self, slot: usize, k: usize, w: &mut Wanderer, solids: &Solids) -> Direct {
+        let lv = level(w.level);
+        let node = self.players[k].node;
+        let me = self.w.position(node);
+        let t = self.frame;
+        let seed = (t as u32).wrapping_mul(2654435761) ^ (slot as u32 * 7919 + 13);
+        // perception, delayed by the reaction time
+        let now: Vec<(usize, V3)> = (0..self.players.len())
+            .filter(|&o| o != k && !self.players[o].playback && self.w.active_in_hierarchy(self.players[o].node))
+            .map(|o| (o, self.w.position(self.players[o].node)))
+            .filter(|(_, p)| p.x != -666.0)
+            .collect();
+        w.fight.seen.push_back(now);
+        while w.fight.seen.len() > lv.react + 2 {
+            w.fight.seen.pop_front();
+        }
+        let old = w.fight.seen.front().cloned().unwrap_or_default();
+        let span = 3.min(w.fight.seen.len().saturating_sub(1)).max(1);
+        let later = w.fight.seen.get(span).cloned().unwrap_or_default();
+        let lag = (w.fight.seen.len().saturating_sub(1)) as f32 * super::DT;
+        // the enemy as perceived: velocity from the delayed track (3-tick
+        // average), and position carried forward across the reaction delay
+        // to where it must be now
+        let enemy = old.first().copied().map(|(o, p)| {
+            let v = later.iter().find(|(q, _)| *q == o).map(|(_, p2)| (*p2 - p) * (1.0 / (span as f32 * super::DT))).unwrap_or(V3::ZERO);
+            let v = if v.length() > 30.0 { V3::ZERO } else { v };
+            (o, p + v * lag, v)
+        });
+        let carrying = self.players[k].picked_box.is_some();
+        let charge = self.players[k].charge_timer;
+        let mut mv = V3::ZERO;
+        let mut aiming = false;
+        let mut aim = V2::ZERO;
+        let mut dash = false;
+        let mut final_approach = false;
+
+        // 1) danger: thrown boxes about to pass close, and aim lines on us
+        if t >= w.fight.dodge_until {
+            for b in &self.boxes {
+                if b.carried_by == Some(node) {
+                    continue;
+                }
+                let Some(body) = self.w.nodes[b.node].body.as_ref() else { continue };
+                let v = body.velocity;
+                let sp2 = v.x * v.x + v.y * v.y;
+                if sp2 < 100.0 || !self.w.active_in_hierarchy(b.node) {
+                    continue;
+                }
+                let r = me - self.w.position(b.node);
+                let tc = (r.x * v.x + r.y * v.y) / sp2;
+                if !(0.0..0.7).contains(&tc) {
+                    continue;
+                }
+                let miss = r - v * tc;
+                let md = (miss.x * miss.x + miss.y * miss.y).sqrt();
+                if md < 1.1 && (hash(seed ^ b.node as u32) % 1000) as f32 / 1000.0 < lv.dodge_p {
+                    // step off the line, away from where it will pass
+                    let sp = sp2.sqrt();
+                    let perp = v3(-v.y / sp, v.x / sp, 0.0);
+                    let side = if perp.x * miss.x + perp.y * miss.y >= 0.0 { perp } else { perp * -1.0 };
+                    w.fight.dodge = side;
+                    w.fight.dodge_until = t + 10;
+                    w.stats[1] += 1;
+                    if tc < 0.35 && self.players[k].dash_cd == 0 {
+                        dash = true;
+                    }
+                }
+            }
+        }
+        if t < w.fight.dodge_until {
+            mv = w.fight.dodge;
+        }
+
+        if let Some((eo, ep, ev)) = enemy {
+            let to = ep - me;
+            let dist = (to.x * to.x + to.y * to.y).sqrt().max(1e-3);
+            let dir = to * (1.0 / dist);
+            // their aim on us while they charge: slip sideways off it
+            let ea = self.players[eo].touch[1];
+            let their_charge = self.players[eo].charge_timer;
+            let lined = ea.x * -dir.x + ea.y * -dir.y;
+            let on_us = their_charge > 8.0 && lined > 0.9;
+            let armed = self.players[eo].picked_box.is_some();
+            // a loaded shot dead on us: get off the line before it comes
+            // (close throws arrive faster than anyone can sidestep)
+            if w.level >= 2 && on_us && lined > 0.97 && their_charge > 30.0 && self.players[k].dash_cd == 0 && t >= w.fight.dodge_until && hash(seed ^ 41) % 3 == 0 {
+                w.fight.dodge = v3(-dir.y, dir.x, 0.0) * w.fight.strafe;
+                w.fight.dodge_until = t + 8;
+                dash = true;
+                mv = w.fight.dodge;
+                w.stats[2] += 1;
+            }
+            // strafe sign flips on an uneven clock
+            if t >= w.fight.strafe_until {
+                w.fight.strafe = if hash(seed ^ 5) & 1 == 0 { 1.0 } else { -1.0 };
+                let gap = 12.0 + ((hf(seed ^ 9) * 0.5 + 0.5).max(0.02)).powf(-0.7) * 10.0;
+                w.fight.strafe_until = t + gap.min(90.0) as u64;
+            }
+            let tangent = v3(-dir.y, dir.x, 0.0) * w.fight.strafe;
+
+            if carrying {
+                // 2) ranging and the shot: a little further off while they're armed
+                let range = if armed { lv.range + 0.8 } else { lv.range - 0.6 };
+                let radial = dir * ((dist - range) * 0.6).clamp(-1.0, 1.0);
+                // a blocked lane for a moment: go find a spot with a clear shot
+                if w.fight.blocked > 8 && (w.fight.spot.is_none() || t % 12 == 0) {
+                    let mut best: Option<(f32, V3)> = None;
+                    for c in 0..12u32 {
+                        let a = c as f32 / 12.0 * std::f32::consts::TAU + hf(seed ^ c) * 0.2;
+                        let p = me + v3(a.cos(), a.sin(), 0.0) * (1.2 + (c % 3) as f32 * 0.9);
+                        if !solids.clear(me, p, 0.26) {
+                            continue;
+                        }
+                        let d = (ep - p).length();
+                        if !solids.clear(p + (ep - p) * (0.5 / d.max(0.5)), ep, 0.45) {
+                            continue;
+                        }
+                        let cost = (p - me).length() + (d - range).abs() * 0.7;
+                        if best.map(|b| cost < b.0).unwrap_or(true) {
+                            best = Some((cost, p));
+                        }
+                    }
+                    w.fight.spot = best.map(|b| b.1);
+                }
+                if mv == V3::ZERO {
+                    mv = match w.fight.spot {
+                        Some(sp) if w.fight.blocked > 8 && (sp - me).length() > 0.3 => {
+                            let d = sp - me;
+                            d * (1.0 / d.length().max(1e-3)) + if on_us { tangent * 0.6 } else { V3::ZERO }
+                        }
+                        _ => tangent * if on_us { 1.3 } else { 0.75 } + radial,
+                    };
+                }
+                // how hard: enough to still be lethal past their far side
+                let need = power_for(0.0).max((5.0 * (dist + 2.0) / 0.9).min(100.0));
+                w.fight.want_charge = (need / 1.11).clamp(14.0, 90.0);
+                // lead: where they will be when the box arrives
+                let v0 = power_for(w.fight.want_charge);
+                let mut aim_at = ep;
+                for _ in 0..3 {
+                    let d = (aim_at - me).length();
+                    let Some(tt) = flight_time(d, v0) else { break };
+                    aim_at = ep + ev * tt.min(0.8);
+                }
+                let mut ad = aim_at - me;
+                let al = (ad.x * ad.x + ad.y * ad.y).sqrt().max(1e-3);
+                ad = ad * (1.0 / al);
+                // human-ish error
+                let err = hf(seed ^ 77) * lv.aim_err;
+                let (s, c) = err.sin_cos();
+                ad = v3(ad.x * c - ad.y * s, ad.x * s + ad.y * c, 0.0);
+                let lane = solids.clear(me + ad * 0.5, me + ad * dist.min(9.0), 0.45);
+                aiming = true;
+                // hold the aim steady for the last ticks: the throw uses the aim of 2 ticks ago
+                if w.fight.hold_aim == 0 {
+                    w.fight.aim = ad;
+                }
+                aim = V2 { x: w.fight.aim.x, y: w.fight.aim.y };
+                w.stats[3] += 1;
+                if !lane {
+                    w.stats[4] += 1;
+                    w.fight.blocked += 1;
+                } else {
+                    w.fight.blocked = 0;
+                    w.fight.spot = None;
+                }
+                let ready = charge >= w.fight.want_charge && lane && flight_time(dist, power_for(charge)).is_some();
+                if ready && w.fight.hold_aim == 0 {
+                    w.fight.hold_aim = 3;
+                }
+                if w.fight.hold_aim > 0 {
+                    w.fight.hold_aim -= 1;
+                    if w.fight.hold_aim == 0 {
+                        aiming = false; // release
+                        w.stats[0] += 1;
+                    }
+                }
+            } else {
+                // 3) get a box: the nearest reachable one, not straight into their aim
+                w.fight.hold_aim = 0;
+                let mut best: Option<(f32, V3)> = None;
+                for b in &self.boxes {
+                    let n = b.node;
+                    if !self.w.active_in_hierarchy(n) || b.carried_by.is_some() || self.w.nodes[n].collider.as_ref().map(|c| !c.enabled).unwrap_or(true) {
+                        continue;
+                    }
+                    let bp = self.w.position(n);
+                    let d = (bp - me).length();
+                    if d > 14.0 {
+                        continue;
+                    }
+                    let toward_enemy = (bp - ep).length();
+                    let cost = d + if self.players[eo].charge_timer > 8.0 && toward_enemy < dist { 3.0 } else { 0.0 };
+                    if best.map(|x| cost < x.0).unwrap_or(true) && solids.clear(me, bp - (bp - me) * (0.5 / d.max(0.5)), 0.25) {
+                        best = Some((cost, bp));
+                    }
+                }
+                if mv == V3::ZERO {
+                    mv = match best {
+                        Some((_, bp)) => {
+                            let d = bp - me;
+                            let l = (d.x * d.x + d.y * d.y).sqrt().max(1e-3);
+                            final_approach = l < 1.6;
+                            d * (1.0 / l) + if on_us { tangent * 0.8 } else { V3::ZERO }
+                        }
+                        None => tangent + dir * 0.3,
+                    };
+                    // a dash toward a far box when the dash is up (a pickup refills it)
+                    if let Some((c, _)) = best {
+                        if c > 5.0 && self.players[k].dash_cd == 0 && hash(seed ^ 31) % 25 == 0 {
+                            dash = true;
+                        }
+                    }
+                }
+            }
+        }
+        // steer the move around obstacles with the wanderer's feelers
+        let ml = (mv.x * mv.x + mv.y * mv.y).sqrt();
+        // (not on the last stretch to a box: the box itself would read as a wall)
+        if ml > 1e-3 && !final_approach {
+            let want = mv * (1.0 / ml);
+            let base = want.y.atan2(want.x);
+            let mut out = V3::ZERO;
+            for off in [0.0f32, 0.35, -0.35, 0.7, -0.7, 1.1, -1.1, 1.6, -1.6] {
+                let a = base + off;
+                let d = v3(a.cos(), a.sin(), 0.0);
+                if solids.clear(me, me + d * 0.9, 0.26) {
+                    out = d;
+                    break;
+                }
+            }
+            mv = out;
+        }
+        Direct { active: true, mv: V2 { x: mv.x, y: mv.y }, aim, aiming, use_cursor: false, dash }
     }
 }

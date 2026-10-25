@@ -157,6 +157,14 @@ export class Engine {
     }
     /**
      * Desktop mode: players use `direct` controls; on-screen joysticks hide.
+     * AI temperament for a slot: 0 wanders, 1-3 fights (easy, normal, hard).
+     * @param {number} slot
+     * @param {number} level
+     */
+    set_ai_level(slot, level) {
+        wasm.engine_set_ai_level(this.__wbg_ptr, slot, level);
+    }
+    /**
      * Hand an input slot (0 = P1, 1 = P2) to the wandering AI, or back.
      * @param {number} slot
      * @param {boolean} on
