@@ -180,6 +180,37 @@ class Audio {
         this.tone(t, this.note(12), this.note(12), "sine", 0.001, 0.04, 0.03, pan);
         this.tone(t + 0.035, this.note(14), this.note(14), "sine", 0.001, 0.05, 0.025, pan);
         break;
+      case "break": { // a box shatters: snap, body, ringing glass, grit, scattering shards
+        const now = this.ctx.currentTime;
+        // a run of breaks climbs the scale (a phrase, not a repeat)
+        this.chainN = now - (this.chainT ?? -9) < 0.8 ? Math.min((this.chainN ?? 0) + 1, 6) : 0; this.chainT = now;
+        if (this.limited(name, 14)) return;
+        const mat = Math.floor(amt / 10), s = amt - mat * 10, hard = 0.55 + 0.45 * s;
+        // 1) snap: the attack, a 12 ms crack
+        this.hiss(t, "highpass", 4500, 4500, 0.7, 0.0008, 0.012, 0.28 * hard, pan);
+        // 2) body: a short falling thump, heavier on walls
+        this.tone(t, 150 + 60 * s, 52, "sine", 0.001, 0.09, (mat === 0 ? 0.32 : 0.22) * hard, pan);
+        // 3) glass: plate partials (inharmonic), each with its own decay, in key
+        const deg = 10 + this.chainN + Math.floor(R() * 3), f0 = this.note(deg);
+        const ratios = [1, 2.32, 4.25, 6.63, 9.38];
+        const ring = (f, gain, off) => ratios.forEach((r, i) => {
+          const f1 = f * r * (1 + (R() - 0.5) * 0.01);
+          if (f1 > 11000) return;
+          this.tone(t + off + R() * 0.006, f1, f1 * 0.995, "sine", 0.0008, (0.22 / (1 + i * 0.6)) * (0.7 + R() * 0.6) * (0.6 + 0.4 * s), gain * hard / Math.pow(i + 1, 0.6), pan + (R() - 0.5) * 0.3);
+        });
+        ring(f0, 0.085, 0);
+        if (mat === 1) ring(f0 * 1.5, 0.06, 0.012); // two boxes: a second pane, a fifth up
+        // 4) grit: a quick downward crackle
+        this.hiss(t + 0.004, "bandpass", 6000, 1800, 2.5, 0.001, 0.05, 0.07 * hard, pan);
+        // 5) shards settling: a few tiny tinkles, unevenly spread over half a second
+        const n = 3 + Math.floor(s * 5 + R() * 2);
+        for (let k = 0; k < n; k++) {
+          const at = 0.035 + Math.pow(R(), 2.2) * 0.5;
+          const f = this.note(14 + Math.floor(R() * 7)) * (1 + (R() - 0.5) * 0.02);
+          this.tone(t + at, f, f, "sine", 0.0006, 0.025 + R() * 0.05, (0.02 + 0.025 * Math.pow(R(), 3)) * (1 - at), pan + (R() - 0.5) * 0.9);
+        }
+        break;
+      }
       case "shatter": { // UI glass breaking: a few high pings, unevenly spread
         if (this.limited(name, 10)) return;
         const n = 2 + Math.floor(amt * 4 * R());
@@ -270,7 +301,7 @@ nb.Audio = Audio; // for offline level checks
 // per-voice trims (x the synth bus) aiming at: fling ~-26 dB RMS, home /
 // refill / thud ~-30, gather ~-32, soul / assemble ~-36, bolt / shatter /
 // tick / turn ~-38, ready ~-40, spark ~-42, hover ~-44
-const CUE_LEVEL = { fling: 1.2, home: 2.1, refill: 2.7, thud: 0.95, gather: 1, soul: 1.45, assemble: 0.72, bolt: 2.8, shatter: 1.45, tick: 2.8, turn: 2.24, ready: 3.85, spark: 9, hover: 10 };
+const CUE_LEVEL = { break: 2.5, fling: 1.2, home: 2.1, refill: 2.7, thud: 0.95, gather: 1, soul: 1.45, assemble: 0.72, bolt: 2.8, shatter: 1.45, tick: 2.8, turn: 2.24, ready: 3.85, spark: 9, hover: 10 };
 
 // ----------------------------------------------------------------- perf ---
 // The observables: every rAF frame's interval and CPU split, the engine's

@@ -107,8 +107,16 @@ impl Game {
         }
         let n = self.boxes[b].node;
         let pos = self.w.position(n);
-        let clip = self.menu.explosion.clone();
-        self.play(&clip, 5.0 / 5.0);
+        // the break: a synthesised glass shatter (the original was one long
+        // explosion sample, the same every time); how hard and what it hit
+        // shape it - amount = speed 0..1 + 10 x material (0 wall, 1 box, 2 soul)
+        let hit_speed = (self.boxes[b].prev_vel.length() / 80.0).clamp(0.0, 0.99);
+        let material = match self.w.nodes[other].layer {
+            crate::physics::LAYER_BOX => 1.0,
+            crate::physics::LAYER_PLAYER => 2.0,
+            _ => 0.0,
+        };
+        self.cue("break", pos, hit_speed + 10.0 * material);
         if self.w.nodes[other].layer != crate::physics::LAYER_PLAYER {
             self.fx_impact(pos, normal);
             self.fx_flex(other, pos, normal);
