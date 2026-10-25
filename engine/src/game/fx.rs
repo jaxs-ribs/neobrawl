@@ -270,12 +270,18 @@ impl Game {
         for (k, &n) in sprites.iter().enumerate() {
             let d = ((pts[k].x - mid.x).powi(2) + (pts[k].y - mid.y).powi(2)).sqrt();
             let delay = 0.35 + (d * 0.045).min(0.9) + hf(n as u32) * 0.04;
-            self.motion.forms.insert(n, now + delay);
-            let solid = self.w.nodes[n].collider.is_some() || self.player_of.contains_key(&n);
-            if solid {
-                let mut col = INK;
-                col[3] = 0.35;
-                self.motion.ring_at(false, delay, pts[k], 0.1, 1.1, 0.04, 0.5, col);
+            // traced shapes: a spark draws the real outline, then the fill lands
+            if let Some(rings) = self.outline_world(n) {
+                self.motion.forms.insert(n, now + delay + 0.22);
+                for (r, ring) in rings.into_iter().enumerate() {
+                    let mut col = INK;
+                    col[3] = if r == 0 { 0.8 } else { 0.5 };
+                    self.motion.trace(false, delay + r as f32 * 0.06, ring, 0.018, 0.55, col);
+                }
+            } else {
+                // shadows wait for the shape they belong to
+                let lag = if self.w.nodes[n].name.contains("Shadow") { 0.3 } else { 0.0 };
+                self.motion.forms.insert(n, now + delay + lag);
             }
         }
         // souls condense from sparks a beat after the arena stands
@@ -395,14 +401,33 @@ impl Game {
         self.motion.add_shake(0.05);
     }
 
-    /// A box comes back: it condenses in.
+    /// A box comes back: its outline is drawn, then it fills in.
     pub(super) fn fx_box_back(&mut self, node: usize) {
-        let p = self.w.position(node);
-        self.motion.forms.insert(node, self.motion.now);
-        let mut col = INK;
-        col[3] = 0.5;
-        self.motion.converge(false, p, 8, 1.2, 0.03, 0.3, col);
-        self.motion.ring_at(false, 0.25, p, 0.1, 0.7, 0.03, 0.35, col);
+        self.motion.forms.insert(node, self.motion.now + 0.3);
+        if let Some(rings) = self.outline_world(node) {
+            for (r, ring) in rings.into_iter().enumerate() {
+                let mut col = INK;
+                col[3] = if r == 0 { 0.7 } else { 0.45 };
+                self.motion.trace(false, r as f32 * 0.05, ring, 0.016, 0.5, col);
+            }
+        }
+    }
+
+    /// A traced sprite's outline rings in world space (closed), if it has one.
+    pub fn outline_world(&self, n: usize) -> Option<Vec<Vec<V3>>> {
+        let s = self.w.nodes[n].sprite.as_ref()?;
+        let v = self.w.sprites[s.sprite?].vector.clone()?;
+        let m = self.w.matrix(n);
+        Some(
+            v.outline
+                .iter()
+                .map(|r| {
+                    let mut pts: Vec<V3> = r.iter().map(|p| m.point(v3(p[0], p[1], 0.0))).collect();
+                    pts.push(pts[0]);
+                    pts
+                })
+                .collect(),
+        )
     }
 }
 

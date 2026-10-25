@@ -19,6 +19,123 @@ pub enum Geo {
     /// center, unit axis x, unit axis y, half extents
     Obb { c: [f32; 2], ax: [f32; 2], ay: [f32; 2], h: [f32; 2] },
     Circle { c: [f32; 2], r: f32 },
+    /// convex polygon in world space, CCW, first n points used
+    Poly { n: u8, p: [[f32; 2]; 16] },
+}
+
+impl Geo {
+    /// Boxes and hulls alike as a CCW polygon.
+    fn poly(&self) -> Option<(usize, [[f32; 2]; 16])> {
+        match self {
+            Geo::Obb { c, ax, ay, h } => {
+                let mut p = [[0.0; 2]; 16];
+                p[..4].copy_from_slice(&corners(*c, *ax, *ay, *h));
+                Some((4, ccw(4, p)))
+            }
+            Geo::Poly { n, p } => Some((*n as usize, *p)),
+            Geo::Circle { .. } => None,
+        }
+    }
+}
+
+fn ccw(n: usize, mut p: [[f32; 2]; 16]) -> [[f32; 2]; 16] {
+    let mut a = 0.0;
+    for k in 0..n {
+        let (u, v) = (p[k], p[(k + 1) % n]);
+        a += u[0] * v[1] - v[0] * u[1];
+    }
+    if a < 0.0 {
+        p[..n].reverse();
+    }
+    p
+}
+
+/// Outward unit normal of edge k of a CCW polygon.
+fn edge_normal(p: &[[f32; 2]; 16], n: usize, k: usize) -> [f32; 2] {
+    let (a, b) = (p[k], p[(k + 1) % n]);
+    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+    let l = (dx * dx + dy * dy).sqrt().max(1e-9);
+    [dy / l, -dx / l]
+}
+
+/// SAT between two convex polygons; normal points from b towards a.
+fn poly_poly(na: usize, pa: &[[f32; 2]; 16], nb: usize, pb: &[[f32; 2]; 16], slop: f32) -> Option<Contact> {
+    let (pa, pb) = (&pa[..na], &pb[..nb]);
+    let mut best = (f32::MAX, [0.0f32, 0.0f32]);
+    let axes = (0..na).map(|k| (true, k)).chain((0..nb).map(|k| (false, k)));
+    let mut fa = [[0.0; 2]; 16];
+    fa[..na].copy_from_slice(pa);
+    let mut fb = [[0.0; 2]; 16];
+    fb[..nb].copy_from_slice(pb);
+    for (from_a, k) in axes {
+        let axis = if from_a { edge_normal(&fa, na, k) } else { edge_normal(&fb, nb, k) };
+        let (mut amin, mut amax, mut bmin, mut bmax) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+        for p in pa {
+            let d = dot(*p, axis);
+            amin = amin.min(d);
+            amax = amax.max(d);
+        }
+        for p in pb {
+            let d = dot(*p, axis);
+            bmin = bmin.min(d);
+            bmax = bmax.max(d);
+        }
+        let o = (amax - bmin).min(bmax - amin);
+        if o < -slop {
+            return None;
+        }
+        if o < best.0 {
+            best = (o, axis);
+        }
+    }
+    let centroid = |p: &[[f32; 2]]| {
+        let s = p.iter().fold([0.0f32; 2], |a, q| [a[0] + q[0], a[1] + q[1]]);
+        [s[0] / p.len() as f32, s[1] / p.len() as f32]
+    };
+    let (ca, cb) = (centroid(pa), centroid(pb));
+    let mut n = best.1;
+    if dot([ca[0] - cb[0], ca[1] - cb[1]], n) < 0.0 {
+        n = [-n[0], -n[1]];
+    }
+    let ia = pa.iter().min_by(|p, q| dot(**p, n).partial_cmp(&dot(**q, n)).unwrap()).unwrap();
+    let ib = pb.iter().max_by(|p, q| dot(**p, n).partial_cmp(&dot(**q, n)).unwrap()).unwrap();
+    Some(Contact { normal: n, depth: best.0, point: [(ia[0] + ib[0]) / 2.0, (ia[1] + ib[1]) / 2.0] })
+}
+
+/// Circle against a CCW convex polygon; normal points from the polygon to the circle.
+fn circle_poly(c: [f32; 2], r: f32, n: usize, p: &[[f32; 2]; 16], slop: f32) -> Option<Contact> {
+    let mut inside = true;
+    let (mut best_d, mut best_pt) = (f32::MAX, [0.0f32; 2]);
+    let (mut shallow, mut shallow_n) = (f32::MAX, [0.0f32; 2]);
+    for k in 0..n {
+        let (a, b) = (p[k], p[(k + 1) % n]);
+        let en = edge_normal(p, n, k);
+        let side = dot([c[0] - a[0], c[1] - a[1]], en);
+        if side > 0.0 {
+            inside = false;
+        }
+        if -side < shallow {
+            shallow = -side;
+            shallow_n = en;
+        }
+        let ab = [b[0] - a[0], b[1] - a[1]];
+        let t = (dot([c[0] - a[0], c[1] - a[1]], ab) / dot(ab, ab).max(1e-12)).clamp(0.0, 1.0);
+        let q = [a[0] + ab[0] * t, a[1] + ab[1] * t];
+        let d = ((c[0] - q[0]).powi(2) + (c[1] - q[1]).powi(2)).sqrt();
+        if d < best_d {
+            best_d = d;
+            best_pt = q;
+        }
+    }
+    if inside {
+        return Some(Contact { normal: shallow_n, depth: shallow + r, point: best_pt });
+    }
+    let depth = r - best_d;
+    if depth < -slop {
+        return None;
+    }
+    let v = [c[0] - best_pt[0], c[1] - best_pt[1]];
+    Some(Contact { normal: [v[0] / best_d.max(1e-9), v[1] / best_d.max(1e-9)], depth, point: best_pt })
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -64,6 +181,14 @@ pub fn geometry(w: &World, i: usize) -> Option<Geo> {
     let col = w.nodes[i].collider.as_ref()?;
     let m = w.matrix(i);
     match col.shape {
+        Shape::Hull { n, pts } => {
+            let mut p = [[0.0f32; 2]; 16];
+            for k in 0..n as usize {
+                let q = m.point(v3(pts[k][0], pts[k][1], 0.0));
+                p[k] = [q.x, q.y];
+            }
+            Some(Geo::Poly { n, p: ccw(n as usize, p) })
+        }
         Shape::Box { size, center } => {
             let c = m.point(center);
             let ex = v3(m.0[0], m.0[1], m.0[2]);
@@ -112,7 +237,12 @@ pub fn collide(a: &Geo, b: &Geo, slop: f32) -> Option<Contact> {
             Some(Contact { normal: n, depth, point: [cb[0] + n[0] * rb, cb[1] + n[1] * rb] })
         }
         (Geo::Circle { c, r }, Geo::Obb { c: bc, ax, ay, h }) => circle_obb(*c, *r, *bc, *ax, *ay, *h, slop),
-        (Geo::Obb { .. }, Geo::Circle { .. }) => collide(b, a, slop).map(|k| Contact { normal: [-k.normal[0], -k.normal[1]], ..k }),
+        (Geo::Obb { .. } | Geo::Poly { .. }, Geo::Circle { .. }) => collide(b, a, slop).map(|k| Contact { normal: [-k.normal[0], -k.normal[1]], ..k }),
+        (Geo::Circle { c, r }, Geo::Poly { n, p }) => circle_poly(*c, *r, *n as usize, p, slop),
+        (Geo::Poly { .. }, _) | (_, Geo::Poly { .. }) => {
+            let ((na, pa), (nb, pb)) = (a.poly()?, b.poly()?);
+            poly_poly(na, &pa, nb, &pb, slop)
+        }
         (Geo::Obb { c: c1, ax: x1, ay: y1, h: h1 }, Geo::Obb { c: c2, ax: x2, ay: y2, h: h2 }) => {
             let pa = corners(*c1, *x1, *y1, *h1);
             let pb = corners(*c2, *x2, *y2, *h2);
@@ -196,6 +326,39 @@ fn ray_geo(o: [f32; 2], d: [f32; 2], g: &Geo) -> Option<f32> {
                 return None;
             }
             Some((-b - disc.sqrt()).max(0.0))
+        }
+        Geo::Poly { n, p } => {
+            // Cyrus-Beck: clip the ray against each edge's half-plane
+            let n = *n as usize;
+            let (mut tmin, mut tmax) = (0.0f32, f32::MAX);
+            let mut inside = true;
+            for k in 0..n {
+                let en = edge_normal(p, n, k);
+                let num = dot([p[k][0] - o[0], p[k][1] - o[1]], en);
+                let den = dot(d, en);
+                if num < 0.0 {
+                    inside = false;
+                }
+                if den.abs() < 1e-9 {
+                    if num < 0.0 {
+                        return None;
+                    }
+                } else {
+                    let t = num / den;
+                    if den < 0.0 {
+                        tmin = tmin.max(t);
+                    } else {
+                        tmax = tmax.min(t);
+                    }
+                    if tmin > tmax {
+                        return None;
+                    }
+                }
+            }
+            if inside {
+                return None; // origin inside: PhysX ignores the starting collider
+            }
+            Some(tmin)
         }
         Geo::Obb { c, ax, ay, h } => {
             let rel = [o[0] - c[0], o[1] - c[1]];
@@ -427,5 +590,30 @@ mod tests {
         let b = Geo::Obb { c: [5.0, 0.0], ax: [1.0, 0.0], ay: [0.0, 1.0], h: [1.0, 1.0] };
         assert!((ray_geo([0.0, 0.0], [1.0, 0.0], &b).unwrap() - 4.0).abs() < 1e-5);
         assert!(ray_geo([0.0, 0.0], [-1.0, 0.0], &b).is_none());
+    }
+
+    fn square(c: [f32; 2], h: f32) -> Geo {
+        let mut p = [[0.0f32; 2]; 16];
+        p[..4].copy_from_slice(&[[c[0] - h, c[1] - h], [c[0] + h, c[1] - h], [c[0] + h, c[1] + h], [c[0] - h, c[1] + h]]);
+        Geo::Poly { n: 4, p }
+    }
+
+    #[test]
+    fn hull_contacts_and_rays() {
+        let a = square([0.0, 0.0], 1.0);
+        // circle just touching the right face is pushed out along +x
+        let k = collide(&Geo::Circle { c: [1.4, 0.0], r: 0.5 }, &a, 0.0).unwrap();
+        assert!((k.normal[0] - 1.0).abs() < 1e-4 && (k.depth - 0.1).abs() < 1e-4);
+        // polygon vs polygon and polygon vs box agree with the box solver
+        let k = collide(&square([1.9, 0.0], 1.0), &a, 0.0).unwrap();
+        assert!((k.normal[0] - 1.0).abs() < 1e-4 && (k.depth - 0.1).abs() < 1e-4);
+        let b = Geo::Obb { c: [0.0, 1.9], ax: [1.0, 0.0], ay: [0.0, 1.0], h: [1.0, 1.0] };
+        let k = collide(&b, &a, 0.0).unwrap();
+        assert!((k.normal[1] - 1.0).abs() < 1e-4);
+        assert!(collide(&square([3.0, 0.0], 0.5), &a, 0.0).is_none());
+        // rays enter at the near face; starting inside is ignored
+        assert!((ray_geo([-5.0, 0.0], [1.0, 0.0], &a).unwrap() - 4.0).abs() < 1e-4);
+        assert!(ray_geo([-5.0, 3.0], [1.0, 0.0], &a).is_none());
+        assert!(ray_geo([0.0, 0.0], [1.0, 0.0], &a).is_none());
     }
 }

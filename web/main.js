@@ -14,7 +14,7 @@ const fresh = params.has("fresh");
 const $ = (id) => document.getElementById(id);
 const canvas = $("screen");
 
-const nb = (window.__nb = { ready: false, errors: [], fps: 0, ticks: 0, draws: 0,
+const nb = (window.__nb = { cpuMs: 0, ready: false, errors: [], fps: 0, ticks: 0, draws: 0,
   state: () => (engine ? JSON.parse(engine.state()) : null) });
 addEventListener("error", (e) => nb.errors.push(String(e.message || e)));
 addEventListener("unhandledrejection", (e) => nb.errors.push(String(e.reason)));
@@ -145,6 +145,8 @@ class Renderer {
       fragment: { module, entryPoint: fs, targets: [{ format: this.format, blend: b }] },
       primitive: { topology: "triangle-list", cullMode: "none" },
       depthStencil: { format: "depth24plus", depthWriteEnabled: depthWrite, depthCompare: "less-equal" },
+      // 4x MSAA: the traced vector shapes get smooth edges like the bitmaps had
+      multisample: { count: 4 },
     });
     this.pQuad = mk("vs_quad", "fs_quad", quadVB, [this.l0, this.l1], false, blend);
     this.pText = mk("vs_quad", "fs_text", quadVB, [this.l0, this.l1], false, blend);
@@ -217,8 +219,9 @@ class Renderer {
     const W = Math.max(1, Math.round(canvas.clientWidth * dpr)), H = Math.max(1, Math.round(canvas.clientHeight * dpr));
     if (canvas.width !== W || canvas.height !== H || !this.depth) {
       canvas.width = W; canvas.height = H;
-      this.depth?.destroy();
-      this.depth = d.createTexture({ size: [W, H], format: "depth24plus", usage: GPUTextureUsage.RENDER_ATTACHMENT });
+      this.depth?.destroy(); this.msaa?.destroy();
+      this.depth = d.createTexture({ size: [W, H], format: "depth24plus", sampleCount: 4, usage: GPUTextureUsage.RENDER_ATTACHMENT });
+      this.msaa = d.createTexture({ size: [W, H], format: this.format, sampleCount: 4, usage: GPUTextureUsage.RENDER_ATTACHMENT });
     }
     // 1) build vertex data + a command list
     const n = rec.length / RECORD;
@@ -242,6 +245,22 @@ class Renderer {
       const o = i * RECORD, kind = rec[o];
       if (kind === 9) { cur = { clear: rec[o + 1] === 1, vp: rec.slice(o + 4, o + 20), bg: rec.slice(o + 20, o + 24), cmds: [] }; passes.push(cur); continue; }
       if (kind === 0) { meshes.push(rec.slice(o + 4, o + 24)); cur.cmds.push({ kind: "mesh", mesh: rec[o + 1], idx: meshes.length - 1 }); continue; }
+      if (kind === 2) {
+        // hot path (thousands per frame with vector shapes): straight into the buffer
+        const t = rec[o + 1] < 0 ? this.white : this.textures[rec[o + 1]];
+        const c = cmd("quad", t);
+        need(6);
+        const u0 = rec[o + 16], v0 = rec[o + 17], u1 = rec[o + 18], v1 = rec[o + 19];
+        for (let j = 0; j < 6; j++) {
+          const k = QIDX[j], q = o + 4 + k * 3, w = vc * 9;
+          v[w] = rec[q]; v[w + 1] = rec[q + 1]; v[w + 2] = rec[q + 2];
+          v[w + 3] = k === 0 || k === 3 ? u0 : u1; v[w + 4] = k < 2 ? v0 : v1;
+          v[w + 5] = rec[o + 20]; v[w + 6] = rec[o + 21]; v[w + 7] = rec[o + 22]; v[w + 8] = rec[o + 23];
+          vc++;
+        }
+        c.count += 6;
+        continue;
+      }
       const P = [0, 1, 2, 3].map((k) => [rec[o + 4 + k * 3], rec[o + 5 + k * 3], rec[o + 6 + k * 3]]);
       const color = [rec[o + 20], rec[o + 21], rec[o + 22], rec[o + 23]];
       if (kind === 2) {
@@ -311,12 +330,12 @@ class Renderer {
     d.queue.writeBuffer(this.passBuf, 0, pdata);
     // 3) encode
     const enc = d.createCommandEncoder();
-    const view = this.ctx.getCurrentTexture().createView(), dview = this.depth.createView();
+    const target = this.ctx.getCurrentTexture().createView(), view = this.msaa.createView(), dview = this.depth.createView();
     let calls = 0;
     passes.forEach((p, pi) => {
-      const first = pi === 0;
+      const first = pi === 0, last = pi === passes.length - 1;
       const pass = enc.beginRenderPass({
-        colorAttachments: [{ view, loadOp: p.clear || first ? "clear" : "load", storeOp: "store",
+        colorAttachments: [{ view, resolveTarget: last ? target : undefined, loadOp: p.clear || first ? "clear" : "load", storeOp: "store",
           clearValue: { r: p.bg[0], g: p.bg[1], b: p.bg[2], a: 1 } }],
         depthStencilAttachment: { view: dview, depthLoadOp: "clear", depthClearValue: 1, depthStoreOp: "discard" },
       });
@@ -358,6 +377,7 @@ const dashPlayer = (e) => {
   if (e.key === "Shift") return e.location === 2 ? 1 : 0; // keyboards without a left/right code
   return -1;
 };
+const QIDX = [0, 1, 2, 0, 2, 3];
 const hash32 = (x) => { x |= 0; x ^= x >>> 16; x = Math.imul(x, 0x7feb352d); x ^= x >>> 15; x = Math.imul(x, 0x846ca68b); return (x ^ (x >>> 16)) >>> 0; };
 const desktop = true; // desktop edition: keyboard, mouse and controllers only
 const axis = (up, left, down, right) => {
@@ -487,8 +507,10 @@ async function main() {
     const p = engine.take_prefs(); if (p) savePrefs(p);
     if (nb.ticks !== textsAt) { texts = JSON.parse(engine.texts()); textsAt = nb.ticks; }
     engine.set_subtick(acc / TICK);
+    const t0 = performance.now();
     const len = engine.render();
     r.draw(new Float32Array(wasm.memory.buffer, engine.records_ptr(), len), texts, family, cssW(), cssH());
+    nb.cpuMs = nb.cpuMs * 0.95 + (performance.now() - t0) * 0.05; // smoothed render + record time
     frames++;
     if (now - fpsT >= 500) { nb.fps = Math.round((frames * 1000) / (now - fpsT)); frames = 0; fpsT = now; }
     if (debug) $("debug").textContent = `fps ${nb.fps} draws ${nb.draws}\n${engine.state()}`;

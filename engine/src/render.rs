@@ -107,7 +107,18 @@ impl Game {
                             Some(_) => (ui_seq.get(&i).copied().unwrap_or(0), dist(center)),
                             None => (i, dist(center)),
                         };
-                        items.push(Item { order: s.order, dist: d, seq, rec: quad(sp.tex as f32, p, uv, color) });
+                        if let Some(v) = sp.vector.as_ref() {
+                            // traced vector fill instead of the bitmap
+                            let k = self.form_of(i).map(|f| f.0).unwrap_or(1.0);
+                            let color = [color[0] * v.ink[0], color[1] * v.ink[1], color[2] * v.ink[2], color[3]];
+                            for t in &v.tris {
+                                let pt = |x: f32, y: f32| center + (m.point(v3(x, y, 0.0)) - center) * k;
+                                let (a, b, c) = (pt(t[0], t[1]), pt(t[2], t[3]), pt(t[4], t[5]));
+                                items.push(Item { order: s.order, dist: d, seq, rec: quad(-1.0, [a, b, c, c], [0.0, 0.0, 1.0, 1.0], color) });
+                            }
+                        } else {
+                            items.push(Item { order: s.order, dist: d, seq, rec: quad(sp.tex as f32, p, uv, color) });
+                        }
                     }
                 }
                 if let Some(l) = n.line.as_ref().filter(|l| l.enabled && l.points.len() >= 2 && l.colors[0][3] > 0.0) {

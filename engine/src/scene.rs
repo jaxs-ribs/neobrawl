@@ -76,6 +76,19 @@ pub struct TrailR {
 pub enum Shape {
     Box { size: V3, center: V3 },
     Capsule { radius: f32, center: V3 },
+    /// convex hull traced from the sprite (local units, CCW, n used)
+    Hull { n: u8, pts: [[f32; 2]; 16] },
+}
+
+/// A sprite re-drawn as vectors (tools/vectorize.py): fill triangles,
+/// outline rings (outer first, then holes) and a convex hull, all local.
+#[derive(Clone, Debug, Default)]
+pub struct VShape {
+    pub tris: Vec<[f32; 6]>,
+    pub outline: Vec<Vec<[f32; 2]>>,
+    pub hull: Vec<[f32; 2]>,
+    /// the bitmap's own colour, multiplied by the sprite tint
+    pub ink: [f32; 3],
 }
 
 #[derive(Clone, Debug)]
@@ -153,6 +166,7 @@ pub struct SpriteAsset {
     /// size in pixels / ppu (for UI "native size")
     pub ppu: f32,
     pub border: f32,
+    pub vector: Option<std::sync::Arc<VShape>>,
 }
 
 pub struct World {
@@ -228,6 +242,18 @@ impl World {
                 quad: [x0, y0, x0 + tr[2] / ppu, y0 + tr[3] / ppu],
                 ppu,
                 border: 0.0,
+                vector: assets.get("shapes").and_then(|sh| sh.get(s["name"].as_str().unwrap_or(""))).map(|v| {
+                    let pt = |p: &Value| [f(&p[0]), f(&p[1])];
+                    std::sync::Arc::new(VShape {
+                        tris: v["tris"].as_array().unwrap().iter().map(|t| {
+                            let a = t.as_array().unwrap();
+                            [f(&a[0]), f(&a[1]), f(&a[2]), f(&a[3]), f(&a[4]), f(&a[5])]
+                        }).collect(),
+                        outline: v["outline"].as_array().unwrap().iter().map(|r| r.as_array().unwrap().iter().map(pt).collect()).collect(),
+                        hull: v["hull"].as_array().unwrap().iter().map(pt).collect(),
+                        ink: [f(&v["ink"][0]), f(&v["ink"][1]), f(&v["ink"][2])],
+                    })
+                }),
             });
         }
         let mut mesh_keys: Vec<String> = assets["meshes"].as_object().unwrap().keys().cloned().collect();
@@ -440,6 +466,21 @@ impl World {
             for (k, v) in m {
                 if let (Ok(p), Some(arr)) = (k.parse::<usize>(), v.as_array()) {
                     nodes[p].children = arr.iter().filter_map(|x| x.as_u64().map(|x| x as usize)).collect();
+                }
+            }
+        }
+        // Box colliders on traced sprites become the sprite's own hull, so
+        // what you see is exactly what collides (the originals were rough
+        // rectangles: a box's was 61% of its drawn size).
+        for n in nodes.iter_mut() {
+            let hull = n.sprite.as_ref().and_then(|s| s.sprite).and_then(|k| sprites[k].vector.clone()).map(|v| v.hull.clone());
+            if let (Some(h), Some(c)) = (hull, n.collider.as_mut()) {
+                if matches!(c.shape, Shape::Box { .. }) && h.len() >= 3 {
+                    let mut pts = [[0.0f32; 2]; 16];
+                    for (k, p) in h.iter().take(16).enumerate() {
+                        pts[k] = *p;
+                    }
+                    c.shape = Shape::Hull { n: h.len().min(16) as u8, pts };
                 }
             }
         }

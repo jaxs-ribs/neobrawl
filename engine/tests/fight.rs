@@ -267,7 +267,8 @@ fn orbit_aim_throws_along_the_reticle_regardless_of_camera() {
     e.frame();
     e.frame();
     let v = e.game().w.nodes[b].body.as_ref().unwrap().velocity;
-    assert!(v.y > 15.0 && v.x.abs() < 1.0, "thrown straight up: {v:?}");
+    // within 5 degrees: the full-size hull can graze a neighbour on the way out
+    assert!(v.y > 15.0 && v.x.abs() < v.y * 0.09, "thrown straight up: {v:?}");
 }
 
 #[test]
