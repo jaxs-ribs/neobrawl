@@ -115,6 +115,20 @@ class Audio {
     bp.frequency.setValueAtTime(f, t); if (f2 !== f) bp.frequency.exponentialRampToValueAtTime(f2, t + a + d);
     this.env(g, t, a, peak, d); n.connect(bp).connect(g); n.start(t, Math.random() * 0.9); n.stop(t + a + d + 0.05);
   }
+  // a tanh saturator (4x oversampled) with its own panner, for the brutal voices
+  saturator() {
+    if (!this.satNode) {
+      const c = this.ctx, ws = c.createWaveShaper(), curve = new Float32Array(2048), drive = 3.2;
+      for (let i = 0; i < curve.length; i++) { const x = (i / (curve.length - 1)) * 2 - 1; curve[i] = Math.tanh(drive * x) / Math.tanh(drive); }
+      ws.curve = curve; ws.oversample = "4x";
+      const pre = c.createGain(), post = c.createGain(), lp = c.createBiquadFilter(), p = c.createStereoPanner ? c.createStereoPanner() : null;
+      pre.gain.value = 1; post.gain.value = 0.55; lp.type = "lowpass"; lp.frequency.value = 9500;
+      pre.connect(ws).connect(lp).connect(post);
+      if (p) { post.connect(p).connect(this.synth); } else post.connect(this.synth);
+      this.satNode = { input: pre, setPan: (v) => { if (p) p.pan.setValueAtTime(Math.max(-1, Math.min(1, v)), c.currentTime); } };
+    }
+    return this.satNode;
+  }
   limited(name, perSec) {
     const now = this.ctx.currentTime, list = (this.rate.get(name) || []).filter((x) => now - x < 1);
     if (list.length >= perSec) return true;
@@ -180,34 +194,55 @@ class Audio {
         this.tone(t, this.note(12), this.note(12), "sine", 0.001, 0.04, 0.03, pan);
         this.tone(t + 0.035, this.note(14), this.note(14), "sine", 0.001, 0.05, 0.025, pan);
         break;
-      case "break": { // a box shatters: snap, body, ringing glass, grit, scattering shards
+      case "break": { // a box shatters: brutal, short, never the same twice
+        // built on the original's punch (its first ~0.2 s only - the rest was
+        // a smear), a saturated kick, distorted crunch chopped into grains,
+        // and a spray of noise grit for the glass - no tones
         const now = this.ctx.currentTime;
-        // a run of breaks climbs the scale (a phrase, not a repeat)
-        this.chainN = now - (this.chainT ?? -9) < 0.8 ? Math.min((this.chainN ?? 0) + 1, 6) : 0; this.chainT = now;
+        this.chainN = now - (this.chainT ?? -9) < 0.8 ? Math.min((this.chainN ?? 0) + 1, 5) : 0; this.chainT = now;
         if (this.limited(name, 14)) return;
-        const mat = Math.floor(amt / 10), s = amt - mat * 10, hard = 0.55 + 0.45 * s;
-        // 1) snap: the attack, a 12 ms crack
-        this.hiss(t, "highpass", 4500, 4500, 0.7, 0.0008, 0.012, 0.28 * hard, pan);
-        // 2) body: a short falling thump, heavier on walls
-        this.tone(t, 150 + 60 * s, 52, "sine", 0.001, 0.09, (mat === 0 ? 0.32 : 0.22) * hard, pan);
-        // 3) glass: plate partials (inharmonic), each with its own decay, in key
-        const deg = 10 + this.chainN + Math.floor(R() * 3), f0 = this.note(deg);
-        const ratios = [1, 2.32, 4.25, 6.63, 9.38];
-        const ring = (f, gain, off) => ratios.forEach((r, i) => {
-          const f1 = f * r * (1 + (R() - 0.5) * 0.01);
-          if (f1 > 11000) return;
-          this.tone(t + off + R() * 0.006, f1, f1 * 0.995, "sine", 0.0008, (0.22 / (1 + i * 0.6)) * (0.7 + R() * 0.6) * (0.6 + 0.4 * s), gain * hard / Math.pow(i + 1, 0.6), pan + (R() - 0.5) * 0.3);
-        });
-        ring(f0, 0.085, 0);
-        if (mat === 1) ring(f0 * 1.5, 0.06, 0.012); // two boxes: a second pane, a fifth up
-        // 4) grit: a quick downward crackle
-        this.hiss(t + 0.004, "bandpass", 6000, 1800, 2.5, 0.001, 0.05, 0.07 * hard, pan);
-        // 5) shards settling: a few tiny tinkles, unevenly spread over half a second
-        const n = 3 + Math.floor(s * 5 + R() * 2);
-        for (let k = 0; k < n; k++) {
-          const at = 0.035 + Math.pow(R(), 2.2) * 0.5;
-          const f = this.note(14 + Math.floor(R() * 7)) * (1 + (R() - 0.5) * 0.02);
-          this.tone(t + at, f, f, "sine", 0.0006, 0.025 + R() * 0.05, (0.02 + 0.025 * Math.pow(R(), 3)) * (1 - at), pan + (R() - 0.5) * 0.9);
+        const mat = Math.floor(amt / 10), s = amt - mat * 10;
+        const hard = (0.35 + 0.65 * s) * (1 + 0.06 * this.chainN); // soft taps to full smashes; a run gets angrier
+        const c = this.ctx, sat = this.saturator();
+        const into = (node, g) => { const gg = c.createGain(); gg.gain.value = g; node.connect(gg).connect(sat.input); return gg; };
+        sat.setPan(pan);
+        // 1) the punch: the head of the original, cut short, pitched by the hit
+        const buf = this.buffers.get("explosion");
+        if (buf) {
+          const src = c.createBufferSource(), g = c.createGain();
+          src.buffer = buf; src.playbackRate.value = (1.12 - 0.3 * s) * (0.94 + R() * 0.12);
+          g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(0.9 * hard * this.cueGain, t + 0.003);
+          g.gain.setValueAtTime(0.9 * hard * this.cueGain, t + 0.03); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.2 + 0.06 * s);
+          src.connect(g); into(g, 1); src.start(t, R() * 0.015); src.stop(t + 0.3);
+        }
+        // 2) the impact: a kick that drops hard, heavier on walls
+        {
+          const o = c.createOscillator(), g = c.createGain();
+          o.type = "sine"; o.frequency.setValueAtTime(140 + 40 * s, t); o.frequency.exponentialRampToValueAtTime(38, t + 0.07);
+          const pk = (mat === 0 ? 0.9 : 0.7) * hard * this.cueGain;
+          g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(pk, t + 0.002); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.13);
+          o.connect(g); into(g, 1); o.start(t); o.stop(t + 0.16);
+        }
+        // 3) crunch: distorted mid noise, chopped into irregular grains
+        {
+          const n = c.createBufferSource(), bp = c.createBiquadFilter(), g = c.createGain();
+          n.buffer = this.noise; bp.type = "bandpass"; bp.frequency.setValueAtTime(1600 + 800 * R(), t); bp.frequency.exponentialRampToValueAtTime(700, t + 0.12); bp.Q.value = 1.1;
+          const pk = 0.75 * hard * this.cueGain;
+          g.gain.setValueAtTime(0, t);
+          let at = t;
+          while (at < t + 0.13) {
+            const fade = 1 - (at - t) / 0.13;
+            g.gain.setValueAtTime(pk * fade * (0.15 + 0.85 * Math.pow(R(), 0.6)), at);
+            at += 0.003 + R() * 0.007;
+          }
+          g.gain.setValueAtTime(0, at);
+          n.connect(bp).connect(g); into(g, 1); n.start(t, R() * 0.9); n.stop(at + 0.01);
+        }
+        // 4) the glass: a spray of tiny bright noise grains, dense then thinning
+        const grains = Math.round((14 + 18 * s) * (1 + 0.15 * this.chainN));
+        for (let k = 0; k < grains; k++) {
+          const at = Math.pow(R(), 1.9) * (0.18 + 0.12 * s);
+          this.hiss(t + at, "highpass", 3200 + R() * 6000, 3200, 0.9, 0.0005, 0.002 + R() * 0.006, (0.05 + 0.12 * Math.pow(R(), 3)) * (1 - at * 2.5) * hard, pan + (R() - 0.5) * 1.1);
         }
         break;
       }
@@ -301,7 +336,7 @@ nb.Audio = Audio; // for offline level checks
 // per-voice trims (x the synth bus) aiming at: fling ~-26 dB RMS, home /
 // refill / thud ~-30, gather ~-32, soul / assemble ~-36, bolt / shatter /
 // tick / turn ~-38, ready ~-40, spark ~-42, hover ~-44
-const CUE_LEVEL = { break: 2.5, fling: 1.2, home: 2.1, refill: 2.7, thud: 0.95, gather: 1, soul: 1.45, assemble: 0.72, bolt: 2.8, shatter: 1.45, tick: 2.8, turn: 2.24, ready: 3.85, spark: 9, hover: 10 };
+const CUE_LEVEL = { break: 1.3, fling: 1.2, home: 2.1, refill: 2.7, thud: 0.95, gather: 1, soul: 1.45, assemble: 0.72, bolt: 2.8, shatter: 1.45, tick: 2.8, turn: 2.24, ready: 3.85, spark: 9, hover: 10 };
 
 // ----------------------------------------------------------------- perf ---
 // The observables: every rAF frame's interval and CPU split, the engine's
