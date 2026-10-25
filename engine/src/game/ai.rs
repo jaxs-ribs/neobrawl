@@ -49,10 +49,27 @@ struct Fight {
     /// ticks the lane has been blocked, and a spot with a clear shot
     blocked: u32,
     spot: Option<V3>,
+    /// human reaction to danger: each thrown box is only "seen" once its
+    /// own reaction time has passed (box node -> tick it becomes visible)
+    noticed: std::collections::HashMap<usize, u64>,
+    /// since when their loaded aim has been on us
+    lined_since: Option<u64>,
+}
+
+/// How well it reads a charging opponent: per-tick juke hazard at full
+/// charge, and the chance a juke really changes direction (else a feint).
+fn read(l: u8) -> (f32, f32) {
+    match l {
+        1 => (0.015, 0.5),
+        2 => (0.03, 0.65),
+        _ => (0.05, 0.75),
+    }
 }
 
 struct Level {
     react: usize,
+    /// median reaction to a throw, in ticks (human: ~200-300 ms)
+    flinch: f32,
     aim_err: f32,
     dodge_p: f32,
     range: f32,
@@ -60,9 +77,9 @@ struct Level {
 
 fn level(l: u8) -> Level {
     match l {
-        1 => Level { react: 14, aim_err: 0.22, dodge_p: 0.35, range: 5.5 },
-        2 => Level { react: 9, aim_err: 0.11, dodge_p: 0.65, range: 5.0 },
-        _ => Level { react: 5, aim_err: 0.045, dodge_p: 0.92, range: 4.6 },
+        1 => Level { react: 14, flinch: 17.0, aim_err: 0.22, dodge_p: 0.35, range: 5.5 },
+        2 => Level { react: 9, flinch: 13.0, aim_err: 0.11, dodge_p: 0.6, range: 5.0 },
+        _ => Level { react: 5, flinch: 10.0, aim_err: 0.045, dodge_p: 0.8, range: 4.6 },
     }
 }
 
@@ -300,6 +317,18 @@ impl Game {
                 let v = body.velocity;
                 let sp2 = v.x * v.x + v.y * v.y;
                 if sp2 < 100.0 || !self.w.active_in_hierarchy(b.node) {
+                    w.fight.noticed.remove(&b.node);
+                    continue;
+                }
+                // a human needs a moment to see it: a reaction time per throw,
+                // right-skewed like real ones (mostly near the median, sometimes slow)
+                let seen_at = *w.fight.noticed.entry(b.node).or_insert_with(|| {
+                    let h = hash(seed ^ (b.node as u32).wrapping_mul(97));
+                    let u = (hf(h) * 0.5 + 0.5).max(0.02);
+                    let jitter = (-u.ln()).min(3.0) * lv.flinch * 0.35; // exponential tail
+                    t + (lv.flinch * 0.8 + jitter) as u64
+                });
+                if t < seen_at {
                     continue;
                 }
                 let r = me - self.w.position(b.node);
@@ -339,7 +368,35 @@ impl Game {
             let armed = self.players[eo].picked_box.is_some();
             // a loaded shot dead on us: get off the line before it comes
             // (close throws arrive faster than anyone can sidestep)
-            if w.level >= 2 && on_us && lined > 0.97 && their_charge > 30.0 && self.players[k].dash_cd == 0 && t >= w.fight.dodge_until && hash(seed ^ 41) % 3 == 0 {
+            // ...but only once it has been on us for a human beat
+            if on_us && lined > 0.97 {
+                w.fight.lined_since.get_or_insert(t);
+            } else {
+                w.fight.lined_since = None;
+            }
+            let lined_long = w.fight.lined_since.map(|s| t - s >= lv.flinch as u64).unwrap_or(false);
+            // anticipation, not reflexes: the longer and fuller you hold a shot
+            // on it, the likelier it jukes before you let go - sometimes the
+            // wrong way, sometimes just a feint - so you can read it and bait it
+            if on_us && their_charge > 15.0 && t >= w.fight.dodge_until {
+                let (hazard, honest) = read(w.level);
+                let held = w.fight.lined_since.map(|s| (t - s) as f32 / 25.0).unwrap_or(0.0).min(2.0);
+                let p = hazard * (their_charge / 90.0) * (0.5 + held);
+                if (hash(seed ^ 0x5151) % 10000) as f32 / 10000.0 < p {
+                    if (hash(seed ^ 0x6161) % 1000) as f32 / 1000.0 < honest {
+                        w.fight.strafe = -w.fight.strafe;
+                    }
+                    w.fight.dodge = v3(-dir.y, dir.x, 0.0) * w.fight.strafe;
+                    w.fight.dodge_until = t + 7 + (hash(seed ^ 0x7171) % 6) as u64;
+                    w.fight.strafe_until = t + 20;
+                    mv = w.fight.dodge;
+                    if their_charge > 60.0 && self.players[k].dash_cd == 0 && hash(seed ^ 0x8181) % 3 == 0 {
+                        dash = true;
+                    }
+                    w.stats[2] += 1;
+                }
+            }
+            if w.level >= 2 && lined_long && their_charge > 30.0 && self.players[k].dash_cd == 0 && t >= w.fight.dodge_until && hash(seed ^ 41) % 3 == 0 {
                 w.fight.dodge = v3(-dir.y, dir.x, 0.0) * w.fight.strafe;
                 w.fight.dodge_until = t + 8;
                 dash = true;

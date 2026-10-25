@@ -618,19 +618,43 @@ impl Game {
         let theme = self.menu.map_theme;
         match button {
             "PauseButton" => {
+                if self.paused {
+                    return;
+                }
+                self.paused = true;
+                // a resume still fading out gives way to this pause
+                self.tasks.retain(|t| !matches!(t, Task::PauseFade { fade_in: false, .. }));
                 self.tasks.push(Task::PauseFade { pause: k, fade_in: true, i: 0 });
                 if let Some(t) = theme {
                     self.tasks.push(Task::FadeSound { src: t, fade_in: false, volume: 0.3, i: 0 });
                 }
             }
             "ResumeButton" => {
+                if !self.paused {
+                    return;
+                }
+                self.paused = false;
+                // a pause still fading in gives way to this resume, from where it got to
+                let reached = self.tasks.iter().find_map(|t| match t {
+                    Task::PauseFade { fade_in: true, i, .. } => Some(*i),
+                    _ => None,
+                });
+                self.tasks.retain(|t| !matches!(t, Task::PauseFade { fade_in: true, .. }));
                 self.pause_elements(k, false);
+                if let Some(i) = reached {
+                    self.tasks.push(Task::PauseFade { pause: k, fade_in: false, i: 30 - i.min(30) });
+                    if let Some(t) = theme {
+                        self.tasks.push(Task::FadeSound { src: t, fade_in: true, volume: 0.3, i: 0 });
+                    }
+                    return;
+                }
                 self.tasks.push(Task::PauseFade { pause: k, fade_in: false, i: 0 });
                 if let Some(t) = theme {
                     self.tasks.push(Task::FadeSound { src: t, fade_in: true, volume: 0.3, i: 0 });
                 }
             }
             "QuitButton" => {
+                self.paused = false;
                 self.pauses[k].ended = true;
                 self.tasks.push(Task::DelayedQuit { pause: k, wait: 2 });
             }

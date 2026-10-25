@@ -826,7 +826,6 @@ impl Game {
     /// Esc: pause, or resume when the pause menu is up.
     pub fn toggle_pause(&mut self) {
         let Some(k) = self.pauses.iter().position(|p| self.w.active_in_hierarchy(p.node)) else { return };
-        let resume_up = self.pauses[k].resume.map(|r| self.w.active_in_hierarchy(r)).unwrap_or(false);
-        self.pause_button(k, if resume_up { "ResumeButton" } else { "PauseButton" });
+        self.pause_button(k, if self.paused { "ResumeButton" } else { "PauseButton" });
     }
 }

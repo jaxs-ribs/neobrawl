@@ -287,7 +287,7 @@ impl Engine {
         }
         let in_match = g.players.iter().any(|p| !p.single && !p.playback && g.w.active_in_hierarchy(p.node));
         let lull = if in_match { ((g.motion.now - g.motion.last_action - 1.5) / 2.0).clamp(0.0, 1.0) } else { 0.0 };
-        let paused = g.pauses.iter().any(|p| p.resume.map(|r| g.w.active_in_hierarchy(r)).unwrap_or(false));
+        let paused = g.paused;
         out.extend([lull, paused as i32 as f32, in_match as i32 as f32]);
         out
     }

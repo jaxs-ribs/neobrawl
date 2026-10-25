@@ -61,6 +61,21 @@ impl Game {
         self.tasks = keep;
     }
 
+    /// Step only the tasks `pick` selects (the rest wait, untouched).
+    pub(super) fn step_tasks_where(&mut self, pick: impl Fn(&Task) -> bool) {
+        let tasks = std::mem::take(&mut self.tasks);
+        let mut keep = Vec::with_capacity(tasks.len());
+        for t in tasks {
+            if !pick(&t) {
+                keep.push(t);
+            } else if let Some(t) = self.step_task(t) {
+                keep.push(t);
+            }
+        }
+        keep.append(&mut self.tasks);
+        self.tasks = keep;
+    }
+
     /// Advance one task; Some(task) keeps it alive.
     fn step_task(&mut self, t: Task) -> Option<Task> {
         use Task::*;

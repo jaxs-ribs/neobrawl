@@ -475,3 +475,53 @@ fn the_wanderer_travels_and_never_attacks() {
     assert!(worst < 60, "never stuck for long: {worst} ticks");
     assert!(e.game().w.position(p1).x != -666.0, "and never kills us");
 }
+
+#[test]
+fn esc_pause_freezes_the_match_and_survives_hammering() {
+    let mut e = start_match(12);
+    e.set_desktop(true);
+    let (p1, p2) = player_nodes(&e);
+    let white_alpha = |e: &Engine| {
+        let g = e.game();
+        g.pauses.iter().find(|p| g.w.active_in_hierarchy(p.node)).and_then(|p| p.white_fade).and_then(|n| g.w.nodes[n].image.as_ref()).map(|i| i.color[3]).unwrap_or(0.0)
+    };
+    let resume_up = |e: &Engine| {
+        let g = e.game();
+        g.pauses.iter().any(|p| p.resume.map(|r| g.w.active_in_hierarchy(r)).unwrap_or(false))
+    };
+    // pause: nothing moves, the menu comes up
+    e.toggle_pause();
+    let a = e.game().w.position(p1);
+    for _ in 0..50 {
+        e.direct(0, 1.0, 0.0, 0.0, 0.0, false, true, true);
+        e.frame();
+    }
+    assert_eq!(e.game().w.position(p1), a, "frozen while paused");
+    assert!(resume_up(&e) && white_alpha(&e) > 0.95, "pause menu up");
+    // resume: it plays again and the menu is gone
+    e.toggle_pause();
+    for _ in 0..40 {
+        e.direct(0, 1.0, 0.0, 0.0, 0.0, false, true, true);
+        e.frame();
+    }
+    assert!(!resume_up(&e) && white_alpha(&e) < 0.05, "menu gone after resume");
+    assert!((e.game().w.position(p1) - a).length() > 1.0, "moving again");
+    // hammer it: odd number of presses at uneven gaps ends paused and clean
+    for gap in [2, 5, 1, 9, 3, 7, 4] {
+        e.toggle_pause();
+        for _ in 0..gap {
+            e.frame();
+        }
+    }
+    for _ in 0..60 {
+        e.frame();
+    }
+    assert!(e.game().paused && resume_up(&e) && white_alpha(&e) > 0.95, "ends paused, cleanly");
+    e.toggle_pause();
+    for _ in 0..60 {
+        e.direct(0, 0.0, 1.0, 0.0, 0.0, false, true, true);
+        e.frame();
+    }
+    assert!(!e.game().paused && !resume_up(&e) && white_alpha(&e) < 0.05, "ends resumed, cleanly");
+    let _ = p2;
+}

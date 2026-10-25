@@ -191,6 +191,9 @@ pub struct Game {
     pub throw_ends: HashMap<usize, [u32; 3]>,
     /// who ended each soul last (for choosing its respawn)
     pub last_killer: HashMap<usize, usize>,
+    /// the match is frozen under the pause menu (the original only froze
+    /// time in the single-player tutorial; versus kept running under it)
+    pub paused: bool,
 }
 
 pub fn field<'a>(w: &'a World, node: usize, script: &str, name: &str) -> &'a Value {
@@ -251,6 +254,7 @@ impl Game {
             cues: Vec::new(),
             throw_ends: HashMap::new(),
             last_killer: HashMap::new(),
+            paused: false,
         };
         for i in 0..g.w.nodes.len() {
             if let Some(clip) = g.w.nodes[i].audio.clone() {
@@ -271,6 +275,15 @@ impl Game {
 
     /// One Unity frame at the fixed 50 Hz step.
     pub fn frame(&mut self) {
+        if self.paused {
+            // frozen: only the pause menu's own fades, the menu and the
+            // motion graphics keep going
+            self.step_tasks_where(|t| matches!(t, Task::PauseFade { .. } | Task::FadeSound { .. } | Task::DelayedQuit { .. }));
+            self.relayout();
+            self.ui_events();
+            self.fx_step();
+            return;
+        }
         if self.motion.hitstop > 0 {
             // the world holds still for a beat; only the motion graphics move
             self.motion.hitstop -= 1;
@@ -381,7 +394,7 @@ impl Game {
     pub fn interp_offsets(&self) -> HashMap<usize, V3> {
         let a = ((self.motion.render_now - self.motion.now) / DT).clamp(0.0, 1.0);
         let mut out = HashMap::new();
-        if self.motion.hitstop > 0 {
+        if self.motion.hitstop > 0 || self.paused {
             return out;
         }
         for (&n, &prev) in &self.prev_pos {
