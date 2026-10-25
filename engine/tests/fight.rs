@@ -137,3 +137,80 @@ fn a_click_within_one_frame_still_presses_buttons() {
     run(&mut e, 100);
     assert_eq!(state(&e)["screens"][0], "maps", "{}", e.state());
 }
+
+#[test]
+fn desktop_mouse_aims_at_the_cursor_and_click_release_throws() {
+    let mut e = start_match(3);
+    e.set_desktop(true);
+    assert!(fetch_box_desktop(&mut e), "picked a box: {}", e.state());
+    let (p1, p2) = player_nodes(&e);
+    let held = { let g = e.game(); g.players[g.player_of[&p1]].picked_box };
+    let others: Vec<usize> = e.game().boxes.iter().map(|b| b.node).filter(|&n| Some(n) != held).collect();
+    for (k, n) in others.into_iter().enumerate() {
+        e.game_mut().w.set_position(n, neobrawl::shared::math::v3(50.0 + 3.0 * k as f32, 50.0, 0.0));
+    }
+    let a = e.game().w.position(p1);
+    let dir = (0..32)
+        .map(|k| (k as f32 / 32.0 * std::f32::consts::TAU).sin_cos())
+        .find(|&(s, c)| {
+            let g = e.game();
+            let d = neobrawl::shared::math::v3(c, s, 0.0);
+            g.phys.raycast(&g.w, a + d * 0.4, d, 6.0, 1 | (1 << 8) | (1 << 11)).is_none()
+        })
+        .unwrap();
+    e.game_mut().w.set_position(p2, neobrawl::shared::math::v3(a.x + dir.1 * 4.0, a.y + dir.0 * 4.0, a.z));
+    let cam = e.game().camera_main().unwrap();
+    let target = e.game().w.position(p2);
+    let px = e.game().project(cam, target).unwrap();
+    e.cursor(px[0], px[1]);
+    // holding the button charges and must not move the player
+    let before = e.game().w.position(p1);
+    for _ in 0..50 {
+        // keep the mouse on player 2 while the camera pans and zooms
+        let cam = e.game().camera_main().unwrap();
+        let t = e.game().w.position(p2);
+        let px = e.game().project(cam, t).unwrap();
+        e.cursor(px[0], px[1]);
+        e.direct(0, 0.0, 0.0, 0.0, 0.0, true, true, true);
+        e.frame();
+    }
+    let after = e.game().w.position(p1);
+    assert!((after - before).length() < 0.05, "standing still while charging");
+    e.direct(0, 0.0, 0.0, 0.0, 0.0, false, true, true);
+    let mut killed = false;
+    let mut vel = Vec::new();
+    for _ in 0..40 {
+        e.frame();
+        if let Some(b) = held { vel.push(e.game().w.nodes[b].body.as_ref().unwrap().velocity); }
+        killed |= e.game().w.position(p2).x == -666.0;
+    }
+    assert!(killed, "throw went where the cursor was: dir {dir:?} vel {:?} {}", &vel[..4], e.state());
+}
+
+fn fetch_box_desktop(e: &mut Engine) -> bool {
+    let (p1, _) = player_nodes(e);
+    for _ in 0..400 {
+        let g = e.game();
+        let k = g.player_of[&p1];
+        if g.players[k].picked_box.is_some() {
+            e.direct(0, 0.0, 0.0, 0.0, 0.0, false, true, true);
+            for _ in 0..10 {
+                e.frame();
+            }
+            return true;
+        }
+        let me = g.w.position(p1);
+        let t = g
+            .boxes
+            .iter()
+            .filter(|b| g.w.active_in_hierarchy(b.node) && !b.raving && g.w.nodes[b.node].collider.as_ref().unwrap().enabled)
+            .map(|b| g.w.position(b.node))
+            .min_by(|a, b| (*a - me).length().partial_cmp(&(*b - me).length()).unwrap())
+            .unwrap();
+        let d = t - me;
+        let l = (d.x * d.x + d.y * d.y).sqrt().max(1e-3);
+        e.direct(0, d.x / l, d.y / l, 0.0, 0.0, false, true, true);
+        e.frame();
+    }
+    false
+}

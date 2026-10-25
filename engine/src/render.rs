@@ -62,6 +62,8 @@ impl Game {
             head[20..24].copy_from_slice(&c.bg);
             out.extend_from_slice(&head);
             let mut items: Vec<Item> = Vec::new();
+            // soft radial texture reused as a 1D falloff across ribbons
+            let soft = w.textures.iter().position(|t| t.1.ends_with("BlobBWShadow.png")).map(|t| t as f32).unwrap_or(-1.0);
             let dist = |p: V3| view.point(p).z;
             for i in 0..w.nodes.len() {
                 let n = &w.nodes[i];
@@ -95,19 +97,18 @@ impl Game {
                         items.push(Item { order: s.order, dist: d, seq, rec: quad(sp.tex as f32, p, uv, s.color) });
                     }
                 }
-                if let Some(l) = n.line.as_ref().filter(|l| l.enabled && l.points.len() >= 2) {
-                    for k in 0..l.points.len() - 1 {
-                        let (a, b) = if l.world { (l.points[k], l.points[k + 1]) } else { (m.point(l.points[k]), m.point(l.points[k + 1])) };
-                        let d = b - a;
-                        let len = (d.x * d.x + d.y * d.y).sqrt().max(1e-6);
-                        let nrm = v3(-d.y / len, d.x / len, 0.0);
-                        let (wa, wb) = (l.width[0] / 2.0, l.width[1] / 2.0);
-                        let p = [a - nrm * wa, b - nrm * wb, b + nrm * wb, a + nrm * wa];
-                        let col = l.colors[0];
-                        if col[3] <= 0.0 {
-                            continue;
-                        }
-                        items.push(Item { order: 0, dist: dist((a + b) * 0.5), seq: i, rec: quad(-1.0, p, [0.0, 0.0, 1.0, 1.0], col) });
+                if let Some(l) = n.line.as_ref().filter(|l| l.enabled && l.points.len() >= 2 && l.colors[0][3] > 0.0) {
+                    // Debris "rave" lines become flickering electric arcs: a jagged
+                    // core with a soft halo, re-rolled every frame.
+                    let (a, b) = if l.world { (l.points[0], l.points[1]) } else { (m.point(l.points[0]), m.point(l.points[1])) };
+                    let alpha = l.colors[0][3].clamp(0.0, 1.0);
+                    let seed = (i as u32).wrapping_mul(2654435761) ^ (self.frame as u32).wrapping_mul(40503);
+                    for (branch, jitter) in [(0u32, 0.12f32), (1, 0.2)] {
+                        let pts = arc_points(a, b, 9, jitter, seed.wrapping_add(branch * 7919));
+                        let d = dist((a + b) * 0.5);
+                        let fade = if branch == 0 { 1.0 } else { 0.45 };
+                        ribbon(&pts, 0.16, [0.0, 0.0, 0.0, 0.18 * alpha * fade], soft, |rec| items.push(Item { order: 1, dist: d, seq: i, rec }));
+                        ribbon(&pts, 0.025, [0.05, 0.05, 0.08, 0.95 * alpha * fade], -1.0, |rec| items.push(Item { order: 1, dist: d - 0.001, seq: i, rec }));
                     }
                 }
                 if ui.is_some() {
@@ -118,29 +119,40 @@ impl Game {
                     self.ui_items(i, corners, &m, |rec| items.push(Item { order: 1000, dist: d, seq, rec }));
                 }
             }
-            // trails
+            // trails: a smoothed, tapering ribbon in the player's colour with a soft glow
             for p in &self.players {
                 let Some(tr) = w.nodes[p.node].trail.as_ref() else { continue };
                 if !tr.enabled || p.trail.len() < 2 || !w.active_in_hierarchy(p.node) {
                     continue;
                 }
-                let n = p.trail.len();
+                let color = w.nodes[p.node]
+                    .children
+                    .first()
+                    .and_then(|&c| w.nodes[c].sprite.as_ref())
+                    .map(|s| s.color)
+                    .unwrap_or(tr.color);
+                let mut pts: Vec<V3> = p.trail.iter().map(|(q, _)| *q).collect();
+                pts.push(w.position(p.node));
+                let smooth = catmull_rom(&pts, 4);
+                if smooth.len() < 2 {
+                    continue;
+                }
+                let d = dist(w.position(p.node)) + 0.01;
+                let n = smooth.len();
                 for k in 0..n - 1 {
-                    let (a, b) = (p.trail[k].0, p.trail[k + 1].0);
-                    let fa = k as f32 / (n - 1) as f32;
-                    let fb = (k + 1) as f32 / (n - 1) as f32;
-                    let wa = (tr.width[1] + (tr.width[0] - tr.width[1]) * fa) / 2.0;
-                    let wb = (tr.width[1] + (tr.width[0] - tr.width[1]) * fb) / 2.0;
-                    let d = b - a;
-                    let len = (d.x * d.x + d.y * d.y).sqrt();
-                    if len < 1e-4 {
-                        continue;
-                    }
-                    let nrm = v3(-d.y / len, d.x / len, 0.0);
-                    let mut col = tr.color;
-                    col[3] *= fb * 0.6;
-                    let q = [a - nrm * wa, b - nrm * wb, b + nrm * wb, a + nrm * wa];
-                    items.push(Item { order: -1, dist: dist(a), seq: p.node, rec: quad(-1.0, q, [0.0, 0.0, 1.0, 1.0], col) });
+                    let f0 = k as f32 / (n - 1) as f32;
+                    let f1 = (k + 1) as f32 / (n - 1) as f32;
+                    let seg = [smooth[k], smooth[k + 1]];
+                    // taper from the blob's own width (~0.4) to nothing
+                    let head = 0.4f32.min(tr.width[0]);
+                    let w0 = head * f0 * f0;
+                    let w1 = head * f1 * f1;
+                    let mut glow = color;
+                    glow[3] = 0.22 * f1;
+                    let mut core = color;
+                    core[3] = 0.75 * f1 * f1;
+                    ribbon_tapered(&seg, [w0 * 1.5, w1 * 1.5], glow, soft, |rec| items.push(Item { order: -1, dist: d, seq: p.node, rec }));
+                    ribbon_tapered(&seg, [w0 * 0.7, w1 * 0.7], core, soft, |rec| items.push(Item { order: -1, dist: d - 0.001, seq: p.node, rec }));
                 }
             }
             items.sort_by(|a, b| a.order.cmp(&b.order).then(b.dist.partial_cmp(&a.dist).unwrap_or(std::cmp::Ordering::Equal)).then(a.seq.cmp(&b.seq)));
@@ -213,4 +225,68 @@ impl Game {
             push(r);
         }
     }
+}
+
+
+/// A jagged lightning polyline from a to b (deterministic for a given seed).
+fn arc_points(a: V3, b: V3, segments: usize, jitter: f32, mut seed: u32) -> Vec<V3> {
+    let d = b - a;
+    let len = (d.x * d.x + d.y * d.y).sqrt().max(1e-6);
+    let nrm = v3(-d.y / len, d.x / len, 0.0);
+    let mut out = Vec::with_capacity(segments + 1);
+    for k in 0..=segments {
+        let t = k as f32 / segments as f32;
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        let r = (seed as f32 / u32::MAX as f32) * 2.0 - 1.0;
+        let envelope = (t * std::f32::consts::PI).sin(); // pinned at both shards
+        out.push(a + d * t + nrm * (r * jitter * len.min(2.0) * envelope));
+    }
+    out
+}
+
+/// Constant-width ribbon along a polyline.
+fn ribbon(pts: &[V3], width: f32, color: [f32; 4], tex: f32, mut push: impl FnMut([f32; RECORD])) {
+    for k in 0..pts.len() - 1 {
+        ribbon_tapered(&pts[k..k + 2], [width, width], color, tex, &mut push);
+    }
+}
+
+/// One ribbon segment with per-end widths; v runs across the ribbon so a soft
+/// radial texture sampled at u = 0.5 gives feathered edges.
+fn ribbon_tapered(seg: &[V3], width: [f32; 2], color: [f32; 4], tex: f32, mut push: impl FnMut([f32; RECORD])) {
+    let (a, b) = (seg[0], seg[1]);
+    let d = b - a;
+    let len = (d.x * d.x + d.y * d.y).sqrt();
+    if len < 1e-5 || color[3] <= 0.0 {
+        return;
+    }
+    let nrm = v3(-d.y / len, d.x / len, 0.0);
+    let (wa, wb) = (width[0] / 2.0, width[1] / 2.0);
+    let p = [a - nrm * wa, b - nrm * wb, b + nrm * wb, a + nrm * wa];
+    let uv = if tex < 0.0 { [0.0, 0.0, 1.0, 1.0] } else { [0.5, 0.0, 0.5, 1.0] };
+    push(quad(tex, p, uv, color));
+}
+
+/// Catmull-Rom resampling for smooth trails.
+fn catmull_rom(p: &[V3], steps: usize) -> Vec<V3> {
+    if p.len() < 3 {
+        return p.to_vec();
+    }
+    let mut out = Vec::new();
+    for i in 0..p.len() - 1 {
+        let p0 = p[i.saturating_sub(1)];
+        let p1 = p[i];
+        let p2 = p[i + 1];
+        let p3 = p[(i + 2).min(p.len() - 1)];
+        for s in 0..steps {
+            let t = s as f32 / steps as f32;
+            let t2 = t * t;
+            let t3 = t2 * t;
+            out.push((p1 * 2.0 + (p2 - p0) * t + (p0 * 2.0 - p1 * 5.0 + p2 * 4.0 - p3) * t2 + (p1 * 3.0 - p0 - p2 * 3.0 + p3) * t3) * 0.5);
+        }
+    }
+    out.push(*p.last().unwrap());
+    out
 }

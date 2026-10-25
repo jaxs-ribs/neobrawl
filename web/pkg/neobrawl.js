@@ -155,6 +155,42 @@ export class Engine {
     stick(player, mx, my, ax, ay, active) {
         wasm.engine_stick(this.__wbg_ptr, player, mx, my, ax, ay, active);
     }
+    /**
+     * Desktop mode: players use `direct` controls; on-screen joysticks hide.
+     * @param {boolean} on
+     */
+    set_desktop(on) {
+        wasm.engine_set_desktop(this.__wbg_ptr, on);
+    }
+    /**
+     * Mouse cursor in screen pixels (origin bottom-left), or negative to clear.
+     * @param {number} x
+     * @param {number} y
+     */
+    cursor(x, y) {
+        wasm.engine_cursor(this.__wbg_ptr, x, y);
+    }
+    /**
+     * Desktop controls for player 0/1: move (-1..1), aim stick, whether the
+     * throw is being charged, and whether to aim at the mouse cursor.
+     * @param {number} player
+     * @param {number} mx
+     * @param {number} my
+     * @param {number} ax
+     * @param {number} ay
+     * @param {boolean} aiming
+     * @param {boolean} use_cursor
+     * @param {boolean} active
+     */
+    direct(player, mx, my, ax, ay, aiming, use_cursor, active) {
+        wasm.engine_direct(this.__wbg_ptr, player, mx, my, ax, ay, aiming, use_cursor, active);
+    }
+    /**
+     * @param {boolean} down
+     */
+    any_key(down) {
+        wasm.engine_any_key(this.__wbg_ptr, down);
+    }
     frame() {
         wasm.engine_frame(this.__wbg_ptr);
     }

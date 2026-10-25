@@ -568,7 +568,14 @@ impl Game {
         }
         self.tutorial_start();
         let t = self.tutorial.clone().unwrap();
-        let touches = self.input.touches.len();
+        let d = self.input.direct[0];
+        let desktop = self.input.desktop;
+        let touches = if desktop {
+            // moving counts as the first finger, charging an aim as the second
+            (!d.mv.is_zero() || d.aiming || self.input.any_key) as usize + d.aiming as usize
+        } else {
+            self.input.touches.len()
+        };
         let fade_t = |g: &mut Game, n: Option<usize>, dur: f32, dir: i32| {
             if let Some(n) = n {
                 g.tasks.push(Task::Fade { what: Fade::Text(n), dur, dir, i: 0, deactivate: false });

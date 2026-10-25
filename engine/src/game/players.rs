@@ -3,7 +3,7 @@
 
 use crate::shared::math::{v3, Quat, V3};
 
-use super::{fbool, field, fref, has_script, ticks, v2, Game, Task, V2};
+use super::{fbool, field, fref, has_script, ticks, v2, Game, Task, DT, V2};
 
 #[derive(Clone, Debug, Default)]
 pub struct Player {
@@ -37,6 +37,8 @@ pub struct Player {
     pub blob_scaling: bool,
     pub started: bool,
     pub trail: Vec<(V3, f32)>,
+    /// smoothed movement command (desktop acceleration)
+    pub cmd: V2,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -201,11 +203,84 @@ impl Game {
         self.input.touches.len()
     }
 
+    /// Which desktop controller drives player k, if any.
+    pub(super) fn direct_slot(&self, k: usize) -> Option<usize> {
+        let p = &self.players[k];
+        if !self.input.desktop || p.playback {
+            return None;
+        }
+        Some(if p.single || p.player1 { 0 } else { 1 })
+    }
+
+    /// Desktop input: smoothed movement and mouse / stick aiming.
+    fn direct_fixed(&mut self, k: usize, slot: usize) {
+        let ctl = self.input.direct[slot];
+        let p = &mut self.players[k];
+        p.prev2 = p.prev;
+        p.prev = p.touch;
+        // a short acceleration ramp (~60 ms to full speed) keeps it snappy but smooth
+        let target = if ctl.active { ctl.mv } else { V2::ZERO };
+        let a = 1.0 - (-DT / 0.06).exp();
+        p.cmd = v2(p.cmd.x + (target.x - p.cmd.x) * a, p.cmd.y + (target.y - p.cmd.y) * a);
+        if p.cmd.len() < 0.01 && target.is_zero() {
+            p.cmd = V2::ZERO;
+        }
+        p.touch[0] = p.cmd.normalized();
+        p.mag[0] = p.cmd.len().min(1.0);
+        p.raw = [V2::ZERO; 2];
+        let node = p.node;
+        let aim = if ctl.active && ctl.aiming {
+            if ctl.use_cursor {
+                self.cursor_world(k).map(|c| {
+                    let me = self.w.position(node);
+                    v2(c.x - me.x, c.y - me.y)
+                })
+            } else {
+                Some(ctl.aim)
+            }
+        } else {
+            None
+        };
+        let p = &mut self.players[k];
+        p.touch[1] = match aim {
+            Some(d) if d.len() > 1e-3 => d.normalized(),
+            Some(_) if !p.prev[1].is_zero() => p.prev[1],
+            Some(_) => v2(1.0, 0.0),
+            None => V2::ZERO,
+        };
+        p.mag[1] = if p.touch[1].is_zero() { 0.0 } else { 1.0 };
+        self.charge(k);
+    }
+
+    /// The point under the mouse cursor on the player's plane (z of the player).
+    fn cursor_world(&self, k: usize) -> Option<V3> {
+        let [sx, sy] = self.input.cursor?;
+        let p = &self.players[k];
+        let cam = if p.single { self.w.with_tag("CameraMenu") } else { self.camera_main() }?;
+        let c = self.w.nodes[cam].camera.as_ref()?;
+        let t = (c.fov.to_radians() / 2.0).tan();
+        let aspect = self.screen.w / self.screen.h;
+        let nx = sx / self.screen.w * 2.0 - 1.0;
+        let ny = sy / self.screen.h * 2.0 - 1.0;
+        let m = self.w.matrix(cam);
+        let origin = m.point(V3::ZERO);
+        let dir = m.point(v3(nx * t * aspect, ny * t, 1.0)) - origin;
+        let plane = self.w.position(p.node).z;
+        if dir.z.abs() < 1e-6 {
+            return None;
+        }
+        let s = (plane - origin.z) / dir.z;
+        Some(origin + dir * s)
+    }
+
     fn movement_apply(&mut self, k: usize) {
         let p = &self.players[k];
         let node = p.node;
         let x = self.w.position(node).x;
-        let go = if p.single {
+        let direct = self.direct_slot(k).is_some();
+        let go = if direct {
+            x != -666.0
+        } else if p.single {
             self.touch_count() > 0 && p.trigger_aim != 0 && x != -666.0
         } else {
             (self.touch_count() > 0 && p.trigger_aim != 0 && x != -666.0) || p.playback
@@ -222,6 +297,10 @@ impl Game {
     }
 
     fn touch_double_fixed(&mut self, k: usize) {
+        if let Some(slot) = self.direct_slot(k) {
+            self.hide_joysticks(k);
+            return self.direct_fixed(k, slot);
+        }
         Self::shift_history(&mut self.players[k]);
         if self.players[k].playback {
             // PlayerMovementRecorder playback: the recordings lived in the
@@ -241,7 +320,21 @@ impl Game {
         self.charge(k);
     }
 
+    /// Desktop play has no on-screen joysticks.
+    fn hide_joysticks(&mut self, k: usize) {
+        let p = &self.players[k];
+        for n in [p.inner_move, p.inner_aim, p.outer_move, p.outer_aim].into_iter().flatten() {
+            if let Some(img) = self.w.nodes[n].image.as_mut() {
+                img.enabled = false;
+            }
+        }
+    }
+
     fn touch_single_fixed(&mut self, k: usize) {
+        if let Some(slot) = self.direct_slot(k) {
+            self.hide_joysticks(k);
+            return self.direct_fixed(k, slot);
+        }
         Self::shift_history(&mut self.players[k]);
         if self.touch_count() > 0 {
             let (sw, sh) = (self.screen.w, self.screen.h);

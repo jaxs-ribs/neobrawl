@@ -79,11 +79,28 @@ pub struct Stick {
     pub aim: V2,
 }
 
+/// Desktop control for one player (web addition): keyboard/stick movement,
+/// and either mouse-cursor aiming or a gamepad aim stick. `aiming` is true
+/// while the throw is being charged (mouse button / stick held).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Direct {
+    pub active: bool,
+    pub mv: V2,
+    pub aim: V2,
+    pub aiming: bool,
+    pub use_cursor: bool,
+}
+
 #[derive(Default, Clone)]
 pub struct Input {
     pub touches: Vec<Touch>,
     pub sticks: [Option<Stick>; 2],
     pub any_key: bool,
+    /// desktop mode: players are driven by `direct`, not by touch joysticks
+    pub desktop: bool,
+    pub direct: [Direct; 2],
+    /// mouse cursor in screen pixels (origin bottom-left)
+    pub cursor: Option<[f32; 2]>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -464,7 +481,7 @@ impl Game {
             .filter(|p| self.w.active_in_hierarchy(p.node) && !p.playback)
             .map(|p| {
                 let pos = self.w.position(p.node);
-                serde_json::json!({"name": self.w.nodes[p.node].name, "pos": [pos.x, pos.y], "carrying": p.picked_box.is_some(), "charge": p.charge_timer})
+                serde_json::json!({"name": self.w.nodes[p.node].name, "pos": [pos.x, pos.y], "carrying": p.picked_box.is_some(), "charge": p.charge_timer, "aim": [p.touch[1].x, p.touch[1].y]})
             })
             .collect();
         let score = self.scores.iter().find(|s| self.w.active_in_hierarchy(s.node)).map(|s| {
@@ -496,6 +513,8 @@ impl Game {
             "tutorialPhase": self.tutorial.as_ref().map(|t| t.phase),
             "tasks": self.tasks.len(),
             "boxesShattered": self.boxes.iter().filter(|b| b.raving).count(),
+            "cursor": self.input.cursor,
+            "screen": [self.screen.w, self.screen.h],
         })
     }
 }

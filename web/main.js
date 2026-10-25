@@ -23,10 +23,23 @@ const savePrefs = (s) => { if (fresh) return; try { localStorage.setItem(PREFS_K
 
 // ---------------------------------------------------------------- audio ---
 class Audio {
+  // Mix: the original played effects as 3D one-shots in the world, so they
+  // sat well under the music. Effects go through their own bus and a limiter,
+  // repeats of the same clip are voice-limited and slightly detuned.
   constructor(files) {
     this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const c = this.ctx;
+    this.limiter = c.createDynamicsCompressor();
+    this.limiter.threshold.value = -14; this.limiter.knee.value = 10; this.limiter.ratio.value = 6;
+    this.limiter.attack.value = 0.003; this.limiter.release.value = 0.15;
+    this.master = c.createGain(); this.master.gain.value = 0.9;
+    this.sfx = c.createGain(); this.sfx.gain.value = 0.35;
+    this.musicBus = c.createGain(); this.musicBus.gain.value = 1.0;
+    this.sfx.connect(this.limiter); this.musicBus.connect(this.limiter);
+    this.limiter.connect(this.master).connect(c.destination);
     this.buffers = new Map();
-    this.sources = new Map(); // music clip -> {node, gain}
+    this.sources = new Map();
+    this.voices = new Map(); // clip -> [{end, src}]
     this.files = files;
   }
   load() {
@@ -39,24 +52,40 @@ class Audio {
   shot(name, vol) {
     const b = this.buffers.get(name);
     if (!b || this.ctx.state !== "running") return;
+    const now = this.ctx.currentTime;
+    const live = (this.voices.get(name) || []).filter((v) => v.end > now);
+    // the same clip retriggered within 60 ms adds nothing but clipping
+    if (live.some((v) => now - v.start < 0.06)) return;
+    if (live.length >= 3) { const old = live.shift(); try { old.src.stop(); } catch {} }
     const s = this.ctx.createBufferSource(), g = this.ctx.createGain();
-    s.buffer = b; g.gain.value = Math.min(1, vol);
-    s.connect(g).connect(this.ctx.destination); s.start();
+    s.buffer = b;
+    s.playbackRate.value = 1 + (Math.random() - 0.5) * 0.08; // +-4% so repeats don't sound mechanical
+    g.gain.setValueAtTime(0, now);
+    g.gain.linearRampToValueAtTime(Math.min(1, vol) * (live.length ? 0.7 : 1), now + 0.004); // de-click
+    s.connect(g).connect(this.sfx); s.start(now);
+    live.push({ start: now, end: now + b.duration / s.playbackRate.value, src: s });
+    this.voices.set(name, live);
   }
   music(list) {
+    const now = this.ctx.currentTime;
     for (const [clip, playing, volume] of list) {
       let m = this.sources.get(clip);
       if (playing && !m) {
         const b = this.buffers.get(clip);
         if (!b) continue;
         const node = this.ctx.createBufferSource(), gain = this.ctx.createGain();
-        node.buffer = b; node.loop = true;
-        node.connect(gain).connect(this.ctx.destination); node.start();
+        node.buffer = b; node.loop = true; gain.gain.value = 0;
+        node.connect(gain).connect(this.musicBus); node.start();
         m = { node, gain }; this.sources.set(clip, m);
       }
       if (!m) continue;
-      if (!playing) { m.node.stop(); this.sources.delete(clip); continue; }
-      m.gain.gain.value = volume;
+      if (!playing) {
+        // fade instead of cutting
+        m.gain.gain.setTargetAtTime(0, now, 0.08);
+        const node = m.node; setTimeout(() => { try { node.stop(); } catch {} }, 600);
+        this.sources.delete(clip); continue;
+      }
+      m.gain.gain.setTargetAtTime(volume, now, 0.05);
     }
   }
 }
@@ -294,30 +323,48 @@ class Renderer {
 }
 
 // ---------------------------------------------------------------- input ---
+// Desktop: P1 = WASD + mouse (aim at the cursor, hold left button to charge,
+// release to throw). P2 = gamepad, or arrows + IJKL. With two gamepads they
+// take over both players (left stick move, right stick aim, release to throw).
 const keys = new Set();
-// P1: WASD move, TFGH aim.  P2: arrows move, IJKL aim.
-const BIND = [
-  { mv: ["KeyW", "KeyA", "KeyS", "KeyD"], aim: ["KeyT", "KeyF", "KeyG", "KeyH"] },
-  { mv: ["ArrowUp", "ArrowLeft", "ArrowDown", "ArrowRight"], aim: ["KeyI", "KeyJ", "KeyK", "KeyL"] },
-];
-const axis = ([up, left, down, right]) => {
+let mouseHeld = false;
+const desktop = matchMedia("(hover: hover) and (pointer: fine)").matches || params.has("desktop");
+const axis = (up, left, down, right) => {
   const x = (keys.has(right) ? 1 : 0) - (keys.has(left) ? 1 : 0), y = (keys.has(up) ? 1 : 0) - (keys.has(down) ? 1 : 0);
   const l = Math.hypot(x, y) || 1;
   return [x / l, y / l];
 };
-function pollSticks() {
+const dz = (v) => (Math.abs(v) < 0.18 ? 0 : v);
+function padSticks(pad) {
+  let mx = dz(pad.axes[0]), my = -dz(pad.axes[1]), ax = dz(pad.axes[2]), ay = -dz(pad.axes[3]);
+  const m = Math.hypot(mx, my); if (m > 1) { mx /= m; my /= m; }
+  // dpad also moves
+  if (pad.buttons[12]?.pressed) my = 1; if (pad.buttons[13]?.pressed) my = -1;
+  if (pad.buttons[14]?.pressed) mx = -1; if (pad.buttons[15]?.pressed) mx = 1;
+  return { mx, my, ax, ay, aiming: Math.hypot(ax, ay) > 0.35 };
+}
+function pollControls() {
+  if (!desktop) return;
   const pads = (navigator.getGamepads?.() || []).filter(Boolean);
-  for (let p = 0; p < 2; p++) {
-    let [mx, my] = axis(BIND[p].mv), [ax, ay] = axis(BIND[p].aim);
-    const pad = pads[p];
-    if (pad) {
-      const dz = (v) => (Math.abs(v) < 0.2 ? 0 : v);
-      if (dz(pad.axes[0]) || dz(pad.axes[1])) { mx = dz(pad.axes[0]); my = -dz(pad.axes[1]); }
-      if (dz(pad.axes[2]) || dz(pad.axes[3])) { ax = dz(pad.axes[2]); ay = -dz(pad.axes[3]); }
-    }
-    const active = !!(mx || my || ax || ay);
-    engine.stick(p, mx, my, ax, ay, active);
+  // player 1: keyboard + mouse, unless two pads are connected
+  if (pads.length >= 2) {
+    const p = padSticks(pads[0]);
+    engine.direct(0, p.mx, p.my, p.ax, p.ay, p.aiming, false, true);
+  } else {
+    const [mx, my] = axis("KeyW", "KeyA", "KeyS", "KeyD");
+    engine.direct(0, mx, my, 0, 0, mouseHeld, true, true);
   }
+  // player 2: last pad, else arrows + IJKL (hold IJKL to charge in that direction)
+  const pad2 = pads.length >= 2 ? pads[1] : pads[0];
+  const [kx, ky] = axis("ArrowUp", "ArrowLeft", "ArrowDown", "ArrowRight");
+  const [ax, ay] = axis("KeyI", "KeyJ", "KeyK", "KeyL");
+  if (pad2) {
+    const p = padSticks(pad2);
+    engine.direct(1, p.mx || kx, p.my || ky, p.aiming ? p.ax : ax, p.aiming ? p.ay : ay, p.aiming || !!(ax || ay), false, true);
+  } else {
+    engine.direct(1, kx, ky, ax, ay, !!(ax || ay), false, true);
+  }
+  engine.any_key(keys.size > 0 || mouseHeld);
 }
 
 async function main() {
@@ -340,13 +387,21 @@ async function main() {
 
   const toGame = (e) => { const b = canvas.getBoundingClientRect(); return [e.clientX - b.left, b.height - (e.clientY - b.top)]; };
   const ptr = (kind) => (e) => { audio?.unlock(); if (kind === 0) canvas.setPointerCapture?.(e.pointerId); const [x, y] = toGame(e); engine.pointer(e.pointerId, x, y, kind); e.preventDefault(); };
-  canvas.addEventListener("pointerdown", ptr(0));
-  canvas.addEventListener("pointermove", (e) => { if (e.buttons || e.pointerType === "touch") ptr(1)(e); });
-  canvas.addEventListener("pointerup", ptr(2));
-  canvas.addEventListener("pointercancel", ptr(2));
+  canvas.addEventListener("pointerdown", (e) => { if (e.button === 0) mouseHeld = true; ptr(0)(e); });
+  canvas.addEventListener("pointermove", (e) => {
+    if (desktop) { const [x, y] = toGame(e); engine.cursor(x, y); }
+    if (e.buttons || e.pointerType === "touch") ptr(1)(e);
+  });
+  const up = (e) => { if (e.button === 0) mouseHeld = false; ptr(2)(e); };
+  canvas.addEventListener("pointerup", up);
+  canvas.addEventListener("pointercancel", up);
+  canvas.addEventListener("pointerleave", () => engine.cursor(-1, -1));
+  canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+  engine.set_desktop(desktop);
+  if (desktop) canvas.style.cursor = "crosshair";
   addEventListener("keydown", (e) => { audio?.unlock(); if (e.metaKey || e.ctrlKey) return; keys.add(e.code); if (e.code.startsWith("Arrow") || e.code === "Space") e.preventDefault(); });
   addEventListener("keyup", (e) => keys.delete(e.code));
-  addEventListener("blur", () => keys.clear());
+  addEventListener("blur", () => { keys.clear(); mouseHeld = false; });
   addEventListener("resize", () => engine.set_screen(cssW(), cssH()));
 
   $("overlay").hidden = true;
@@ -356,7 +411,7 @@ async function main() {
   const loop = (now) => {
     acc += Math.min(0.25, (now - last) / 1000); last = now;
     let steps = 0;
-    while (acc >= TICK && steps < 8) { pollSticks(); engine.frame(); acc -= TICK; steps++; nb.ticks++; }
+    while (acc >= TICK && steps < 8) { pollControls(); engine.frame(); acc -= TICK; steps++; nb.ticks++; }
     if (audio) {
       const s = engine.drain_sounds(); if (s !== "[]") for (const [c, v] of JSON.parse(s)) audio.shot(c, v);
       audio.music(JSON.parse(engine.music()));

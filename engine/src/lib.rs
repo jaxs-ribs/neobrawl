@@ -80,6 +80,29 @@ impl Engine {
         }
     }
 
+    /// Desktop mode: players use `direct` controls; on-screen joysticks hide.
+    pub fn set_desktop(&mut self, on: bool) {
+        self.game.input.desktop = on;
+    }
+
+    /// Mouse cursor in screen pixels (origin bottom-left), or negative to clear.
+    pub fn cursor(&mut self, x: f32, y: f32) {
+        self.game.input.cursor = if x < 0.0 { None } else { Some([x, y]) };
+    }
+
+    /// Desktop controls for player 0/1: move (-1..1), aim stick, whether the
+    /// throw is being charged, and whether to aim at the mouse cursor.
+    #[allow(clippy::too_many_arguments)]
+    pub fn direct(&mut self, player: usize, mx: f32, my: f32, ax: f32, ay: f32, aiming: bool, use_cursor: bool, active: bool) {
+        if player < 2 {
+            self.game.input.direct[player] = game::Direct { active, mv: v2(mx, my), aim: v2(ax, ay), aiming, use_cursor };
+        }
+    }
+
+    pub fn any_key(&mut self, down: bool) {
+        self.game.input.any_key = down;
+    }
+
     pub fn frame(&mut self) {
         let mut touches: Vec<Touch> = self
             .pointers
@@ -92,7 +115,9 @@ impl Engine {
                 phase: if p.0 <= -1_000_000 && p.3 == Phase::Stationary { Phase::Began } else { p.3 },
             })
             .collect();
-        touches.extend(self.synthetic_touches());
+        if !self.game.input.desktop {
+            touches.extend(self.synthetic_touches());
+        }
         self.game.input.touches = touches;
         self.game.frame();
         // advance pointer phases
