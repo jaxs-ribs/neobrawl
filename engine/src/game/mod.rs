@@ -104,6 +104,8 @@ pub struct Input {
     pub direct: [Direct; 2],
     /// mouse cursor in screen pixels (origin bottom-left)
     pub cursor: Option<[f32; 2]>,
+    /// snake movement: always moving, keys turn you
+    pub snake: bool,
 }
 
 #[derive(Clone, Debug, Default)]

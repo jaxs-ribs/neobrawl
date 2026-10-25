@@ -477,6 +477,8 @@ async function main() {
   canvas.addEventListener("pointerleave", () => engine.cursor(-1, -1));
   canvas.addEventListener("contextmenu", (e) => e.preventDefault());
   engine.set_desktop(desktop);
+  // ?snake: you never stop; WASD / the stick only turn you
+  if (params.has("snake")) engine.set_snake(true);
   // the engine draws the cursor (a spark); the system one would double it
   if (desktop) canvas.style.cursor = "none";
   addEventListener("keydown", (e) => {

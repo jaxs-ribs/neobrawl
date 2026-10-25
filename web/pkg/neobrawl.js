@@ -157,6 +157,13 @@ export class Engine {
     }
     /**
      * Desktop mode: players use `direct` controls; on-screen joysticks hide.
+     * Snake movement: you never stop; WASD / the stick set your heading.
+     * @param {boolean} on
+     */
+    set_snake(on) {
+        wasm.engine_set_snake(this.__wbg_ptr, on);
+    }
+    /**
      * @param {boolean} on
      */
     set_desktop(on) {

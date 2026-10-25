@@ -50,6 +50,18 @@ pub struct Player {
     pub dash_held: bool,
     /// last non-zero movement direction (dash fallback)
     pub facing: V2,
+    /// dash speed (a mid-dash steer bleeds some of it)
+    pub dash_speed: f32,
+    /// snake mode: current heading, the heading being turned to, the last
+    /// input (turns happen on a new press), pace (crawl while charging),
+    /// where we were a tick ago and how long we've been blocked
+    pub heading: V2,
+    pub steer: V2,
+    pub last_mv: V2,
+    pub pace: f32,
+    pub last_pos: V3,
+    pub blocked: u8,
+    pub glance_side: bool,
 }
 
 /// Dash tuning: ~2.9 units in 0.12 s, then a 1 s cooldown.
@@ -237,6 +249,9 @@ impl Game {
 
     /// Desktop input: smoothed movement and mouse / stick aiming.
     fn direct_fixed(&mut self, k: usize, slot: usize) {
+        if self.input.snake {
+            self.snake_glance(k);
+        }
         let ctl = self.input.direct[slot];
         let p = &mut self.players[k];
         p.prev2 = p.prev;
@@ -244,16 +259,21 @@ impl Game {
         // a short ramp keeps it smooth but never floaty: quicker to brake
         // and to reverse than to get going
         let target = if ctl.active { ctl.mv } else { V2::ZERO };
-        let braking = target.is_zero() || (target.x * p.cmd.x + target.y * p.cmd.y) < 0.0;
-        let a = 1.0 - (-DT / if braking { 0.025 } else { 0.04 }).exp();
-        p.cmd = v2(p.cmd.x + (target.x - p.cmd.x) * a, p.cmd.y + (target.y - p.cmd.y) * a);
-        if p.cmd.len() < 0.01 && target.is_zero() {
-            p.cmd = V2::ZERO;
-        }
-        p.touch[0] = p.cmd.normalized();
-        p.mag[0] = p.cmd.len().min(1.0);
-        if !target.is_zero() {
-            p.facing = target.normalized();
+        let mut uturn = false;
+        if self.input.snake {
+            uturn = Self::snake_steer(p, target, ctl.aiming);
+        } else {
+            let braking = target.is_zero() || (target.x * p.cmd.x + target.y * p.cmd.y) < 0.0;
+            let a = 1.0 - (-DT / if braking { 0.025 } else { 0.04 }).exp();
+            p.cmd = v2(p.cmd.x + (target.x - p.cmd.x) * a, p.cmd.y + (target.y - p.cmd.y) * a);
+            if p.cmd.len() < 0.01 && target.is_zero() {
+                p.cmd = V2::ZERO;
+            }
+            p.touch[0] = p.cmd.normalized();
+            p.mag[0] = p.cmd.len().min(1.0);
+            if !target.is_zero() {
+                p.facing = target.normalized();
+            }
         }
         // dash on the press edge, if off cooldown and alive
         let pressed = ctl.active && ctl.dash && !p.dash_held;
@@ -268,8 +288,18 @@ impl Game {
         }
         let mut dashed = false;
         if pressed && p.dash_cd == 0 {
-            let dir = if !target.is_zero() { target.normalized() } else if !p.facing.is_zero() { p.facing } else { v2(1.0, 0.0) };
+            let dir = if self.input.snake {
+                // along the heading (or the turn just asked for)
+                if !p.steer.is_zero() { p.steer } else { p.heading }
+            } else if !target.is_zero() {
+                target.normalized()
+            } else if !p.facing.is_zero() {
+                p.facing
+            } else {
+                v2(1.0, 0.0)
+            };
             p.dash_dir = dir;
+            p.dash_speed = DASH_SPEED;
             p.dash_t = DASH_TICKS;
             p.dash_cd = DASH_COOLDOWN;
             dashed = true;
@@ -297,6 +327,9 @@ impl Game {
         if ready {
             self.fx_dash_ready(k);
         }
+        if uturn {
+            self.body_land(k, 0.6);
+        }
         let p = &mut self.players[k];
         p.touch[1] = match aim {
             Some(d) if d.len() > 1e-3 => d.normalized(),
@@ -306,6 +339,92 @@ impl Game {
         };
         p.mag[1] = if p.touch[1].is_zero() { 0.0 } else { 1.0 };
         self.charge(k);
+    }
+
+    /// Snake movement: always going; a new press sets a heading that is
+    /// curved into fast, a head-on wall glances you along it, charging
+    /// slows you to a crawl, and a turn during a dash bends the dash (it
+    /// bleeds speed the sharper it is). Returns true on a U-turn.
+    fn snake_steer(p: &mut Player, mv: V2, aiming: bool) -> bool {
+        const TURN: f32 = 0.55; // rad per tick: ~90 degrees in 60 ms
+        if p.heading.is_zero() {
+            p.heading = if !p.facing.is_zero() { p.facing } else { v2(1.0, 0.0) };
+            p.steer = p.heading;
+            p.pace = 1.0;
+        }
+        let fresh = !mv.is_zero() && ((mv.x - p.last_mv.x).abs() + (mv.y - p.last_mv.y).abs()) > 0.01;
+        p.last_mv = mv;
+        let mut uturn = false;
+        if fresh {
+            let want = mv.normalized();
+            let ang = p.heading.y.atan2(p.heading.x);
+            let to = want.y.atan2(want.x);
+            let mut d = to - ang;
+            d = d.sin().atan2(d.cos());
+            uturn = d.abs() > 2.6;
+            p.steer = want;
+            if p.dash_t > 0 {
+                // bend the dash
+                let mut dd = to - p.dash_dir.y.atan2(p.dash_dir.x);
+                dd = dd.sin().atan2(dd.cos()).abs();
+                p.dash_speed *= (1.0 - 0.3 * dd / std::f32::consts::FRAC_PI_2).clamp(0.35, 1.0);
+                p.dash_dir = want;
+                p.heading = want;
+            }
+        }
+        // curve toward the steer
+        let ang = p.heading.y.atan2(p.heading.x);
+        let to = p.steer.y.atan2(p.steer.x);
+        let mut d = to - ang;
+        d = d.sin().atan2(d.cos());
+        let na = ang + d.clamp(-TURN, TURN);
+        p.heading = v2(na.cos(), na.sin());
+        // pace: a crawl while holding a charged box, full otherwise
+        let crawl = aiming && p.picked_box.is_some();
+        let want_pace = if crawl { 0.25 } else { 1.0 };
+        p.pace += (want_pace - p.pace) * 0.25;
+        p.cmd = v2(p.heading.x * p.pace, p.heading.y * p.pace);
+        p.touch[0] = p.heading;
+        p.mag[0] = p.pace;
+        p.facing = p.heading;
+        uturn
+    }
+
+    /// Snake mode: if we barely moved last tick, glance off the obstacle:
+    /// slide along it if we were sliding, else turn a quarter away.
+    fn snake_glance(&mut self, k: usize) {
+        let pos = self.w.position(self.players[k].node);
+        let p = &mut self.players[k];
+        let moved = pos - p.last_pos;
+        p.last_pos = pos;
+        // only once a turn has finished: turning away from a wall is not
+        // being blocked by it
+        let turning = (p.heading.x * p.steer.x + p.heading.y * p.steer.y) < 0.98;
+        if pos.x == -666.0 || p.dash_t > 0 || p.heading.is_zero() || turning {
+            p.blocked = 0;
+            return;
+        }
+        let expected = 8.0 * p.pace * DT;
+        let m = (moved.x * moved.x + moved.y * moved.y).sqrt();
+        if m > 1.0 || m >= 0.35 * expected {
+            p.blocked = 0;
+            return;
+        }
+        p.blocked += 1;
+        if p.blocked < 2 {
+            return;
+        }
+        p.blocked = 0;
+        let new = if m > 0.04 * expected {
+            v2(moved.x / m, moved.y / m)
+        } else {
+            // head-on: always turn the same way, so a corner takes two
+            // quarter turns and lets you out (alternating would ping-pong)
+            let s = if p.glance_side { 1.0 } else { -1.0 };
+            v2(-p.heading.y * s, p.heading.x * s)
+        };
+        p.steer = new;
+        p.heading = new;
     }
 
     /// The point under the mouse cursor on the player's plane (z of the player).
@@ -342,7 +461,7 @@ impl Game {
             (self.touch_count() > 0 && p.trigger_aim != 0 && x != -666.0) || p.playback
         };
         let v = if go && p.dash_t > 0 {
-            v3(p.dash_dir.x, p.dash_dir.y, 0.0) * DASH_SPEED
+            v3(p.dash_dir.x, p.dash_dir.y, 0.0) * if p.dash_speed > 0.0 { p.dash_speed } else { DASH_SPEED }
         } else if go {
             v3(p.touch[0].x * p.mag[0], p.touch[0].y * p.mag[0], 0.0) * 8.0
         } else {
@@ -730,7 +849,16 @@ impl Game {
             let touching: Vec<usize> = (0..self.w.nodes.len())
                 .filter(|&o| o != b && o != node && self.w.nodes[o].collider.as_ref().map(|c| c.enabled && !c.trigger).unwrap_or(false) && self.w.active_in_hierarchy(o))
                 .filter(|&o| crate::physics::layers_collide(self.w.nodes[b].layer, self.w.nodes[o].layer))
-                .filter(|&o| crate::physics::geometry(&self.w, o).and_then(|g| crate::physics::collide(&gb, &g, 0.0)).map(|c| c.depth > 0.0).unwrap_or(false))
+                // never a soul: a point-blank throw must still land
+                .filter(|&o| self.w.nodes[o].layer != crate::physics::LAYER_PLAYER)
+                // touching (or nearly) and the throw heads away from it; throwing
+                // into something you touch still hits it
+                .filter(|&o| {
+                    crate::physics::geometry(&self.w, o)
+                        .and_then(|g| crate::physics::collide(&gb, &g, 0.05))
+                        .map(|c| c.normal[0] * angle.x + c.normal[1] * angle.y > -0.2)
+                        .unwrap_or(false)
+                })
                 .collect();
             for o in touching {
                 self.phys.set_ignore(b, o, true);
@@ -741,6 +869,9 @@ impl Game {
         self.fx_throw(k, angle, power);
         self.tasks.push(Task::Unignore { a: b, b: node, wait: ticks(0.5) });
         if let Some(&bi) = self.box_of.get(&b) {
+            // live from the instant it leaves your hands (the original only
+            // counted it from the third tick, so point-blank hits just shoved)
+            self.boxes[bi].being_thrown = true;
             self.boxes[bi].being_thrown_pickup = true;
             self.tasks.push(Task::ResetBeingThrown { b: bi, stage: 0, wait: 3 });
         }

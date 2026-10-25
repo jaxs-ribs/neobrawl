@@ -260,17 +260,36 @@ fn orbit_aim_throws_along_the_reticle_regardless_of_camera() {
     let (p1, _) = player_nodes(&e);
     let k = e.game().player_of[&p1];
     let b = e.game().players[k].picked_box.unwrap();
-    // reticle straight up, charge for 40 ticks while the camera does whatever it does
+    // charge for 40 ticks while the camera does whatever it does
     for _ in 0..40 {
         e.direct(0, 0.0, 0.0, 0.0, 1.0, true, false, true);
         e.frame();
     }
-    e.direct(0, 0.0, 0.0, 0.0, 1.0, false, false, true);
+    // then swing the reticle onto a lane that is clear right now for the
+    // spinning box's sweep (~0.6 from its centre): grazing a neighbour's
+    // corner rightly shatters both
+    let a = e.game().w.position(p1);
+    let (sy, cx) = (0..32)
+        .map(|k| (k as f32 / 32.0 * std::f32::consts::TAU).sin_cos())
+        .find(|&(s, c)| {
+            let g = e.game();
+            let d = neobrawl::shared::math::v3(c, s, 0.0);
+            let side = neobrawl::shared::math::v3(-s, c, 0.0);
+            [-0.65f32, -0.3, 0.0, 0.3, 0.65].iter().all(|&o| g.phys.raycast(&g.w, a + side * o, d, 3.5, 1 | (1 << 8) | (1 << 11)).is_none())
+        })
+        .unwrap();
+    for _ in 0..3 {
+        e.direct(0, 0.0, 0.0, cx, sy, true, false, true);
+        e.frame();
+    }
+    e.direct(0, 0.0, 0.0, cx, sy, false, false, true);
     e.frame();
     e.frame();
     let v = e.game().w.nodes[b].body.as_ref().unwrap().velocity;
-    // within 5 degrees: the full-size hull can graze a neighbour on the way out
-    assert!(v.y > 15.0 && v.x.abs() < v.y * 0.09, "thrown straight up: {v:?}");
+    let along = v.x * cx + v.y * sy;
+    let across = (v.x * -sy + v.y * cx).abs();
+    // within 5 degrees of the reticle
+    assert!(along > 15.0 && across < along * 0.09, "thrown along the reticle ({cx}, {sy}): {v:?}");
 }
 
 #[test]
@@ -312,4 +331,95 @@ fn souls_stretch_when_moving_and_squash_when_stopping() {
     assert!(min_st < -0.03, "squashes as it stops: {min_st}");
     // and the deformation reaches the renderer
     assert!(!e.game().body_deforms().is_empty());
+}
+
+#[test]
+fn snake_keeps_moving_turns_on_a_press_and_crawls_while_charging() {
+    let mut e = start_match(9);
+    e.set_desktop(true);
+    e.set_snake(true);
+    let (p1, _) = player_nodes(&e);
+    let k = e.game().player_of[&p1];
+    // no input at all: it still moves
+    let a = e.game().w.position(p1);
+    for _ in 0..10 {
+        e.direct(0, 0.0, 0.0, 0.0, 0.0, false, true, true);
+        e.frame();
+    }
+    let b = e.game().w.position(p1);
+    assert!((b - a).length() > 0.5, "always moving: {}", (b - a).length());
+    // a press of up turns the heading up within a few ticks, and it stays
+    // up after the key is released
+    e.direct(0, 0.0, 1.0, 0.0, 0.0, false, true, true);
+    e.frame();
+    for _ in 0..6 {
+        e.direct(0, 0.0, 0.0, 0.0, 0.0, false, true, true);
+        e.frame();
+    }
+    let h = e.game().players[k].heading;
+    assert!(h.y > 0.95, "turned up: {h:?}");
+    // a dash goes along the heading
+    e.dash(0, true);
+    e.frame();
+    e.dash(0, false);
+    let d = e.game().players[k].dash_dir;
+    assert!(d.y > 0.95 && e.game().players[k].dash_t > 0, "dash along heading: {d:?}");
+    // holding a box and charging slows to a crawl
+    let bx = {
+        let g = e.game();
+        g.boxes.iter().find(|b| g.w.active_in_hierarchy(b.node)).unwrap().node
+    };
+    e.game_mut().pick_box_up_pub(k, bx);
+    for _ in 0..20 {
+        e.direct(0, 0.0, 0.0, 0.0, 1.0, true, false, true);
+        e.frame();
+    }
+    let pace = e.game().players[k].pace;
+    assert!(pace < 0.35, "crawling while charging: {pace}");
+}
+
+#[test]
+fn snake_escapes_corners_and_turns_away_from_walls() {
+    let mut e = start_match(10);
+    e.set_desktop(true);
+    e.set_snake(true);
+    let (p1, _) = player_nodes(&e);
+    // run with no input for a long time: it must never stay stuck
+    let mut stuck = 0;
+    let mut worst = 0;
+    let mut last = e.game().w.position(p1);
+    for _ in 0..600 {
+        e.direct(0, 0.0, 0.0, 0.0, 0.0, false, true, true);
+        e.frame();
+        let now = e.game().w.position(p1);
+        if (now - last).length() < 0.02 { stuck += 1; worst = worst.max(stuck); } else { stuck = 0; }
+        last = now;
+    }
+    assert!(worst < 8, "stuck for {worst} ticks");
+}
+
+#[test]
+fn a_point_blank_charged_throw_kills() {
+    let mut e = start_match(4);
+    e.set_desktop(true);
+    assert!(fetch_box_desktop(&mut e));
+    let (p1, p2) = player_nodes(&e);
+    let k = e.game().player_of[&p1];
+    // charge fully, aiming right
+    for _ in 0..95 {
+        e.direct(0, 0.0, 0.0, 1.0, 0.0, true, false, true);
+        e.frame();
+    }
+    // put the enemy right against us, overlapping the carried box
+    let a = e.game().w.position(p1);
+    e.game_mut().w.set_position(p2, neobrawl::shared::math::v3(a.x + 0.45, a.y, a.z));
+    e.game_mut().phys.forget(p2);
+    assert!(e.game().players[k].picked_box.is_some());
+    e.direct(0, 0.0, 0.0, 1.0, 0.0, false, false, true);
+    let mut killed = false;
+    for _ in 0..15 {
+        e.frame();
+        killed |= e.game().w.position(p2).x == -666.0;
+    }
+    assert!(killed, "point-blank charged throw must kill");
 }

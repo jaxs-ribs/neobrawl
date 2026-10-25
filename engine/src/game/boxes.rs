@@ -100,7 +100,7 @@ impl Game {
     /// BoxState.OnCollisionEnter
     pub(super) fn box_collision(&mut self, b: usize, other: usize, normal: V3) {
         if std::env::var("NB_TRACE").is_ok() {
-            eprintln!("box_collision {} vs {} (layer {}) thrown={} prev={:?} carried={:?}", self.w.nodes[self.boxes[b].node].name, self.w.nodes[other].name, self.w.nodes[other].layer, self.is_being_thrown(b), self.boxes[b].prev_vel, self.boxes[b].carried_by);
+            eprintln!("box_collision {} vs {} (layer {}) thrown={} prev={:?} carried={:?} at {:?} other at {:?} frame {}", self.w.nodes[self.boxes[b].node].name, self.w.nodes[other].name, self.w.nodes[other].layer, self.is_being_thrown(b), self.boxes[b].prev_vel, self.boxes[b].carried_by, self.w.position(self.boxes[b].node), self.w.position(other), self.frame);
         }
         if !self.is_being_thrown(b) {
             return;

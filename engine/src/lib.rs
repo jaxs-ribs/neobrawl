@@ -83,6 +83,11 @@ impl Engine {
     }
 
     /// Desktop mode: players use `direct` controls; on-screen joysticks hide.
+    /// Snake movement: you never stop; WASD / the stick set your heading.
+    pub fn set_snake(&mut self, on: bool) {
+        self.game.input.snake = on;
+    }
+
     pub fn set_desktop(&mut self, on: bool) {
         self.game.input.desktop = on;
         if on {
