@@ -67,7 +67,7 @@ const view = { x: 0, y: 0, s: 2 };
 const worker = new Worker("worker.js");
 let ver = 0, realmState = null, baseGenome = { ...DEF }, capitalSeed = 20141, scale = 4;
 const sources = []; // drawable element sets: { x0, y0, x1, y1, walls, boxes, buckets }
-let roadsSrc = null;
+let roadsSrc = null, epoch = 0;
 
 // ---------------------------------------------------------------- spatial buckets per source
 const BS = 40;
@@ -126,10 +126,16 @@ function renderTile(l, tx, ty) {
 }
 function tileOrParent(l, tx, ty) {
   for (let k = 0; k <= 6; k++) {
-    const key = tkey(l + k, tx >> k, ty >> k), c = tiles.get(key);
-    if (c) { if (k === 0) { tiles.delete(key); tiles.set(key, c); } return { c, k, ox: tx - ((tx >> k) << k), oy: ty - ((ty >> k) << k) }; }
+    const key = tkey(l + k, tx >> k, ty >> k), t = tiles.get(key);
+    if (t) { if (k === 0) { tiles.delete(key); tiles.set(key, t); } return { c: t.c, ep: t.ep, k, ox: tx - ((tx >> k) << k), oy: ty - ((ty >> k) << k) }; }
   }
   return null;
+}
+// a tile is stale if anything newer than it has landed in its area
+function fresh(l, tx, ty, ep) {
+  const ts = TS0 * 2 ** l, x0 = tx * ts, y0 = ty * ts;
+  for (const s of sources) if (s.ep > ep && s.x1 >= x0 - L && s.x0 <= x0 + ts + L && s.y1 >= y0 - L && s.y0 <= y0 + ts + L) return false;
+  return true;
 }
 
 // ---------------------------------------------------------------- realm, cities
@@ -157,18 +163,17 @@ worker.onmessage = (e) => {
     realmState = { Rw: m.Rw, hubs: m.hubs.map((h, i) => ({ ...h, id: i })), roads: m.roads.map((r) => { let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9; for (let i = 0; i < r.poly.length; i += 2) { x0 = Math.min(x0, r.poly[i]); x1 = Math.max(x1, r.poly[i]); y0 = Math.min(y0, r.poly[i + 1]); y1 = Math.max(y1, r.poly[i + 1]); } return { ...r, x0, y0, x1, y1 }; }) };
     buildCaravans(); fitView();
   } else if (m.type === "roads") {
-    roadsSrc = { x0: -1e9, y0: -1e9, x1: 1e9, y1: 1e9, walls: m.walls, boxes: m.boxes, buckets: bucketize(m.walls, m.boxes) };
+    roadsSrc = { x0: -1e9, y0: -1e9, x1: 1e9, y1: 1e9, walls: m.walls, boxes: m.boxes, buckets: bucketize(m.walls, m.boxes), ep: ++epoch };
     sources.push(roadsSrc); tiles.clear();
   } else if (m.type === "city") {
     pending--;
     const h = realmState.hubs[m.id];
     const loc = { walls: m.walls.slice(), boxes: m.boxes.slice() };
     for (const arr of [m.walls, m.boxes]) for (let i = 0; i < arr.length; i += 3) { arr[i] += h.x; arr[i + 1] += h.y; }
-    const src = { x0: h.x - 80, y0: h.y - 80, x1: h.x + 80, y1: h.y + 80, walls: m.walls, boxes: m.boxes, buckets: bucketize(m.walls, m.boxes) };
+    const src = { x0: h.x - 80, y0: h.y - 80, x1: h.x + 80, y1: h.y + 80, walls: m.walls, boxes: m.boxes, buckets: bucketize(m.walls, m.boxes), ep: ++epoch };
     sources.push(src);
     h.city = { thumb: m.thumb, foods: m.foods, occ: m.occ, D: m.D, G: m.G, fields: null, ants: null, heat: null, pieces: (m.walls.length + m.boxes.length) / 3 };
     if (!m.thumb) { const t = document.createElement("canvas"); t.width = t.height = 256; const x = t.getContext("2d"); x.translate(128, 128); x.scale(256 / CITY, -256 / CITY); drawHair(x, loc.walls, loc.boxes, CITY / 256); h.city.thumb = t; }
-    invalidate(src.x0, src.y0, src.x1, src.y1);
   } else if (m.type === "fields") {
     const h = realmState.hubs[m.id]; if (!h || !h.city) return;
     h.city.fields = m.fields; h.city.fieldReq = false;
@@ -249,10 +254,10 @@ let caravans = null;
 function polyLen(r) { let s = 0; for (let i = 2; i < r.poly.length; i += 2) s += Math.hypot(r.poly[i] - r.poly[i - 2], r.poly[i + 1] - r.poly[i - 1]); return s; }
 function cumLen(p) { const c = new Float32Array(p.length / 2); for (let i = 1; i < c.length; i++) c[i] = c[i - 1] + Math.hypot(p[i * 2] - p[i * 2 - 2], p[i * 2 + 1] - p[i * 2 - 1]); return c; }
 function buildCaravans() {
-  const roads = realmState.roads, n = Math.min(5000, roads.reduce((s, r) => s + Math.floor(polyLen(r) / 9), 0));
+  const roads = realmState.roads, total = roads.reduce((s, r) => s + polyLen(r) / 9, 0), f = Math.min(1, 5000 / Math.max(1, total)), n = Math.min(5000, Math.ceil(total * f) + roads.length);
   const P = { road: new Int32Array(n), s: new Float32Array(n), v: new Float32Array(n), lane: new Float32Array(n), n: 0 };
   let k = 0;
-  for (let ri = 0; ri < roads.length && k < n; ri++) { const r = roads[ri]; r.cum = cumLen(r.poly); const len = r.cum[r.cum.length - 1]; for (let j = 0; j < Math.floor(len / 9) && k < n; j++, k++) { P.road[k] = ri; P.s[k] = Math.random() * len; const dir = Math.random() < 0.5 ? 1 : -1; P.v[k] = dir * (2.6 + Math.random() * 1.4); P.lane[k] = dir * (0.8 + Math.random() * 1.4); } }
+  for (let ri = 0; ri < roads.length && k < n; ri++) { const r = roads[ri]; r.cum = cumLen(r.poly); const len = r.cum[r.cum.length - 1]; for (let j = 0; j < Math.max(1, Math.round((len / 9) * f)) && k < n; j++, k++) { P.road[k] = ri; P.s[k] = Math.random() * len; const dir = Math.random() < 0.5 ? 1 : -1; P.v[k] = dir * (2.6 + Math.random() * 1.4); P.lane[k] = dir * (0.8 + Math.random() * 1.4); } }
   P.n = k; caravans = P;
 }
 function roadAt(r, s, lane) {
@@ -278,15 +283,15 @@ function frame(now) {
   for (let tx = Math.floor(wx0 / ts); tx <= Math.floor(wx1 / ts); tx++) for (let ty = Math.floor(wy0 / ts); ty <= Math.floor(wy1 / ts); ty++) {
     const got = tileOrParent(l, tx, ty), X = VW / 2 + (tx * ts - view.x) * view.s, Y = VH / 2 - ((ty + 1) * ts - view.y) * view.s, Z = ts * view.s;
     if (got) { const sub = got.c.width >> got.k; g.drawImage(got.c, got.ox * sub, ((1 << got.k) - 1 - got.oy) * sub, sub, sub, X, Y, Z + 0.6, Z + 0.6); }
-    if (!got || got.k) want.push([l, tx, ty, (tx + 0.5) * ts - view.x, (ty + 0.5) * ts - view.y]);
+    if (!got || got.k || !fresh(l, tx, ty, got.ep)) want.push([l, tx, ty, (tx + 0.5) * ts - view.x, (ty + 0.5) * ts - view.y]);
   }
   want.sort((a, b) => a[3] ** 2 + a[4] ** 2 - (b[3] ** 2 + b[4] ** 2));
   const budget = performance.now() + 5;
-  for (const [ll, tx, ty] of want) { tiles.set(tkey(ll, tx, ty), renderTile(ll, tx, ty)); if (performance.now() > budget) break; }
+  for (const [ll, tx, ty] of want) { const ep = epoch; tiles.set(tkey(ll, tx, ty), { c: renderTile(ll, tx, ty), ep }); if (performance.now() > budget) break; }
   // spare time: warm the next coarser level so zooming out is instant
   if (!want.length && performance.now() < budget) {
     const l2 = l + 1, ts2 = ts * 2;
-    outer: for (let tx = Math.floor(wx0 / ts2) - 1; tx <= Math.floor(wx1 / ts2) + 1; tx++) for (let ty = Math.floor(wy0 / ts2) - 1; ty <= Math.floor(wy1 / ts2) + 1; ty++) if (!tiles.has(tkey(l2, tx, ty))) { tiles.set(tkey(l2, tx, ty), renderTile(l2, tx, ty)); if (performance.now() > budget) break outer; }
+    outer: for (let tx = Math.floor(wx0 / ts2) - 1; tx <= Math.floor(wx1 / ts2) + 1; tx++) for (let ty = Math.floor(wy0 / ts2) - 1; ty <= Math.floor(wy1 / ts2) + 1; ty++) if (!tiles.has(tkey(l2, tx, ty))) { const ep = epoch; tiles.set(tkey(l2, tx, ty), { c: renderTile(l2, tx, ty), ep }); if (performance.now() > budget) break outer; }
   }
   while (tiles.size > 140) tiles.delete(tiles.keys().next().value);
   // ---- live layer: caravans, heat, ants, raiders

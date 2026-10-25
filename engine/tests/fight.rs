@@ -423,3 +423,34 @@ fn a_point_blank_charged_throw_kills() {
     }
     assert!(killed, "point-blank charged throw must kill");
 }
+
+#[test]
+fn the_wanderer_travels_and_never_attacks() {
+    let mut e = start_match(11);
+    e.set_desktop(true);
+    e.set_ai(1, true);
+    let (p1, p2) = player_nodes(&e);
+    let k2 = e.game().player_of[&p2];
+    let start = e.game().w.position(p2);
+    let (mut lo, mut hi) = (start, start);
+    let mut stuck = 0;
+    let mut worst = 0;
+    let mut last = start;
+    for _ in 0..1000 {
+        e.direct(0, 0.0, 0.0, 0.0, 0.0, false, true, true);
+        e.frame();
+        let p = e.game().w.position(p2);
+        if p.x == -666.0 {
+            continue;
+        }
+        lo = neobrawl::shared::math::v3(lo.x.min(p.x), lo.y.min(p.y), 0.0);
+        hi = neobrawl::shared::math::v3(hi.x.max(p.x), hi.y.max(p.y), 0.0);
+        if (p - last).length() < 0.01 { stuck += 1; worst = worst.max(stuck); } else { stuck = 0; }
+        last = p;
+        assert!(e.game().players[k2].charge_timer == 0.0, "it never charges a throw");
+    }
+    let span = (hi.x - lo.x).max(hi.y - lo.y);
+    assert!(span > 6.0, "it roams the arena: span {span}");
+    assert!(worst < 60, "never stuck for long: {worst} ticks");
+    assert!(e.game().w.position(p1).x != -666.0, "and never kills us");
+}

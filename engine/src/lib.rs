@@ -83,6 +83,13 @@ impl Engine {
     }
 
     /// Desktop mode: players use `direct` controls; on-screen joysticks hide.
+    /// Hand an input slot (0 = P1, 1 = P2) to the wandering AI, or back.
+    pub fn set_ai(&mut self, slot: usize, on: bool) {
+        if let Some(a) = self.game.ai.get_mut(slot) {
+            a.on = on;
+        }
+    }
+
     /// Snake movement: you never stop; WASD / the stick set your heading.
     pub fn set_snake(&mut self, on: bool) {
         self.game.input.snake = on;

@@ -422,8 +422,16 @@ function pollControls() {
     engine.dash(1, keys.has("ShiftRight") || keys.has("Shift1") || dashLatch[1]);
   }
   engine.any_key(keys.size > 0 || mouseHeld);
+  // player 2 is a wanderer until a human touches its controls; it takes
+  // back over after 5 s without any P2 input (?noai keeps it human)
+  const p2Keys = ["ArrowUp", "ArrowLeft", "ArrowDown", "ArrowRight", "KeyI", "KeyJ", "KeyK", "KeyL", "ShiftRight", "Shift1"];
+  const p2Pad = pad2 && (() => { const p = padSticks(pad2); return Math.hypot(p.mx, p.my) > 0 || p.aiming || p.dash; })();
+  if (p2Keys.some((c) => keys.has(c)) || dashLatch[1] || p2Pad) p2Human = performance.now();
+  const ai = !params.has("noai") && performance.now() - p2Human > 5000;
+  if (ai !== p2Ai) { p2Ai = ai; engine.set_ai(1, ai); }
   dashLatch[0] = dashLatch[1] = false;
 }
+let p2Human = -1e9, p2Ai = false;
 
 async function main() {
   const [wasm, sceneText, assetsText] = await Promise.all([init(`./pkg/neobrawl_bg.wasm${V}`), fetch(`assets/scene.json${V}`).then((r) => r.text()), fetch(`assets/assets.json${V}`).then((r) => r.text())]);

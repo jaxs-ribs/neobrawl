@@ -157,6 +157,14 @@ export class Engine {
     }
     /**
      * Desktop mode: players use `direct` controls; on-screen joysticks hide.
+     * Hand an input slot (0 = P1, 1 = P2) to the wandering AI, or back.
+     * @param {number} slot
+     * @param {boolean} on
+     */
+    set_ai(slot, on) {
+        wasm.engine_set_ai(this.__wbg_ptr, slot, on);
+    }
+    /**
      * Snake movement: you never stop; WASD / the stick set your heading.
      * @param {boolean} on
      */
