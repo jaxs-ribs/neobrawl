@@ -782,6 +782,19 @@ impl Game {
                 s.enabled = false;
             }
         }
+        // the on-screen pause button was a thumb target; Esc pauses on desktop
+        for n in self.w.find_any("PauseButton") {
+            let mut sub = Vec::new();
+            self.w.descendants(n, &mut sub);
+            for d in sub {
+                if let Some(img) = self.w.nodes[d].image.as_mut() {
+                    img.enabled = false;
+                }
+                if let Some(t) = self.w.nodes[d].text.as_mut() {
+                    t.enabled = false;
+                }
+            }
+        }
         // touch joysticks are gone on desktop
         for name in ["InnerMovPlayer1", "InnerMovPlayer2", "InnerAimPlayer1", "InnerAimPlayer2", "OuterMovePlayer1", "OuterMovePlayer2", "OuterAimPlayer1", "OuterAimPlayer2"] {
             for n in self.w.find_any(name) {
