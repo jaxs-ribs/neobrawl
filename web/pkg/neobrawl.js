@@ -157,6 +157,24 @@ export class Engine {
     }
     /**
      * Desktop mode: players use `direct` controls; on-screen joysticks hide.
+     * Turn the running match into target practice. False until a match is up.
+     * @returns {boolean}
+     */
+    start_practice() {
+        const ret = wasm.engine_start_practice(this.__wbg_ptr);
+        return ret !== 0;
+    }
+    /**
+     * [on, hits, streak] for the practice score
+     * @returns {Float32Array}
+     */
+    practice_stats() {
+        const ret = wasm.engine_practice_stats(this.__wbg_ptr);
+        var v1 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
      * AI temperament for a slot: 0 wanders, 1-3 fights (easy, normal, hard).
      * @param {number} slot
      * @param {number} level

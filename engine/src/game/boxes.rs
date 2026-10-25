@@ -131,6 +131,9 @@ impl Game {
             if let Some(&ob) = self.box_of.get(&other) {
                 self.box_single_explode(ob);
             }
+        } else if other_layer == crate::physics::LAYER_PLAYER && self.practice_target(other).is_some() {
+            self.boxes[b].reflected = prev;
+            self.practice_hit(other, prev);
         } else if other_layer == crate::physics::LAYER_PLAYER {
             self.boxes[b].reflected = prev;
             if let Some(&k) = self.player_of.get(&other) {

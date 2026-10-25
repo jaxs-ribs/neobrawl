@@ -715,7 +715,7 @@ function pollControls() {
   const p2Keys = ["ArrowUp", "ArrowLeft", "ArrowDown", "ArrowRight", "KeyI", "KeyJ", "KeyK", "KeyL", "ShiftRight", "Shift1"];
   const p2Pad = pad2 && (() => { const p = padSticks(pad2); return Math.hypot(p.mx, p.my) > 0 || p.aiming || p.dash; })();
   if (p2Keys.some((c) => keys.has(c)) || dashLatch[1] || p2Pad) p2Human = performance.now();
-  const ai = !params.has("noai") && performance.now() - p2Human > 5000;
+  const ai = !params.has("noai") && !params.has("practice") && performance.now() - p2Human > 5000;
   if (ai !== p2Ai) { p2Ai = ai; engine.set_ai(1, ai); }
 }
 let p2Human = -1e9, p2Ai = false;
@@ -848,5 +848,40 @@ async function main() {
   };
   requestAnimationFrame(loop);
   nb.ready = true;
+  // ?practice: straight into target practice on Map 2
+  if (params.has("practice")) {
+    document.documentElement.style.setProperty("--font", family);
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const tap = async (name) => {
+      for (let i = 0; i < 200; i++) {
+        const p = engine.locate(name);
+        // a press and release in one frame, like a real click
+        if (p.length) { engine.pointer(900, p[0], p[1], 0); engine.pointer(900, p[0], p[1], 2); return true; }
+        await wait(50);
+      }
+      return false;
+    };
+    const screens = () => JSON.parse(engine.state()).screens;
+    // tap until the screen we want shows (the intro ignores early taps)
+    const until = async (name, screen) => {
+      for (let i = 0; i < 60 && !screens().includes(screen); i++) { await tap(name); await wait(400); }
+    };
+    (async () => {
+      await until("StartingScreenButton", "maps");
+      await wait(500);
+      await tap("MapMenuArrowRight"); await wait(700);
+      await until("MapMenuGameStart", "game");
+      for (let i = 0; i < 200 && !engine.start_practice(); i++) await wait(50);
+      $("practice").hidden = false;
+      let shown = -1;
+      setInterval(() => {
+        const [on, hits, streak] = engine.practice_stats();
+        if (!on || hits === shown) return;
+        shown = hits;
+        const h = $("hits"); h.textContent = hits; h.classList.add("tick"); requestAnimationFrame(() => requestAnimationFrame(() => h.classList.remove("tick")));
+        $("streak").textContent = streak > 1 ? `x${streak}` : "";
+      }, 100);
+    })();
+  }
 }
 main().catch((e) => { console.error(e); nb.errors.push(String(e)); $("status").textContent = String(e.message || e); });

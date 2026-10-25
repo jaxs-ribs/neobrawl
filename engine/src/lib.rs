@@ -84,6 +84,17 @@ impl Engine {
     }
 
     /// Desktop mode: players use `direct` controls; on-screen joysticks hide.
+    /// Turn the running match into target practice. False until a match is up.
+    pub fn start_practice(&mut self) -> bool {
+        self.game.start_practice()
+    }
+
+    /// [on, hits, streak] for the practice score
+    pub fn practice_stats(&self) -> Vec<f32> {
+        let p = &self.game.practice;
+        vec![p.on as i32 as f32, p.hits as f32, p.streak as f32]
+    }
+
     /// AI temperament for a slot: 0 wanders, 1-3 fights (easy, normal, hard).
     pub fn set_ai_level(&mut self, slot: usize, level: u8) {
         if let Some(a) = self.game.ai.get_mut(slot) {

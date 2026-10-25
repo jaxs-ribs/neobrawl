@@ -15,6 +15,11 @@
   #overlay p { color: var(--dim); margin: .25em 0; }
   #help { position: fixed; right: 12px; bottom: 10px; font-size: 12px; color: var(--dim); text-align: right; pointer-events: none; }
   #help kbd { font: 11px ui-monospace, monospace; border: 1px solid #ccc; border-radius: 3px; padding: 0 3px; }
+  #practice { position: fixed; top: 18px; left: 0; right: 0; text-align: center; pointer-events: none;
+    font: 300 30px/1 var(--font, system-ui), sans-serif; letter-spacing: .3em; color: #111; }
+  #practice #hits { display: inline-block; transition: transform .25s cubic-bezier(.2,1.8,.4,1); }
+  #practice #hits.tick { transform: scale(1.35); transition: none; }
+  #practice #streak { margin-left: .4em; font-size: 13px; color: #888; letter-spacing: .1em; vertical-align: top; }
   #debug { position: fixed; left: 8px; top: 8px; font: 11px/1.35 ui-monospace, monospace; color: #070;
     background: #fffd; padding: 6px 8px; white-space: pre; pointer-events: none; }
 </style>
@@ -25,6 +30,7 @@
 <div id="help">P1 <kbd>WASD</kbd> move · point the cursor at your target · hold click or <kbd>Space</kbd> to charge, release to throw · <kbd>Shift</kbd> dash<br>
 P2 controller (sticks, <kbd>A</kbd> dash) or <kbd>←↑↓→</kbd> + <kbd>I</kbd><kbd>J</kbd><kbd>K</kbd><kbd>L</kbd> aim + right <kbd>Shift</kbd> dash · <kbd>Esc</kbd> pause</div>
 <div id="debug" hidden></div>
-<script type="module" src="./main.js?v=e95418b3e9"></script>
+<div id="practice" hidden><span id="hits">0</span><span id="streak"></span></div>
+<script type="module" src="./main.js?v=6c3fb0b5c0"></script>
 </body>
 </html>

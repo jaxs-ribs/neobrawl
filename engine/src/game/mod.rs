@@ -9,6 +9,7 @@ mod fx;
 mod matchplay;
 mod menu;
 mod players;
+pub mod practice;
 mod tasks;
 
 use std::collections::{BTreeMap, HashMap};
@@ -194,6 +195,8 @@ pub struct Game {
     /// the match is frozen under the pause menu (the original only froze
     /// time in the single-player tutorial; versus kept running under it)
     pub paused: bool,
+    /// target practice (an alternative to the versus match)
+    pub practice: practice::Practice,
     /// per-phase timings (RefCell: render takes &self)
     pub prof: std::cell::RefCell<crate::prof::Prof>,
 }
@@ -257,6 +260,7 @@ impl Game {
             throw_ends: HashMap::new(),
             last_killer: HashMap::new(),
             paused: false,
+            practice: Default::default(),
             prof: Default::default(),
         };
         for i in 0..g.w.nodes.len() {
@@ -297,6 +301,7 @@ impl Game {
         self.prof.borrow_mut().begin();
         self.snapshot_movers();
         self.ai_step();
+        self.practice_step();
         lap(self, 0);
         self.frame += 1;
         self.run_enables();
@@ -398,6 +403,7 @@ impl Game {
         self.prev_pos.clear();
         let mut movers: Vec<usize> = self.players.iter().map(|p| p.node).collect();
         movers.extend(self.cam_follow.iter().map(|c| c.node));
+        movers.extend(self.practice.targets.iter().map(|t| t.node));
         movers.extend(self.boxes.iter().map(|b| b.node).filter(|&n| self.w.nodes[n].body.as_ref().map(|b| b.constraints != crate::scene::FREEZE_ALL).unwrap_or(false)));
         for n in movers {
             if self.w.active_in_hierarchy(n) {
@@ -748,6 +754,7 @@ impl Game {
             "boxesShattered": self.boxes.iter().filter(|b| b.raving).count(),
             "cursor": self.input.cursor,
             "shards": { "live": self.shards.live(), "bonds": self.shards.active.len(), "lines": self.shards.imps.iter().map(|i| i.lines.len()).sum::<usize>(), "impacts": self.shards.imps.len() },
+            "practice": { "on": self.practice.on, "hits": self.practice.hits, "streak": self.practice.streak, "targets": self.practice.targets.iter().map(|t| { let p = self.w.position(t.node); [p.x, p.y] }).collect::<Vec<_>>() },
             "camera": self.camera_main().map(|c| { let p = self.w.position(c); [p.x, p.y, p.z] }),
             "screen": [self.screen.w, self.screen.h],
         })

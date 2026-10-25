@@ -368,6 +368,17 @@ impl Game {
             lap(14);
             if w.nodes[cam].tag == "MainCamera" {
                 self.arena_hum(|p| dist(p), |rec, d| items.push(Item { order: 1, dist: d, seq: 0, rec }));
+                // practice zones: faint broken ink circles, slowly turning
+                for (k, g) in self.practice.targets.iter().enumerate() {
+                    let t = self.motion.render_now * 0.15 * if k % 2 == 0 { 1.0 } else { -1.0 };
+                    let segs = 3 + k % 3;
+                    for sgi in 0..segs {
+                        let a0 = t + sgi as f32 / segs as f32 * std::f32::consts::TAU + crate::motion::hf(k as u32 * 17 + sgi as u32) * 0.4;
+                        let len = std::f32::consts::TAU / segs as f32 * 0.62;
+                        let pts: Vec<V3> = (0..=16).map(|j| { let a = a0 + len * j as f32 / 16.0; g.zone + v3(a.cos(), a.sin(), 0.0) * g.radius }).collect();
+                        ribbon(&pts, 0.02, [0.04, 0.04, 0.06, 0.13], -1.0, |rec| items.push(Item { order: 1, dist: dist(g.zone), seq: 0, rec }));
+                    }
+                }
             }
             lap(15);
             // sort small keys, not the 112-byte records; the index keeps it stable

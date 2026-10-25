@@ -511,6 +511,49 @@ impl World {
     }
 
     /// GameObject.Find: first active object with that name.
+    /// Copy a node and its descendants (minus `skip` and below) under the
+    /// same parent; returns the new root. Scripts are not copied: the copy
+    /// is plain geometry, colliders and bodies.
+    pub fn clone_subtree(&mut self, root: usize, skip: &[usize]) -> usize {
+        fn go(w: &mut World, i: usize, parent: Option<usize>, skip: &[usize]) -> usize {
+            let mut n = w.nodes[i].clone();
+            n.parent = parent;
+            n.scripts.clear();
+            n.button.clear();
+            let kids = std::mem::take(&mut n.children);
+            let id = w.nodes.len();
+            w.by_name.entry(n.name.clone()).or_default().push(id);
+            w.nodes.push(n);
+            for c in kids {
+                if skip.contains(&c) {
+                    continue;
+                }
+                let cc = go(w, c, Some(id), skip);
+                w.nodes[id].children.push(cc);
+            }
+            id
+        }
+        let parent = self.nodes[root].parent;
+        let id = go(self, root, parent, skip);
+        if let Some(p) = parent {
+            self.nodes[p].children.push(id);
+        }
+        id
+    }
+
+    /// Move a node under a new parent, keeping where it is in the world.
+    pub fn reparent(&mut self, i: usize, parent: usize) {
+        let at = self.position(i);
+        let rot = self.rotation(i);
+        if let Some(old) = self.nodes[i].parent {
+            self.nodes[old].children.retain(|&c| c != i);
+        }
+        self.nodes[i].parent = Some(parent);
+        self.nodes[parent].children.push(i);
+        self.set_position(i, at);
+        self.set_rotation(i, rot);
+    }
+
     pub fn find(&self, name: &str) -> Option<usize> {
         self.by_name.get(name)?.iter().copied().find(|&i| self.active_in_hierarchy(i))
     }
