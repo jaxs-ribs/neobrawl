@@ -377,7 +377,7 @@ impl Game {
         self.motion.hitstop = 2;
         self.motion.flash(false, p, 1.3, 0.3, col);
         self.motion.ring(false, p, 0.3, 2.4, 0.06, 0.45, col);
-        self.motion.add_shake(0.16);
+        self.motion.add_shake(0.24);
         self.motion.last_action = self.motion.now;
     }
 

@@ -256,11 +256,13 @@ impl Game {
             y += self.rng.rangef(-0.3, 0.3);
             let k = self.rng.rangef(1.1, 3.0) / 10.0;
             let orb = self.w.nodes[parent].children[i];
-            // pushed on along the hit (heavier hits throw them further), plus a spread
+            // blasted on along the hit: heavier hits throw them much further,
+            // and one or two rocket off (heavy tail), plus a wide spread
             let hit = self.kill_impulse;
             let hs = hit.length();
-            let along = if hs > 1e-3 { hit * ((0.06 + 0.004 * hs.min(80.0)) * self.rng.rangef(0.6, 1.3) / hs) } else { V3::ZERO };
-            let v = v3(x * k * 0.55, y * k * 0.55, 0.0) + along;
+            let tail = self.rng.rangef(0.02, 1.0).powf(-1.0 / 2.2).min(2.5);
+            let along = if hs > 1e-3 { hit * ((0.14 + 0.01 * hs.min(90.0)) * self.rng.rangef(0.5, 1.2) * tail / hs) } else { V3::ZERO };
+            let v = v3(x * k * 1.6, y * k * 1.6, 0.0) + along;
             self.tasks.push(Task::OrbFly { blob: b, orb, killer, v, i: 1 });
             self.tasks.push(Task::OrbScale { orb, j: 0 });
         }

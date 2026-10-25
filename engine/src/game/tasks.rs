@@ -142,13 +142,14 @@ impl Game {
             OrbFly { blob, orb, killer, v, i } => {
                 // physical: thrown back along the hit, braked by drag, while
                 // the killer's pull quietly starts to win
-                const PHYSICAL: u32 = 20;
+                const PHYSICAL: u32 = 24;
                 let p = self.w.position(orb);
                 let k = self.w.position(killer);
                 let to = v3(k.x - p.x, k.y - p.y, 0.0);
                 let l = to.length().max(1e-4);
-                let pull = to * ((i as f32 / PHYSICAL as f32).powi(2) * 0.012 / l);
-                let v = v * 0.86 + pull;
+                // the pull only bites at the very end of the flight
+                let pull = to * ((i as f32 / PHYSICAL as f32).powi(4) * 0.02 / l);
+                let v = v * 0.885 + pull;
                 self.w.translate_world(orb, v);
                 if i >= PHYSICAL {
                     // the change of domain: a breath of ink, then it is a soul
