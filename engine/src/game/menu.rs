@@ -773,7 +773,7 @@ impl Game {
     pub fn apply_desktop_copy(&mut self) {
         let edits = [
             ("usetomove", "use W A S D to move\nshift to dash"),
-            ("pressanywhere", "aim with the mouse\nhold click to charge\nlet go to throw"),
+            ("pressanywhere", "aim with the mouse\nhold click or space to charge\nlet go to throw"),
             ("PressToPlay", "CLICK TO PLAY"),
         ];
         for (name, text) in edits {

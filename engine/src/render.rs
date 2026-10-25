@@ -80,8 +80,13 @@ impl Game {
             // soft radial texture reused as a 1D falloff across ribbons
             let soft = w.textures.iter().position(|t| t.1.ends_with("BlobBWShadow.png")).map(|t| t as f32).unwrap_or(-1.0);
             let dist = |p: V3| view.point(p).z;
+            // the original aim line is replaced by the charger's blade on desktop
+            let aimers: std::collections::HashSet<usize> = if self.input.desktop { self.players.iter().filter_map(|p| p.aimer).collect() } else { Default::default() };
             for i in 0..w.nodes.len() {
                 let n = &w.nodes[i];
+                if aimers.contains(&i) {
+                    continue;
+                }
                 let ui = self.layout.canvas_of.get(&i).copied();
                 if let Some((_, 0)) = ui {
                     continue; // overlay canvases draw in the screen pass
@@ -279,39 +284,75 @@ impl Game {
                         items.push(Item { order: -1, dist: d + 0.02, seq: p.node, rec: quad(disc, q, [0.0, 0.0, 1.0, 1.0], c) });
                     }
                 }
-                if let (Some(b), true) = (p.picked_box, p.charge_timer > 0.0) {
-                    let bp = w.position(b);
+                // the charger: an ink blade along the aim whose length is how far
+                // this throw would still kill (stopping where the line meets
+                // something), and a tapered arc winding round the soul as the
+                // charge fills - closing, breathing and crackling when full
+                if let (Some(_), false) = (p.picked_box, p.touch[1].is_zero()) {
+                    let off = lerp.get(&p.node).copied().unwrap_or(V3::ZERO) + self.bodies.get(pk).map(|b| b.off).unwrap_or(V3::ZERO);
+                    let c = pos + off;
                     let f = (p.charge_timer / 90.0).clamp(0.0, 1.0);
-                    let t = self.frame as f32 * 0.02;
-                    // full charge: the box trembles
-                    let shake = if f >= 1.0 { v3((t * 91.0).sin() * 0.025, (t * 77.0).cos() * 0.025, 0.0) } else { V3::ZERO };
-                    let c0 = bp + shake;
-                    let bd = dist(c0) - 0.05;
-                    // core swelling inside the box, in the thrower's colour
-                    if disc >= 0.0 {
-                        let rad = 0.05 + 0.11 * f + 0.015 * (t * (6.0 + 18.0 * f)).sin();
-                        let mut c = color;
-                        c[3] = 0.55 + 0.45 * f;
-                        let q = [c0 + v3(-rad, -rad, 0.0), c0 + v3(rad, -rad, 0.0), c0 + v3(rad, rad, 0.0), c0 + v3(-rad, rad, 0.0)];
-                        items.push(Item { order: 3, dist: bd, seq: b, rec: quad(disc, q, [0.0, 0.0, 1.0, 1.0], c) });
+                    let t = self.motion.render_now;
+                    let a = v3(p.touch[1].x, p.touch[1].y, 0.0);
+                    let power = (p.charge_timer * 1.11).max(20.0).min(100.0);
+                    let reach = power / 5.0 * 0.94;
+                    let hit = (p.last_hit - c).length();
+                    let len = reach.min(if hit > 0.3 { hit } else { reach });
+                    let on_soul = p.aim_form[0];
+                    let root = c + a * 0.32;
+                    let tip = c + a * len.max(0.5);
+                    let ink = |al: f32| [0.04, 0.04, 0.06, al];
+                    let wd = 0.03 + 0.03 * f + 0.012 * on_soul;
+                    crate::render::blade(root, tip, 0.0, wd, 0.08, ink(0.35 + 0.5 * f), |rec| items.push(Item { order: 4, dist: d - 0.004, seq: p.node, rec }));
+                    // a hairline on past the reach to whatever the line meets
+                    if hit > len + 0.2 {
+                        let far = c + a * hit;
+                        ribbon(&[tip, far], 0.006, ink(0.12), -1.0, |rec| items.push(Item { order: 4, dist: d - 0.004, seq: p.node, rec }));
                     }
-                    // arcs crawling from the core to the box's edges, more as it charges
-                    let arcs = 1 + (f * 5.0) as u32;
-                    let seed = (b as u32).wrapping_mul(2246822519) ^ (self.frame as u32).wrapping_mul(3266489917);
-                    for k in 0..arcs {
-                        let a = (seed.wrapping_add(k * 2654435761) % 6283) as f32 / 1000.0;
-                        let edge = c0 + v3(a.cos(), a.sin(), 0.0) * 0.26;
-                        let pts = arc_points(c0, edge, 6, 0.25, seed.wrapping_add(k * 97));
-                        ribbon(&pts, 0.018, [0.02, 0.02, 0.05, 0.85], -1.0, |rec| items.push(Item { order: 3, dist: bd - 0.001, seq: b, rec }));
+                    // where it strikes a soul: a small broken ring
+                    if on_soul > 0.5 && hit <= reach {
+                        let m = c + a * hit;
+                        for s in 0..3 {
+                            let a0 = s as f32 * 2.1 + t * 1.5;
+                            let pts: Vec<V3> = (0..=6).map(|j| { let q = a0 + j as f32 * 0.17; m + v3(q.cos(), q.sin(), 0.0) * 0.26 }).collect();
+                            ribbon(&pts, 0.016, ink(0.55 * on_soul), -1.0, |rec| items.push(Item { order: 4, dist: d - 0.005, seq: p.node, rec }));
+                        }
                     }
-                    // fully charged: a ring pulses outward from the box
-                    if f >= 1.0 && ring >= 0.0 {
-                        let ph = (t * 2.5).fract();
-                        let rad = 0.3 + 0.35 * ph;
-                        let mut c = color;
-                        c[3] = 0.6 * (1.0 - ph);
-                        let q = [c0 + v3(-rad, -rad, 0.0), c0 + v3(rad, -rad, 0.0), c0 + v3(rad, rad, 0.0), c0 + v3(-rad, rad, 0.0)];
-                        items.push(Item { order: 3, dist: bd - 0.002, seq: b, rec: quad(ring, q, [0.0, 0.0, 1.0, 1.0], c) });
+                    if f > 0.0 {
+                        // the winding arc: thin at its start, full where it is being drawn
+                        let r = 0.36 + 0.02 * (t * 3.0).sin() * f;
+                        let n = (40.0 * f).ceil() as usize;
+                        let start = std::f32::consts::FRAC_PI_2;
+                        let pts: Vec<V3> = (0..=n)
+                            .map(|j| {
+                                let q = start - (j as f32 / 40.0) * std::f32::consts::TAU;
+                                c + v3(q.cos(), q.sin(), 0.0) * r
+                            })
+                            .collect();
+                        for j in 0..pts.len().saturating_sub(1) {
+                            let u0 = j as f32 / n.max(1) as f32;
+                            let u1 = (j + 1) as f32 / n.max(1) as f32;
+                            let mut col = color;
+                            col[3] = 0.9;
+                            ribbon_tapered(&pts[j..=j + 1], [0.012 + 0.03 * u0, 0.012 + 0.03 * u1], col, -1.0, |rec| items.push(Item { order: 4, dist: d - 0.003, seq: p.node, rec }));
+                        }
+                        if f >= 1.0 {
+                            // full: it breathes, and a hair of electricity flickers off it
+                            let ph = (t * 2.2).fract();
+                            let mut col = color;
+                            col[3] = 0.35 * (1.0 - ph);
+                            let rr = r + 0.08 * ph;
+                            let ring_pts: Vec<V3> = (0..=40).map(|j| { let q = j as f32 / 40.0 * std::f32::consts::TAU; c + v3(q.cos(), q.sin(), 0.0) * rr }).collect();
+                            ribbon(&ring_pts, 0.012, col, -1.0, |rec| items.push(Item { order: 4, dist: d - 0.003, seq: p.node, rec }));
+                            let fl = (t * 24.0) as u32;
+                            let hs = crate::motion::hash(fl ^ (pk as u32 * 911));
+                            if hs % 3 == 0 {
+                                let q = (hs % 628) as f32 / 100.0;
+                                let from = c + v3(q.cos(), q.sin(), 0.0) * r;
+                                let to = c + v3((q + 0.5).cos(), (q + 0.5).sin(), 0.0) * (r + 0.18);
+                                crate::render::blade(from, to, 0.2, 0.02, 0.035, ink(0.8), |rec| items.push(Item { order: 4, dist: d - 0.003, seq: p.node, rec }));
+                            }
+                        }
                     }
                 }
             }

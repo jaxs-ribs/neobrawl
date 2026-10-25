@@ -552,7 +552,7 @@ const ORBIT_SENS = 0.012;
 // dash presses are latched so a quick tap between two game ticks still counts
 const dashLatch = [false, false];
 const dashPlayer = (e) => {
-  if (e.code === "Space" || e.code === "ShiftLeft") return 0;
+  if (e.code === "ShiftLeft") return 0;
   if (e.code === "ShiftRight") return 1;
   if (e.key === "Shift") return e.location === 2 ? 1 : 0; // keyboards without a left/right code
   return -1;
@@ -585,9 +585,12 @@ function pollControls() {
     engine.dash(0, p.dash);
   } else {
     const [mx, my] = axis("KeyW", "KeyA", "KeyS", "KeyD");
-    if (locked) engine.direct(0, mx, my, orbit.x, orbit.y, mouseHeld, false, true);
-    else engine.direct(0, mx, my, 0, 0, mouseHeld, true, true);
-    engine.dash(0, keys.has("ShiftLeft") || keys.has("Space") || keys.has("Shift0") || dashLatch[0]);
+    // charge with the mouse button or by holding Space (aim stays on the
+    // cursor either way, so the click hand is free to just point)
+    const charging = mouseHeld || keys.has("Space");
+    if (locked) engine.direct(0, mx, my, orbit.x, orbit.y, charging, false, true);
+    else engine.direct(0, mx, my, 0, 0, charging, true, true);
+    engine.dash(0, keys.has("ShiftLeft") || keys.has("Shift0") || dashLatch[0]);
   }
   // player 2: last pad, else arrows + IJKL (hold IJKL to charge in that direction)
   const pad2 = pads.length >= 2 ? pads[1] : pads[0];
