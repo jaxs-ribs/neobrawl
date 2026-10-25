@@ -283,6 +283,7 @@ class Perf {
     this.long = { count: 0, worst: 0 };
     try { new PerformanceObserver((l) => { for (const e of l.getEntries()) { this.long.count++; this.long.worst = Math.max(this.long.worst, e.duration); } }).observe({ entryTypes: ["longtask"] }); } catch {}
     this.el = null; this.spark = null; this.shown = false;
+    this.lat = []; // input event -> frame submitted with it, ms
   }
   frame(dt, parts, ticks) {
     const i = this.n++ % 600;
@@ -305,7 +306,10 @@ class Perf {
       split: Object.fromEntries(Object.entries(this.split).map(([k, v]) => [k, +(v / frames).toFixed(3)])), ticksPerFrame: +(this.tickCount / frames).toFixed(2),
       gpuMs: +gpuMs.toFixed(3), heapMB: performance.memory ? +(performance.memory.usedJSHeapSize / 1048576).toFixed(1) : null,
       longTasks: this.long.count, longWorst: +this.long.worst.toFixed(1), records: nb.records, draws: nb.draws, phases,
+      inputToDraw: this.lat.length ? +(this.lat.reduce((a, b) => a + b, 0) / this.lat.length).toFixed(2) : null,
+      inputToDrawWorst: this.lat.length ? +Math.max(...this.lat).toFixed(2) : null,
     };
+    this.lat = [];
     this.n = 0; this.tickCount = 0; for (const k in this.split) this.split[k] = 0;
     return out;
   }
@@ -329,6 +333,7 @@ class Perf {
       `cpu p50 ${r.cpuP50}  p99 ${r.cpuP99}  worst ${r.cpuWorst} ms   gpu ${r.gpuMs} ms\n` +
       `per frame: ticks ${r.split.ticks} (${r.ticksPerFrame}/frame)  render ${r.split.render}  draw ${r.split.draw}  host ${r.split.host} ms\n` +
       `records ${r.records}  draws ${r.draws}  heap ${r.heapMB ?? "?"} MB  res ${r.res ?? 1}\n` +
+      `input -> drawn ${r.inputToDraw ?? "-"} ms (worst ${r.inputToDrawWorst ?? "-"}), + ~1 refresh to the screen\n` +
       top.map(([k, v]) => `  ${k.padEnd(10)} ${v.mean.toFixed(3)} (worst ${v.worst.toFixed(2)})`).join("\n");
     this.el.appendChild(this.spark);
     const g = this.spark.getContext("2d"), w = 240, h = 48; g.clearRect(0, 0, w, h);
@@ -712,9 +717,12 @@ function pollControls() {
   if (p2Keys.some((c) => keys.has(c)) || dashLatch[1] || p2Pad) p2Human = performance.now();
   const ai = !params.has("noai") && performance.now() - p2Human > 5000;
   if (ai !== p2Ai) { p2Ai = ai; engine.set_ai(1, ai); }
-  dashLatch[0] = dashLatch[1] = false;
 }
 let p2Human = -1e9, p2Ai = false;
+// the timestamp of the latest control input not yet drawn (latency observable)
+let pendingInput = null;
+addEventListener("keydown", (e) => { if (!e.repeat && pendingInput === null) pendingInput = e.timeStamp; });
+addEventListener("pointerdown", (e) => { if (pendingInput === null) pendingInput = e.timeStamp; });
 
 async function main() {
   const [wasm, sceneText, assetsText] = await Promise.all([init(`./pkg/neobrawl_bg.wasm${V}`), fetch(`assets/scene.json${V}`).then((r) => r.text()), fetch(`assets/assets.json${V}`).then((r) => r.text())]);
@@ -800,7 +808,14 @@ async function main() {
     acc += Math.min(0.25, dtFrame / 1000); last = now;
     let steps = 0;
     const tA = performance.now();
-    while (acc >= TICK && steps < 8) { pollControls(); engine.frame(); acc -= TICK; steps++; nb.ticks++; }
+    // input is read every frame (the prediction draws from it right away),
+    // and again before each tick
+    pollControls();
+    while (acc >= TICK && steps < 8) {
+      if (steps) pollControls();
+      engine.frame(); acc -= TICK; steps++; nb.ticks++;
+      dashLatch[0] = dashLatch[1] = false; // a quick tap is only spent once a tick has seen it
+    }
     const tB = performance.now();
     if (audio) {
       const s = engine.drain_sounds(); if (s !== "[]") for (const [c, v] of JSON.parse(s)) audio.shot(c, v);
@@ -819,6 +834,7 @@ async function main() {
     const t2 = performance.now();
     nb.cpuMs = nb.cpuMs * 0.95 + (t2 - t0) * 0.05; // smoothed render + record time
     perf.frame(dtFrame, { ticks: tB - tA, render: t1 - t0, draw: t2 - t1, host: t0 - tB }, steps);
+    if (pendingInput !== null) { perf.lat.push(t2 - pendingInput); pendingInput = null; }
     perf.push(dtFrame);
     if (now - perfT >= 1000) {
       nb.perf = perf.report(engine, r.gpuMs);

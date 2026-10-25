@@ -6,6 +6,7 @@ use common::*;
 #[ignore]
 fn sweep() {
     let (mut hard, mut easy) = (0, 0);
+    let mut throws = 0;
     for seed in 20u64..32 {
         let mut e = engine(r#"{"FirstLaunch":1}"#, seed);
         run(&mut e, 40);
@@ -24,6 +25,7 @@ fn sweep() {
         let s = state(&e);
         easy += s["score"]["p1"].as_i64().unwrap_or(0);
         hard += s["score"]["p2"].as_i64().unwrap_or(0);
+        throws += e.game().ai[1].stats[0];
     }
-    eprintln!("12 seeds: hard {hard} vs easy {easy}");
+    eprintln!("12 seeds: hard {hard} vs easy {easy} (points, 8 per kill); hard throws {:.1} per minute", throws as f32 / 12.0);
 }

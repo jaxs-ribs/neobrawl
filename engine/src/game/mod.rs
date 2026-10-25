@@ -406,6 +406,31 @@ impl Game {
         }
     }
 
+    /// The velocity to draw a human-driven soul ahead with: what the keys
+    /// ask for right now (so a turn shows on the next frame, not the next
+    /// tick), unless last tick shows it blocked (then what really happened).
+    fn predict(&self, node: usize, last: V3) -> V3 {
+        let actual = last * (1.0 / DT);
+        let Some(p) = self.players.iter().find(|p| p.node == node) else { return actual };
+        if p.dash_t > 0 {
+            let s = if p.dash_speed > 0.0 { p.dash_speed } else { players::DASH_SPEED };
+            return v3(p.dash_dir.x, p.dash_dir.y, 0.0) * s;
+        }
+        let Some(slot) = self.direct_slot_pub(p) else { return actual };
+        let ctl = self.input.direct[slot];
+        let dir = if self.input.snake { p.heading } else { ctl.mv };
+        let l = (dir.x * dir.x + dir.y * dir.y).sqrt();
+        let want = if l > 1e-3 { v3(dir.x / l, dir.y / l, 0.0) * (8.0 * p.pace.max(0.25)) } else { V3::ZERO };
+        // pressing into something (pressed a while, yet barely moving): trust
+        // the simulation. A fresh press, still speeding up, is not blocked.
+        let blocked = p.cmd.len() > 0.8 && want.length() > 1.0 && actual.length() < want.length() * 0.4;
+        if blocked {
+            actual
+        } else {
+            want
+        }
+    }
+
     /// Render-time offset for a node: where it was a fraction of a tick ago.
     pub fn interp_offsets(&self) -> HashMap<usize, V3> {
         let a = ((self.motion.render_now - self.motion.now) / DT).clamp(0.0, 1.0);
@@ -427,7 +452,7 @@ impl Game {
             if d.length() > 3.0 || prev.x == -666.0 || cur.x == -666.0 {
                 continue; // teleports snap
             }
-            let off = if human.contains(&n) { d * a } else { d * (a - 1.0) };
+            let off = if human.contains(&n) { self.predict(n, d) * (a * DT) } else { d * (a - 1.0) };
             let mut sub = Vec::new();
             self.w.descendants(n, &mut sub);
             for s in sub {

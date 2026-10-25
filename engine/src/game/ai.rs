@@ -56,6 +56,18 @@ struct Fight {
     lined_since: Option<u64>,
     /// a dash broke its tracking: no shots until then, aim held on the old line
     lost_until: u64,
+    // a human rhythm between actions:
+    /// the current movement plan and when it gets reconsidered
+    plan: V3,
+    plan_until: u64,
+    /// when it got its box (it takes a beat before charging)
+    carry_since: Option<u64>,
+    /// ticks its aim has been steady (it must settle before releasing)
+    settled: u32,
+    /// follow-through after a throw: no box-hunting, just drifting
+    recover_until: u64,
+    /// this shot's aim error (drawn once per box, like a person's miss)
+    err: Option<f32>,
 }
 
 /// How well it reads a charging opponent: per-tick juke hazard at full
@@ -75,13 +87,24 @@ struct Level {
     aim_err: f32,
     dodge_p: f32,
     range: f32,
+    /// ticks: how often plans change, the beat between grabbing a box and
+    /// charging, how long the aim must sit still before a release, and the
+    /// follow-through after a throw
+    cadence: u64,
+    beat: u64,
+    settle: u32,
+    recover: u64,
+    /// aim pursuit: max turn (rad per tick) and the tracking error that
+    /// counts as "on target"
+    turn: f32,
+    tol: f32,
 }
 
 fn level(l: u8) -> Level {
     match l {
-        1 => Level { react: 16, flinch: 17.0, aim_err: 0.22, dodge_p: 0.35, range: 5.5 },
-        2 => Level { react: 12, flinch: 13.0, aim_err: 0.11, dodge_p: 0.6, range: 5.0 },
-        _ => Level { react: 9, flinch: 10.0, aim_err: 0.045, dodge_p: 0.8, range: 4.6 },
+        1 => Level { react: 16, flinch: 17.0, aim_err: 0.22, dodge_p: 0.35, range: 5.5, cadence: 11, beat: 15, settle: 22, recover: 24, turn: 0.045, tol: 0.12 },
+        2 => Level { react: 12, flinch: 13.0, aim_err: 0.11, dodge_p: 0.6, range: 5.0, cadence: 8, beat: 11, settle: 16, recover: 18, turn: 0.065, tol: 0.08 },
+        _ => Level { react: 9, flinch: 10.0, aim_err: 0.045, dodge_p: 0.8, range: 4.6, cadence: 5, beat: 7, settle: 11, recover: 14, turn: 0.09, tol: 0.05 },
     }
 }
 
@@ -425,6 +448,12 @@ impl Game {
             let tangent = v3(-dir.y, dir.x, 0.0) * w.fight.strafe;
 
             if carrying {
+                // they're loaded and lined up on us and we're not ready: get out
+                // of the line rather than race them to the shot
+                let threatened = on_us && their_charge > 45.0 && charge < w.fight.want_charge * 0.9;
+                if threatened && mv == V3::ZERO {
+                    mv = tangent * 1.4 - dir * 0.3;
+                }
                 // 2) ranging and the shot: a little further off while they're armed
                 let range = if armed { lv.range + 0.8 } else { lv.range - 0.6 };
                 let radial = dir * ((dist - range) * 0.6).clamp(-1.0, 1.0);
@@ -471,16 +500,32 @@ impl Game {
                 let mut ad = aim_at - me;
                 let al = (ad.x * ad.x + ad.y * ad.y).sqrt().max(1e-3);
                 ad = ad * (1.0 / al);
-                // human-ish error
-                let err = hf(seed ^ 77) * lv.aim_err;
+                // human-ish error: one miss per shot, not a tremor
+                let err = *w.fight.err.get_or_insert(hf(seed ^ 77) * lv.aim_err);
                 let (s, c) = err.sin_cos();
                 ad = v3(ad.x * c - ad.y * s, ad.x * s + ad.y * c, 0.0);
                 let lane = solids.clear(me + ad * 0.5, me + ad * dist.min(9.0), 0.45);
-                aiming = true;
-                // hold the aim steady for the last ticks: the throw uses the aim of 2 ticks ago
-                // (and while a dash has broken its tracking, it stays on the old line)
+                // a beat after grabbing the box before it starts to charge
+                let since = t - *w.fight.carry_since.get_or_insert(t);
+                aiming = since >= lv.beat;
+                // the aim pursues the target at a human turn rate, and it only
+                // lets go once the tracking error has stayed small for a moment
+                // (while a dash has broken its tracking, it stays on the old line)
                 if w.fight.hold_aim == 0 && !lost {
-                    w.fight.aim = ad;
+                    if w.fight.aim == V3::ZERO {
+                        w.fight.aim = ad;
+                    }
+                    let cur = w.fight.aim.y.atan2(w.fight.aim.x);
+                    let mut d = ad.y.atan2(ad.x) - cur;
+                    d = d.sin().atan2(d.cos());
+                    let na = cur + d.clamp(-lv.turn, lv.turn);
+                    w.fight.aim = v3(na.cos(), na.sin(), 0.0);
+                    let off = (d.abs() - lv.turn).max(0.0);
+                    if off <= lv.tol {
+                        w.fight.settled += 1;
+                    } else {
+                        w.fight.settled = 0;
+                    }
                 }
                 aim = V2 { x: w.fight.aim.x, y: w.fight.aim.y };
                 w.stats[3] += 1;
@@ -491,7 +536,7 @@ impl Game {
                     w.fight.blocked = 0;
                     w.fight.spot = None;
                 }
-                let ready = !lost && charge >= w.fight.want_charge && lane && flight_time(dist, power_for(charge)).is_some();
+                let ready = !lost && aiming && w.fight.settled >= lv.settle && charge >= w.fight.want_charge && lane && flight_time(dist, power_for(charge)).is_some();
                 if ready && w.fight.hold_aim == 0 {
                     w.fight.hold_aim = 3;
                 }
@@ -500,11 +545,22 @@ impl Game {
                     if w.fight.hold_aim == 0 {
                         aiming = false; // release
                         w.stats[0] += 1;
+                        w.fight.recover_until = t + lv.recover + hash(seed ^ 0x3131) as u64 % 8;
+                        w.fight.carry_since = None;
+                        w.fight.settled = 0;
+                        w.fight.err = None;
                     }
+                }
+            } else if t < w.fight.recover_until {
+                // follow-through after a throw: a moment of drifting - an opening
+                w.fight.carry_since = None;
+                if mv == V3::ZERO {
+                    mv = tangent * 0.45;
                 }
             } else {
                 // 3) get a box: the nearest reachable one, not straight into their aim
                 w.fight.hold_aim = 0;
+                w.fight.carry_since = None;
                 let mut best: Option<(f32, V3)> = None;
                 for b in &self.boxes {
                     let n = b.node;
@@ -540,6 +596,15 @@ impl Game {
                     }
                 }
             }
+        }
+        // plans change a few times a second, not every tick (dodges, already
+        // paced by their own reaction times, cut in)
+        let dodging = t < w.fight.dodge_until;
+        if !dodging && t < w.fight.plan_until && !final_approach {
+            mv = w.fight.plan;
+        } else {
+            w.fight.plan = mv;
+            w.fight.plan_until = t + lv.cadence + hash(seed ^ 0x2121) as u64 % (lv.cadence / 2 + 1);
         }
         // steer the move around obstacles with the wanderer's feelers
         let ml = (mv.x * mv.x + mv.y * mv.y).sqrt();
