@@ -185,6 +185,8 @@ pub struct Game {
     pub bodies: Vec<body::SoulBody>,
     /// wandering AI per input slot
     pub ai: [ai::Wanderer; 2],
+    /// synthesised sound cues for the host: (name, pan -1..1, amount)
+    pub cues: Vec<(&'static str, f32, f32)>,
 }
 
 pub fn field<'a>(w: &'a World, node: usize, script: &str, name: &str) -> &'a Value {
@@ -242,6 +244,7 @@ impl Game {
             shards: crate::shards::ShardSim::new(0x5eed),
             bodies: Vec::new(),
             ai: Default::default(),
+            cues: Vec::new(),
         };
         for i in 0..g.w.nodes.len() {
             if let Some(clip) = g.w.nodes[i].audio.clone() {
@@ -276,6 +279,7 @@ impl Game {
         self.phys.step(&mut self.w, DT);
         self.dispatch_physics_events();
         self.shards_step();
+        self.shard_cues();
         self.step_tasks();
         self.update();
         self.relayout();
@@ -347,6 +351,14 @@ impl Game {
         });
     }
 
+    fn shard_cues(&mut self) {
+        let ev = std::mem::take(&mut self.shards.events);
+        let z = self.players.first().map(|p| self.w.position(p.node).z).unwrap_or(0.0);
+        for (kind, x, y, s) in ev {
+            self.cue(if kind == 0 { "spark" } else { "bolt" }, v3(x, y, z), s);
+        }
+    }
+
     fn snapshot_movers(&mut self) {
         self.prev_pos.clear();
         let mut movers: Vec<usize> = self.players.iter().map(|p| p.node).collect();
@@ -380,6 +392,24 @@ impl Game {
             }
         }
         out
+    }
+
+    /// A synthesised sound at a world position (panned by the main camera).
+    pub fn cue(&mut self, name: &'static str, at: V3, amount: f32) {
+        if self.prefs.get_string("Sound") != "ON" || self.menu.intro_is_happening || self.cues.len() > 48 {
+            return;
+        }
+        let pan = self.camera_main().map(|c| ((at.x - self.w.position(c).x) / 9.0).clamp(-1.0, 1.0)).unwrap_or(0.0);
+        self.cues.push((name, pan, amount));
+    }
+
+    /// A synthesised UI sound (screen pixels, panned across the screen).
+    pub fn cue_ui(&mut self, name: &'static str, x: f32, amount: f32) {
+        if self.prefs.get_string("Sound") != "ON" || self.cues.len() > 48 {
+            return;
+        }
+        let pan = ((x / self.screen.w.max(1.0)) * 2.0 - 1.0).clamp(-1.0, 1.0) * 0.6;
+        self.cues.push((name, pan, amount));
     }
 
     pub fn play(&mut self, clip: &str, volume: f32) {

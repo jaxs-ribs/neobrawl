@@ -303,6 +303,33 @@ export class Engine {
         }
     }
     /**
+     * Synthesised cues since the last call: [[name, pan, amount]]
+     * @returns {string}
+     */
+    drain_cues() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.engine_drain_cues(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * Continuous mix inputs, every frame: [charge p0, pan p0, charge p1,
+     * pan p1, lull 0..1, paused 0/1, in match 0/1]
+     * @returns {Float32Array}
+     */
+    mix() {
+        const ret = wasm.engine_mix(this.__wbg_ptr);
+        var v1 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
      * Music sources: [[clip, playing, volume]] (muted when Music is OFF)
      * @returns {string}
      */

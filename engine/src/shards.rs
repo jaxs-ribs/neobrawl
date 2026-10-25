@@ -145,6 +145,8 @@ pub struct ShardSim {
     pub bolts: Vec<Bolt>,
     pub imps: Vec<Impact>,
     pub t: u64,
+    /// sound events since the last drain: (0 spark line, 1 bolt), x, y, size
+    pub events: Vec<(u8, f32, f32, f32)>,
     beat_start: u64,
     beat_next: u64,
     beat_len: u64,
@@ -163,6 +165,7 @@ impl ShardSim {
             bolts: Vec::new(),
             imps: Vec::new(),
             t: 0,
+            events: Vec::new(),
             beat_start: 0,
             beat_next: 0,
             beat_len: 4,
@@ -623,6 +626,7 @@ impl ShardSim {
                 self.shards[src].q -= moved;
                 self.shards[best].q += moved * 0.8;
                 self.bolts.push(Bolt { a: src, b: best, life: 6 });
+                self.events.push((1, self.shards[src].x, self.shards[src].y, 1.0));
             }
         }
     }
@@ -661,6 +665,9 @@ impl ShardSim {
                 let w = (0.6 * self.r().max(1e-6).powf(-1.0 / 3.0)).min(1.4);
                 let bow = if self.r() < 0.5 { -1.0 } else { 1.0 } * (0.08 + self.r() * 0.22);
                 let show = self.r() > DROPOUT;
+                if show {
+                    self.events.push((0, self.shards[a].x, self.shards[a].y, w));
+                }
                 self.imps[imp].lines.push(Line { a, b, born: t, life: life.max(1), snap, w, bow, show });
                 for _ in 0..2 {
                     if self.r() < BRANCH / 2.0 && q.gen < 60 {

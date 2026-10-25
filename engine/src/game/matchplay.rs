@@ -291,6 +291,8 @@ impl Game {
         self.w.nodes[orb].lscale = V3::ZERO;
         // resetPositionAndScale
         self.blobs[b].checked += 1;
+        let n = self.blobs[b].checked as f32;
+        self.cue("home", k, n);
         if self.blobs[b].checked == 8 {
             let parent = self.blobs[b].node;
             let (ip, is) = (self.blobs[b].init_pos, self.blobs[b].init_scale);

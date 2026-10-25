@@ -337,6 +337,8 @@ impl Game {
         }
         if uturn {
             self.body_land(k, 0.6);
+            let p = self.w.position(self.players[k].node);
+            self.cue("turn", p, 1.0);
         }
         let p = &mut self.players[k];
         p.touch[1] = match aim {

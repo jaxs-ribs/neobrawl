@@ -14,7 +14,7 @@ const fresh = params.has("fresh");
 const $ = (id) => document.getElementById(id);
 const canvas = $("screen");
 
-const nb = (window.__nb = { cpuMs: 0, ready: false, errors: [], fps: 0, ticks: 0, draws: 0,
+const nb = (window.__nb = { Audio: null, cpuMs: 0, ready: false, errors: [], fps: 0, ticks: 0, draws: 0,
   state: () => (engine ? JSON.parse(engine.state()) : null) });
 addEventListener("error", (e) => nb.errors.push(String(e.message || e)));
 addEventListener("unhandledrejection", (e) => nb.errors.push(String(e.reason)));
@@ -28,8 +28,10 @@ class Audio {
   // Mix: the original played effects as 3D one-shots in the world, so they
   // sat well under the music. Effects go through their own bus and a limiter,
   // repeats of the same clip are voice-limited and slightly detuned.
-  constructor(files) {
-    this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+  constructor(files, offline) {
+    // `offline` (an OfflineAudioContext) renders silently, for checking levels
+    this.offline = !!offline;
+    this.ctx = offline || new (window.AudioContext || window.webkitAudioContext)();
     const c = this.ctx;
     this.limiter = c.createDynamicsCompressor();
     this.limiter.threshold.value = -14; this.limiter.knee.value = 10; this.limiter.ratio.value = 6;
@@ -37,7 +39,19 @@ class Audio {
     this.master = c.createGain(); this.master.gain.value = 0.9;
     this.sfx = c.createGain(); this.sfx.gain.value = 0.35;
     this.musicBus = c.createGain(); this.musicBus.gain.value = 1.0;
-    this.sfx.connect(this.limiter); this.musicBus.connect(this.limiter);
+    // the music breathes with the game: darker in lulls, muffled when
+    // paused, ducked for a beat when a soul is ended
+    this.musicTone = c.createBiquadFilter(); this.musicTone.type = "lowpass"; this.musicTone.frequency.value = 20000; this.musicTone.Q.value = 0.5;
+    this.musicDuck = c.createGain(); this.musicDuck.gain.value = 1;
+    this.musicBus.connect(this.musicTone).connect(this.musicDuck);
+    this.sfx.connect(this.limiter); this.musicDuck.connect(this.limiter);
+    // a second, gentler bus for the synthesised voices
+    this.synth = c.createGain(); this.synth.gain.value = 4.4; this.synth.connect(this.sfx);
+    this.cueGain = 1;
+    this.noise = c.createBuffer(1, c.sampleRate, c.sampleRate);
+    { const d = this.noise.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1; }
+    this.rate = new Map(); // cue -> recent times (rate limiting)
+    this.drones = [null, null];
     this.limiter.connect(this.master).connect(c.destination);
     this.buffers = new Map();
     this.sources = new Map();
@@ -53,7 +67,7 @@ class Audio {
   unlock() { if (this.ctx.state !== "running") this.ctx.resume(); }
   shot(name, vol) {
     const b = this.buffers.get(name);
-    if (!b || this.ctx.state !== "running") return;
+    if (!b || !this.running()) return;
     const now = this.ctx.currentTime;
     const live = (this.voices.get(name) || []).filter((v) => v.end > now);
     // the same clip retriggered within 60 ms adds nothing but clipping
@@ -67,6 +81,166 @@ class Audio {
     s.connect(g).connect(this.sfx); s.start(now);
     live.push({ start: now, end: now + b.duration / s.playbackRate.value, src: s });
     this.voices.set(name, live);
+  }
+  // ---- synthesised voices ------------------------------------------------
+  // The originals: a 1 kHz sine beep (click), a bubbly downward bloop
+  // (pickup), low airy noise (dash), a sub-heavy noise burst (explosion).
+  // The new voices are built from the same stuff - sines, quick pitch
+  // drops, filtered noise - kept small and uneven, and every tonal one sits
+  // in A minor pentatonic so it is in tune with both themes (Map 1 is
+  // C / A minor at ~128 BPM, the menu drone is F major).
+  note(deg, oct = 0) {
+    const P = [0, 3, 5, 7, 10];
+    const d = Math.floor(deg), o = Math.floor(d / 5) + oct;
+    return 220 * Math.pow(2, (P[((d % 5) + 5) % 5] + 12 * o) / 12);
+  }
+  out(pan, gain) {
+    const c = this.ctx, g = c.createGain(), p = c.createStereoPanner ? c.createStereoPanner() : null;
+    g.gain.value = gain;
+    if (p) { p.pan.value = Math.max(-1, Math.min(1, pan)); g.connect(p).connect(this.synth); } else g.connect(this.synth);
+    return g;
+  }
+  env(g, t, a, peak, d) {
+    peak *= this.cueGain; // the voice's trim
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(peak, t + a); g.gain.exponentialRampToValueAtTime(0.0001, t + a + d);
+  }
+  tone(t, f, f2, type, a, d, peak, pan) {
+    const c = this.ctx, o = c.createOscillator(), g = this.out(pan, 1);
+    o.type = type; o.frequency.setValueAtTime(f, t); if (f2 !== f) o.frequency.exponentialRampToValueAtTime(f2, t + a + d * 0.6);
+    this.env(g, t, a, peak, d); o.connect(g); o.start(t); o.stop(t + a + d + 0.05);
+  }
+  hiss(t, type, f, f2, q, a, d, peak, pan) {
+    const c = this.ctx, n = c.createBufferSource(), bp = c.createBiquadFilter(), g = this.out(pan, 1);
+    n.buffer = this.noise; n.loop = true; bp.type = type; bp.Q.value = q;
+    bp.frequency.setValueAtTime(f, t); if (f2 !== f) bp.frequency.exponentialRampToValueAtTime(f2, t + a + d);
+    this.env(g, t, a, peak, d); n.connect(bp).connect(g); n.start(t, Math.random() * 0.9); n.stop(t + a + d + 0.05);
+  }
+  limited(name, perSec) {
+    const now = this.ctx.currentTime, list = (this.rate.get(name) || []).filter((x) => now - x < 1);
+    if (list.length >= perSec) return true;
+    list.push(now); this.rate.set(name, list); return false;
+  }
+  running() { return this.offline || this.ctx.state === "running"; }
+  cue(name, pan, amt) {
+    if (!this.running()) return;
+    // levels, set against the originals through the same chain (RMS):
+    // explosion -21, dash -22, pickup -25, click -35, music bed ~-15
+    this.cueGain = CUE_LEVEL[name] ?? 1;
+    const t = this.ctx.currentTime + 0.005, R = Math.random, tail = (k) => Math.min(3, Math.pow(Math.max(R(), 0.02), -1 / k));
+    switch (name) {
+      case "spark": { // shard electricity: a dry crackle, one to three ticks
+        if (this.limited(name, 22)) return;
+        const n = 1 + (R() < 0.35 ? 1 : 0) + (R() < 0.1 ? 1 : 0);
+        for (let i = 0; i < n; i++) this.hiss(t + i * (0.006 + R() * 0.02), "bandpass", 2400 * tail(2.5), 2400, 7, 0.001, 0.012 + R() * 0.02, 0.05 * Math.min(1.4, amt) / (i + 1), pan);
+        break;
+      }
+      case "bolt": // breakdown: a snap with a falling chirp (the sim fires many; hear a few)
+        if (R() < 0.6 || this.limited(name, 3)) return;
+        this.hiss(t, "bandpass", 1800, 900, 3, 0.001, 0.05, 0.12, pan);
+        this.tone(t, 1300, 420, "triangle", 0.002, 0.07, 0.05, pan);
+        break;
+      case "fling": // the soul blown apart: a bright whoosh falling away (the dash's air, harder)
+        this.hiss(t, "lowpass", 5000, 300, 0.7, 0.004, 0.42, 0.32 * amt, pan);
+        this.tone(t, 180, 55, "sine", 0.003, 0.25, 0.28 * amt, pan); // and a body blow under it
+        this.duck(0.55, 0.45);
+        break;
+      case "soul": // the change of domain: a small glass ping per orb, scattered
+        this.tone(t + R() * 0.05, this.note(5 + (amt | 0), 1), this.note(5 + (amt | 0), 1), "sine", 0.002, 0.22, 0.045, pan);
+        break;
+      case "home": { // each soul arriving: a bloop climbing the scale (the pickup sound, as a phrase)
+        const f = this.note(amt + 2, 0);
+        this.tone(t, f * 1.5, f, "triangle", 0.003, 0.26, 0.12, pan);
+        this.tone(t, f * 2, f * 2, "sine", 0.002, 0.12, 0.03, pan);
+        break;
+      }
+      case "refill": // a box refills the dash: crack, then an up-chirp
+        this.hiss(t, "highpass", 3500, 3500, 0.7, 0.001, 0.03, 0.12, pan);
+        this.tone(t + 0.01, this.note(7), this.note(12), "sine", 0.003, 0.09, 0.09, pan);
+        break;
+      case "ready": // dash back: the click's sine, tiny and high
+        this.tone(t, this.note(14), this.note(14), "sine", 0.001, 0.05, 0.03, pan);
+        break;
+      case "thud": // an obstacle flexes: a low wobbling knock
+        this.tone(t, 92, 58, "sine", 0.002, 0.2, 0.3 * amt, pan);
+        this.hiss(t, "lowpass", 600, 200, 0.7, 0.001, 0.06, 0.08 * amt, pan);
+        break;
+      case "turn": // a U-turn squash
+        if (this.limited(name, 6)) return;
+        this.tone(t, 150, 95, "sine", 0.002, 0.05, 0.07, pan);
+        break;
+      case "gather": // respawn: air drawn in, then a soft bloop
+        this.hiss(t, "lowpass", 250, 4000, 0.9, 0.4, 0.06, 0.12, pan);
+        this.tone(t + 0.45, this.note(5) * 1.4, this.note(5), "triangle", 0.003, 0.22, 0.1, pan);
+        break;
+      case "hover": // the cursor's spark leaps to a button
+        if (this.limited(name, 8)) return;
+        this.hiss(t, "bandpass", 5200, 5200, 9, 0.001, 0.018, 0.035, pan);
+        break;
+      case "tick": // a value rewritten
+        this.tone(t, this.note(12), this.note(12), "sine", 0.001, 0.04, 0.03, pan);
+        this.tone(t + 0.035, this.note(14), this.note(14), "sine", 0.001, 0.05, 0.025, pan);
+        break;
+      case "shatter": { // UI glass breaking: a few high pings, unevenly spread
+        if (this.limited(name, 10)) return;
+        const n = 2 + Math.floor(amt * 4 * R());
+        for (let i = 0; i < n; i++) this.tone(t + Math.pow(R(), 2) * 0.09, this.note(10 + Math.floor(R() * 8)), this.note(10 + Math.floor(R() * 8)) * 0.97, "sine", 0.001, 0.04 + R() * 0.08, 0.025, pan + (R() - 0.5) * 0.4);
+        break;
+      }
+      case "assemble": { // the arena drawing itself: a sparse, quickening scatter of ticks, then the fight cue
+        const n = Math.round(10 + 14 * amt);
+        for (let i = 0; i < n; i++) {
+          const at = 0.35 + 0.9 * Math.pow(i / n, 0.8) + (R() - 0.5) * 0.05;
+          this.hiss(t + at, "bandpass", 2000 + R() * 3000, 1500, 6, 0.001, 0.02, 0.03, (R() - 0.5) * 1.4);
+        }
+        // the arc snapping between the souls: a fifth, struck once
+        this.tone(t + 1.35, this.note(5), this.note(5), "triangle", 0.002, 0.5, 0.08, 0);
+        this.tone(t + 1.35, this.note(8), this.note(8), "sine", 0.002, 0.45, 0.05, 0);
+        this.hiss(t + 1.35, "bandpass", 3000, 1200, 2, 0.001, 0.08, 0.06, 0);
+        break;
+      }
+    }
+  }
+  // music ducks for a moment and comes back
+  duck(depth, time) {
+    const g = this.musicDuck.gain, f = this.musicTone.frequency, now = this.ctx.currentTime;
+    g.cancelScheduledValues(now); g.setValueAtTime(g.value, now); g.linearRampToValueAtTime(depth, now + 0.02); g.setTargetAtTime(1, now + 0.05, time / 3);
+    this.kickTone = now;
+  }
+  // continuous: charge drones per player, and the music's tone
+  mix(m) {
+    if (!this.running()) return;
+    const c = this.ctx, now = c.currentTime;
+    for (let k = 0; k < 2; k++) {
+      const charge = m[k * 2], pan = m[k * 2 + 1];
+      let d = this.drones[k];
+      if (charge > 0.02 && !d) {
+        // a held breath: a low filtered tone that rises and tightens with the charge
+        const o = c.createOscillator(), o2 = c.createOscillator(), lp = c.createBiquadFilter(), g = this.out(pan, 0), trem = c.createGain(), lfo = c.createOscillator();
+        o.type = "sawtooth"; o2.type = "sine"; lp.type = "lowpass"; lp.Q.value = 4;
+        lfo.frequency.value = 9; trem.gain.value = 0; lfo.connect(trem).connect(g.gain);
+        o.connect(lp); o2.connect(lp); lp.connect(g); o.start(); o2.start(); lfo.start();
+        d = this.drones[k] = { o, o2, lp, g, trem, lfo };
+      }
+      if (!d) continue;
+      if (charge <= 0.02) {
+        d.g.gain.setTargetAtTime(0, now, 0.03);
+        const dd = d; setTimeout(() => { try { dd.o.stop(); dd.o2.stop(); dd.lfo.stop(); } catch {} }, 300);
+        this.drones[k] = null; continue;
+      }
+      const f = this.note(-5 + charge * 5); // A2 rising to A3
+      d.o.frequency.setTargetAtTime(f, now, 0.05); d.o2.frequency.setTargetAtTime(f * 0.5, now, 0.05);
+      d.lp.frequency.setTargetAtTime(180 + 1400 * charge * charge, now, 0.05);
+      const base = 0.06 * 0.21 * Math.sqrt(charge);
+      d.g.gain.setTargetAtTime(base, now, 0.05);
+      // at full charge it trembles (the soul does too)
+      d.trem.gain.setTargetAtTime(charge >= 1 ? base * 0.45 : 0, now, 0.05);
+      d.lfo.frequency.setTargetAtTime(charge >= 1 ? 18 : 9, now, 0.1);
+      if (d.g.pan) d.g.pan.value = pan;
+    }
+    // the music: muffled when paused, a little darker in a lull (holding its breath)
+    const lull = m[4], paused = m[5];
+    const target = paused ? 650 : 20000 * Math.pow(0.18, lull);
+    this.musicTone.frequency.setTargetAtTime(target, now, paused ? 0.08 : 0.6);
   }
   music(list) {
     const now = this.ctx.currentTime;
@@ -91,6 +265,12 @@ class Audio {
     }
   }
 }
+
+nb.Audio = Audio; // for offline level checks
+// per-voice trims (x the synth bus) aiming at: fling ~-26 dB RMS, home /
+// refill / thud ~-30, gather ~-32, soul / assemble ~-36, bolt / shatter /
+// tick / turn ~-38, ready ~-40, spark ~-42, hover ~-44
+const CUE_LEVEL = { fling: 1.2, home: 2.1, refill: 2.7, thud: 0.95, gather: 1, soul: 1.45, assemble: 0.72, bolt: 2.8, shatter: 1.45, tick: 2.8, turn: 2.24, ready: 3.85, spark: 9, hover: 10 };
 
 // ------------------------------------------------------------- renderer ---
 const WGSL = /* wgsl */ `
@@ -512,6 +692,8 @@ async function main() {
     while (acc >= TICK && steps < 8) { pollControls(); engine.frame(); acc -= TICK; steps++; nb.ticks++; }
     if (audio) {
       const s = engine.drain_sounds(); if (s !== "[]") for (const [c, v] of JSON.parse(s)) audio.shot(c, v);
+      const q = engine.drain_cues(); if (q !== "[]") for (const [n, p, a] of JSON.parse(q)) audio.cue(n, p, a);
+      audio.mix(engine.mix());
       audio.music(JSON.parse(engine.music()));
     }
     const p = engine.take_prefs(); if (p) savePrefs(p);

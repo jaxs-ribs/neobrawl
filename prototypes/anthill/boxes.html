@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Anthill Boxes</title>
+<style>
+  :root { --bg: #fbfbfb; --ink: #111; --dim: #8a8a8a; }
+  html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; font: 12px/1.4 system-ui, sans-serif; color: var(--ink); user-select: none; }
+  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+  #ui { position: fixed; left: 16px; top: 14px; display: flex; flex-direction: column; gap: 6px; pointer-events: none; }
+  #ui > * { pointer-events: auto; width: fit-content; }
+  h1 { font-weight: 300; letter-spacing: .45em; font-size: 15px; margin: 0 0 4px; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; color: var(--dim); }
+  .row label { display: flex; gap: 5px; align-items: center; }
+  input[type=range] { width: 90px; accent-color: #111; }
+  button { font: inherit; background: none; border: 1px solid #ccc; border-radius: 3px; padding: 2px 8px; cursor: pointer; color: var(--ink); }
+  button:hover { border-color: #111; }
+  #stat { color: var(--dim); }
+  #hint { position: fixed; right: 16px; bottom: 12px; color: var(--dim); pointer-events: none; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui">
+  <h1>ANTHILL · BOXES</h1>
+  <div class="row">
+    <label>ants <input id="ants" type="range" min="100" max="3000" value="800"></label>
+    <label>lifters per box <input id="lift" type="range" min="1" max="5" value="3"></label>
+    <label>walls: seal <input id="walls" type="range" min="-100" max="100" value="0"> clear</label>
+    <button id="pher">pheromone</button><button id="reset">new world</button>
+  </div>
+  <div id="stat"></div>
+</div>
+<div id="hint">scroll to zoom · drag to pan</div>
+<script src="gen.js"></script>
+<script>
+"use strict";
+// Ants and the game's own pieces. Boxes are what they move: like players in
+// NeoBrawl, heavy, carried by a team (more lifters, faster). Ants never throw;
+// they pick up, haul and set down, and they set down where boxes already are
+// (stigmergy), so the hill builds itself. Two pheromones: "home" laid by
+// searchers, "box" laid by haulers. Walls stay near where they were built,
+// but traffic shoves them and a tendency pulls them to seal gaps or clear way.
+const $ = (id) => document.getElementById(id), INK = "#111", BG = "#fbfbfb";
+const cv = $("c"), g = cv.getContext("2d");
+let VW = 0, VH = 0, dpr = 1; const view = { x: 0, y: 0, s: 5 };
+const HALF = CITY / 2, PG = 256, PC = CITY / PG; // pheromone grid
+let walls, boxes, ants, home, boxP, traffic, wallGrid, seed = 4242, frameN = 0, built = 0, showPher = true;
+
+function world() {
+  const W = generate(seed, { fold: 4, food: 12, biome: 0, hil: 1, hillRings: 2, nestRings: 1, garden: 1.3, rake: 0.4 });
+  const live = W.T.live();
+  // walls keep where they were built: they may wander a little from it
+  walls = live.filter((e) => e.t === "wall").map((e) => ({ x: e.x, y: e.y, a: e.a, x0: e.x, y0: e.y, a0: e.a, px: 0, py: 0 }));
+  boxes = live.filter((e) => e.t === "box" && Math.hypot(e.x, e.y) > 3).map((e) => ({ x: e.x, y: e.y, a: e.a, lift: [], home: false, rest: 0 }));
+  home = new Float32Array(PG * PG); boxP = new Float32Array(PG * PG); traffic = new Float32Array(PG * PG);
+  built = 0; rebuildWallGrid(); spawn(+$("ants").value);
+}
+// the colony starts spread through its world (never inside a wall or a box)
+function free(x, y) { if (Math.hypot(x, y) < 3.5) return false; for (const b of boxes) if (Math.abs(b.x - x) < 0.6 && Math.abs(b.y - y) < 0.6) return false; let ok = true; nearWalls(x, y, (w) => { const c = Math.cos(w.a) * L / 2, s = Math.sin(w.a) * L / 2; if (segDist([x, y], [w.x - c, w.y - s], [w.x + c, w.y + s]) < 0.3) ok = false; }); return ok; }
+function spawn(n) { ants = []; for (let t = 0; ants.length < n && t < n * 40; t++) { const a = Math.random() * TAU, r = 4 + Math.sqrt(Math.random()) * 60, x = Math.cos(a) * r, y = Math.sin(a) * r; if (wallGrid && free(x, y)) ants.push({ x, y, h: Math.random() * TAU, box: null, v: 2.4 + Math.random() * 1.2, wait: 0 }); } }
+// ---------------------------------------------------------------- spatial
+const WC = 3;
+function rebuildWallGrid() { wallGrid = new Map(); walls.forEach((w, i) => { const k = Math.floor(w.x / WC) * 4096 + Math.floor(w.y / WC); let b = wallGrid.get(k); if (!b) wallGrid.set(k, (b = [])); b.push(i); }); }
+function nearWalls(x, y, fn) { const gx = Math.floor(x / WC), gy = Math.floor(y / WC); for (let ox = -1; ox <= 1; ox++) for (let oy = -1; oy <= 1; oy++) { const b = wallGrid.get((gx + ox) * 4096 + gy + oy); if (b) for (const i of b) fn(walls[i]); } }
+const pidx = (x, y) => Math.min(PG - 1, Math.max(0, Math.floor((y + HALF) / PC))) * PG + Math.min(PG - 1, Math.max(0, Math.floor((x + HALF) / PC)));
+function sense(F, x, y, h, d) {
+  // three antennae: left, ahead, right
+  const s = (a) => F[pidx(x + Math.cos(a) * d, y + Math.sin(a) * d)];
+  const l = s(h + 0.6), c = s(h), r = s(h - 0.6);
+  if (c >= l && c >= r) return 0; return l > r ? 0.6 : -0.6;
+}
+// ---------------------------------------------------------------- step
+function step(dt) {
+  const lifters = +$("lift").value, tend = +$("walls").value / 100;
+  // pheromones: evaporate, and every few frames diffuse a touch
+  for (let i = 0; i < home.length; i++) { home[i] *= 0.992; boxP[i] *= 0.985; traffic[i] *= 0.995; }
+  if (frameN % 4 === 0) for (const F of [home, boxP]) for (let y = 1; y < PG - 1; y++) for (let x = 1; x < PG - 1; x++) { const i = y * PG + x; F[i] = F[i] * 0.8 + (F[i - 1] + F[i + 1] + F[i - PG] + F[i + PG]) * 0.05; }
+  // box teams: each lifted box moves by the average will of its lifters
+  for (const b of boxes) {
+    if (!b.lift.length) continue;
+    if (b.lift.length < lifters) { b.wait += dt; if (b.wait > 4) { for (const a of b.lift) { a.box = null; a.h += Math.PI; } b.lift = []; b.wait = 0; } continue; }
+    let dx = 0, dy = 0; for (const a of b.lift) { dx += Math.cos(a.h); dy += Math.sin(a.h); }
+    const l = Math.hypot(dx, dy) || 1, sp = Math.min(1.6, 0.5 + 0.35 * b.lift.length);
+    let nx = b.x + (dx / l) * sp * dt, ny = b.y + (dy / l) * sp * dt;
+    // boxes slide along walls, never through them
+    nearWalls(nx, ny, (w) => { const c = Math.cos(w.a) * L / 2, s = Math.sin(w.a) * L / 2, d = segDist([nx, ny], [w.x - c, w.y - s], [w.x + c, w.y + s]); if (d < BOX * 0.5 + 0.1) { const t = Math.max(-1, Math.min(1, ((nx - w.x) * Math.cos(w.a) + (ny - w.y) * Math.sin(w.a)) / (L / 2))); const qx = w.x + Math.cos(w.a) * t * L / 2, qy = w.y + Math.sin(w.a) * t * L / 2, k = (BOX * 0.5 + 0.1 - d) / Math.max(d, 1e-4); nx += (nx - qx) * k; ny += (ny - qy) * k; w.px -= (nx - qx) * k * 0.15; w.py -= (ny - qy) * k * 0.15; } });
+    nearBoxes(nx, ny, (o) => { if (o === b) return; const ex = nx - o.x, ey = ny - o.y, d = Math.hypot(ex, ey); if (d < BOX && d > 1e-4) { const k = (BOX - d) / d; if (o.lift.length || o.home) { nx += ex * k; ny += ey * k; } else { o.x -= ex * k * 0.5; o.y -= ey * k * 0.5; nx += ex * k * 0.5; ny += ey * k * 0.5; } } });
+    b.x = nx; b.y = ny; b.a += (Math.atan2(dy, dx) - b.a) * 0.02;
+    // set down by stigmergy: near the hill, and more likely beside other set-down boxes
+    const r = Math.hypot(b.x, b.y);
+    if (r < 22) {
+      let nb = 0; for (const o of boxes) if (o !== b && o.home && Math.abs(o.x - b.x) < 1.6 && Math.abs(o.y - b.y) < 1.6) nb++;
+      const p = (r < 4 ? 0 : 0.004 + nb * 0.05 + (r < 9 ? 0.01 : 0)) * dt * 60;
+      if (Math.random() < p && !boxes.some((o) => o !== b && !o.lift.length && Math.hypot(o.x - b.x, o.y - b.y) < BOX * 0.95)) { b.home = true; b.rest = 0; built++; for (const a of b.lift) { a.box = null; a.h += Math.PI * (0.6 + Math.random() * 0.8); a.wait = 0.6; } b.lift = []; }
+    }
+  }
+  // ants (neighbour cell list, rebuilt each frame without allocation)
+  const n = ants.length, cs = 0.45, NG = Math.ceil(CITY / cs) + 2;
+  if (!step.head) { step.head = new Int32Array(NG * NG); step.next = new Int32Array(8192); }
+  if (step.next.length < n) step.next = new Int32Array(n * 2);
+  const head = step.head, next = step.next, cellK = (x, y) => Math.min(NG - 1, Math.max(0, Math.floor((y + HALF) / cs))) * NG + Math.min(NG - 1, Math.max(0, Math.floor((x + HALF) / cs)));
+  head.fill(-1); for (let i = 0; i < n; i++) { const k = cellK(ants[i].x, ants[i].y); next[i] = head[k]; head[k] = i; }
+  // boxes in a coarse cell list too, so ants and boxes can keep apart
+  const bc = 1.2, BN = Math.ceil(CITY / bc) + 2, bK = (x, y) => Math.min(BN - 1, Math.max(0, Math.floor((y + HALF) / bc))) * BN + Math.min(BN - 1, Math.max(0, Math.floor((x + HALF) / bc)));
+  if (!step.bhead) step.bhead = new Int32Array(BN * BN);
+  if (!step.bnext || step.bnext.length < boxes.length) step.bnext = new Int32Array(boxes.length * 2 + 64);
+  const bhead = step.bhead, bnext = step.bnext; bhead.fill(-1);
+  boxes.forEach((b, i) => { const k = bK(b.x, b.y); bnext[i] = bhead[k]; bhead[k] = i; });
+  const nearBoxes = (x, y, fn) => { const k0 = bK(x, y); for (let oy = -1; oy <= 1; oy++) for (let ox = -1; ox <= 1; ox++) { const k = k0 + oy * BN + ox; if (k < 0 || k >= bhead.length) continue; for (let j = bhead[k]; j >= 0; j = bnext[j]) fn(boxes[j]); } };
+  for (let i = 0; i < n; i++) {
+    const a = ants[i];
+    if (a.wait > 0) { a.wait -= dt; }
+    const pi = pidx(a.x, a.y);
+    traffic[pi] = Math.min(50, traffic[pi] + 0.2);
+    if (a.box) {
+      // hauling: head home (the hill's direction, nudged by home trails), lay box trail
+      const toHome = Math.atan2(-a.y, -a.x), turn = sense(home, a.x, a.y, a.h, 1.4);
+      a.h += (Math.atan2(Math.sin(toHome - a.h), Math.cos(toHome - a.h))) * 0.08 + turn * 0.25 + (Math.random() - 0.5) * 0.5;
+      boxP[pi] = Math.min(8, boxP[pi] + 1.2);
+      // stay on the box's rim
+      const k = a.box.lift.indexOf(a), ang = (k / a.box.lift.length) * TAU + a.box.a;
+      a.x = a.box.x + Math.cos(ang) * (BOX * 0.55); a.y = a.box.y + Math.sin(ang) * (BOX * 0.55);
+      continue;
+    }
+    // searching: follow box trails, lay home trail, wander
+    const turn = sense(boxP, a.x, a.y, a.h, 1.6);
+    a.h += turn * 0.3 + (Math.random() - 0.5) * 0.7;
+    // with no trail to follow, searchers drift outward: the hill pushes them out to forage
+    if (boxP[pi] < 0.3) { const out = Math.atan2(a.y, a.x); a.h += Math.atan2(Math.sin(out - a.h), Math.cos(out - a.h)) * 0.04; }
+    // bodies: shove neighbours apart (weaker in the hill, where they crowd)
+    const k0 = cellK(a.x, a.y), crowd = 1; // bodies are bodies, in the hill too
+    let sx = 0, sy = 0;
+    for (let oy = -1; oy <= 1; oy++) for (let ox = -1; ox <= 1; ox++) { const kk = k0 + oy * NG + ox; if (kk < 0 || kk >= head.length) continue; for (let j = head[kk]; j >= 0; j = next[j]) { if (j === i) continue; const o = ants[j], dx = a.x - o.x, dy = a.y - o.y, d2 = dx * dx + dy * dy; if (d2 < 0.1 && d2 > 1e-8) { const d = Math.sqrt(d2), p = (1 - d / 0.32) * crowd * 2.5; sx += (dx / d) * p; sy += (dy / d) * p; } } }
+    home[pi] = Math.min(8, home[pi] + 0.5);
+    // a free box within reach that isn't already part of the hill? join its team
+    if (a.wait <= 0 && frameN % 3 === i % 3) {
+      const cand = []; nearBoxes(a.x, a.y, (b) => cand.push(b));
+      for (const b of cand) {
+        if (b.lift.length >= lifters || (b.home && Math.random() > 0.002)) continue; // the hill's boxes are rarely taken back
+        const d = Math.hypot(b.x - a.x, b.y - a.y);
+        if (d < 1.1) { if (b.home) { b.home = false; built--; } b.lift.push(a); a.box = b; b.wait = 0; break; }
+        if (d < 2.4 && !b.home) a.h = Math.atan2(b.y - a.y, b.x - a.x);
+      }
+      if (a.box) continue;
+    }
+    let nx = a.x + (Math.cos(a.h) * a.v + sx * 3) * dt, ny = a.y + (Math.sin(a.h) * a.v + sy * 3) * dt;
+    // walls: slide off, and shove them a hair
+    nearWalls(nx, ny, (w) => {
+      const c = Math.cos(w.a) * L / 2, s = Math.sin(w.a) * L / 2, ax = w.x - c, ay = w.y - s, bx = w.x + c, by = w.y + s;
+      const t = Math.max(0, Math.min(1, ((nx - ax) * (bx - ax) + (ny - ay) * (by - ay)) / (L * L))), qx = ax + (bx - ax) * t, qy = ay + (by - ay) * t, d = Math.hypot(nx - qx, ny - qy);
+      const half = 0.13 * Math.sin(Math.PI * t) + 0.02;
+      if (d < half + 0.1) { const k = (half + 0.1 - d) / Math.max(d, 1e-4); nx += (nx - qx) * k; ny += (ny - qy) * k; w.px -= (nx - qx) * k * 0.01; w.py -= (ny - qy) * k * 0.01; a.h += (Math.random() - 0.5) * 1.2; }
+    });
+    // resting boxes are solid: slide round them
+    nearBoxes(nx, ny, (b) => { if (b.lift.length) return; const dx = nx - b.x, dy = ny - b.y, d = Math.hypot(dx, dy), rr = BOX * 0.5 + 0.1; if (d < rr && d > 1e-4) { nx = b.x + (dx / d) * rr; ny = b.y + (dy / d) * rr; a.h += (Math.random() - 0.5) * 0.8; } });
+    // boxes in the way (not carried): go around
+    if (Math.abs(nx) > HALF - 1 || Math.abs(ny) > HALF - 1) { a.h += Math.PI; nx = a.x; ny = a.y; }
+    a.x = nx; a.y = ny;
+  }
+  // walls: traffic pushes, the tendency seals or clears, and each stays tethered to where it was built
+  if (frameN % 2 === 0) {
+    for (const w of walls) {
+      const tr = traffic[pidx(w.x, w.y)], nx = -Math.sin(w.a), ny = Math.cos(w.a);
+      // clearing: busy walls give way along their normal, away from the busier side
+      if (tend > 0 && tr > 2) { const side = traffic[pidx(w.x + nx * 0.8, w.y + ny * 0.8)] - traffic[pidx(w.x - nx * 0.8, w.y - ny * 0.8)]; w.px -= nx * Math.sign(side) * tend * 0.004; w.py -= ny * Math.sign(side) * tend * 0.004; }
+      // sealing: quiet walls near the hill reach for their nearest neighbour's tip to close the gap
+      if (tend < 0 && tr < 6 && Math.hypot(w.x, w.y) < 40) {
+        const c = Math.cos(w.a) * L / 2, s = Math.sin(w.a) * L / 2; let best = null, bd = 1.6;
+        nearWalls(w.x, w.y, (o) => { if (o === w) return; const oc = Math.cos(o.a) * L / 2, os = Math.sin(o.a) * L / 2; for (const [tx, ty] of [[w.x + c, w.y + s], [w.x - c, w.y - s]]) for (const [ux, uy] of [[o.x + oc, o.y + os], [o.x - oc, o.y - os]]) { const d = Math.hypot(tx - ux, ty - uy); if (d > 0.25 && d < bd) { bd = d; best = [ux - tx, uy - ty]; } } });
+        if (best) { w.px += best[0] * -tend * 0.01; w.py += best[1] * -tend * 0.01; }
+      }
+      w.x += w.px; w.y += w.py; w.px *= 0.5; w.py *= 0.5;
+      // the tether: never more than a little from where it was laid
+      const ox = w.x - w.x0, oy = w.y - w.y0, od = Math.hypot(ox, oy), lim = 0.75;
+      if (od > lim) { w.x = w.x0 + (ox / od) * lim; w.y = w.y0 + (oy / od) * lim; }
+      w.x += (w.x0 - w.x) * 0.0005; w.y += (w.y0 - w.y) * 0.0005;
+    }
+    if (frameN % 30 === 0) rebuildWallGrid();
+  }
+  // gardens regrow: a box condenses from nothing now and then where boxes were found
+  if (Math.random() < dt * 0.6) { const src = boxes[Math.floor(Math.random() * boxes.length)]; if (src && !src.home && !src.lift.length && Math.hypot(src.x, src.y) > 25) { const a = Math.random() * TAU, x = src.x + Math.cos(a) * 1.2, y = src.y + Math.sin(a) * 1.2; if (!boxes.some((o) => Math.hypot(o.x - x, o.y - y) < BOX)) boxes.push({ x, y, a, lift: [], home: false, rest: 0, born: 0 }); } }
+}
+
+// ---------------------------------------------------------------- draw
+function lensPath(x, y, a) { const c = Math.cos(a) * L / 2, s = Math.sin(a) * L / 2, k = L * 0.105, nx = -Math.sin(a) * k, ny = Math.cos(a) * k; g.moveTo(x - c, y - s); g.quadraticCurveTo(x + nx, y + ny, x + c, y + s); g.quadraticCurveTo(x - nx, y - ny, x - c, y - s); }
+function boxPath(x, y, a) { const h = BOX / 2, r = BOX * 0.2, k = BOX * 0.045, c = Math.cos(a), sn = Math.sin(a), P = (dx, dy) => [x + dx * c - dy * sn, y + dx * sn + dy * c], Q = (ax, ay, bx2, by2) => g.quadraticCurveTo(...P(ax, ay), ...P(bx2, by2)); g.moveTo(...P(-h + r, -h)); Q(0, -h + k, h - r, -h); Q(h, -h, h, -h + r); Q(h - k, 0, h, h - r); Q(h, h, h - r, h); Q(0, h - k, -h + r, h); Q(-h, h, -h, h - r); Q(-h + k, 0, -h, -h + r); Q(-h, -h, -h + r, -h); g.closePath(); g.moveTo(x + BOX * 0.33, y); g.arc(x, y, BOX * 0.33, 0, TAU, true); }
+let pherCanvas = null, pherImg = null;
+function draw() {
+  g.setTransform(1, 0, 0, 1, 0, 0); g.fillStyle = BG; g.fillRect(0, 0, cv.width, cv.height);
+  g.setTransform(dpr * view.s, 0, 0, -dpr * view.s, dpr * (VW / 2 - view.x * view.s), dpr * (VH / 2 + view.y * view.s));
+  const px = 1 / view.s, x0 = view.x - VW / 2 / view.s - 2, x1 = view.x + VW / 2 / view.s + 2, y0 = view.y - VH / 2 / view.s - 2, y1 = view.y + VH / 2 / view.s + 2, vis = (o) => o.x > x0 && o.x < x1 && o.y > y0 && o.y < y1;
+  if (showPher) {
+    if (!pherCanvas) { pherCanvas = Object.assign(document.createElement("canvas"), { width: PG, height: PG }); pherImg = pherCanvas.getContext("2d").createImageData(PG, PG); }
+    if (frameN % 3 === 0) { const d = pherImg.data; for (let i = 0; i < PG * PG; i++) { const o = ((PG - 1 - Math.floor(i / PG)) * PG + (i % PG)) * 4, b = boxP[i], h = home[i]; d[o] = 255; d[o + 1] = 32 + Math.min(1, h / 8) * 120; d[o + 2] = 32 + Math.min(1, h / 8) * 120; d[o + 3] = Math.min(110, b * 16 + h * 4); } pherCanvas.getContext("2d").putImageData(pherImg, 0, 0); }
+    g.save(); g.scale(1, -1); g.drawImage(pherCanvas, -HALF, -HALF, CITY, CITY); g.restore();
+  }
+  const detail = L * view.s > 5;
+  if (detail) {
+    g.beginPath(); for (const w of walls) if (vis(w)) lensPath(w.x, w.y, w.a); g.fillStyle = INK; g.fill();
+    g.beginPath(); for (const b of boxes) if (vis(b)) boxPath(b.x, b.y, b.a); g.fillStyle = INK; g.fill("evenodd");
+  } else {
+    g.lineWidth = Math.max(px, 0.2); g.strokeStyle = INK; g.beginPath(); for (const w of walls) { const c = Math.cos(w.a) * L / 2, s = Math.sin(w.a) * L / 2; g.moveTo(w.x - c, w.y - s); g.lineTo(w.x + c, w.y + s); } g.stroke();
+    g.fillStyle = INK; g.beginPath(); for (const b of boxes) g.rect(b.x - 0.4, b.y - 0.4, 0.8, 0.8); g.fill();
+  }
+  // displaced walls show a faint ghost of where they were laid
+  if (detail) { g.lineWidth = px; g.strokeStyle = "rgba(17,17,17,0.18)"; g.beginPath(); for (const w of walls) if (vis(w) && Math.hypot(w.x - w.x0, w.y - w.y0) > 0.15) { const c = Math.cos(w.a0) * L / 2, s = Math.sin(w.a0) * L / 2; g.moveTo(w.x0 - c, w.y0 - s); g.lineTo(w.x0 + c, w.y0 + s); } g.stroke(); }
+  const r = Math.max(0.09, 1.2 * px); g.fillStyle = "rgb(255,32,32)"; g.beginPath();
+  for (const a of ants) if (a.x > x0 && a.x < x1 && a.y > y0 && a.y < y1) { g.moveTo(a.x + r, a.y); g.arc(a.x, a.y, r, 0, TAU); }
+  g.fill();
+}
+// ---------------------------------------------------------------- loop & input
+let t0 = performance.now();
+function frame(now) {
+  const dt = Math.min(0.033, (now - t0) / 1000); t0 = now; frameN++;
+  if (!VW) resize();
+  step(dt); draw();
+  if (frameN % 20 === 0) { const lifted = boxes.filter((b) => b.lift.length >= +$("lift").value).length, moved = walls.filter((w) => Math.hypot(w.x - w.x0, w.y - w.y0) > 0.15).length; $("stat").textContent = `${ants.length} ants · ${boxes.length} boxes · ${lifted} being carried · ${built} set into the hill · ${moved} walls nudged`; }
+  requestAnimationFrame(frame);
+}
+function resize() { dpr = Math.min(devicePixelRatio || 1, 2); VW = innerWidth; VH = innerHeight; cv.width = Math.max(1, VW * dpr); cv.height = Math.max(1, VH * dpr); view.s = Math.max(view.s, 0.1); }
+addEventListener("resize", resize);
+const toWorld = (e) => [view.x + (e.clientX - VW / 2) / view.s, view.y - (e.clientY - VH / 2) / view.s];
+cv.addEventListener("wheel", (e) => { e.preventDefault(); const [wx, wy] = toWorld(e); view.s = Math.max(1.5, Math.min(80, view.s * Math.exp(-e.deltaY * 0.0015))); view.x = wx - (e.clientX - VW / 2) / view.s; view.y = wy + (e.clientY - VH / 2) / view.s; }, { passive: false });
+let drag = null;
+cv.addEventListener("pointerdown", (e) => { drag = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y }; cv.setPointerCapture(e.pointerId); });
+cv.addEventListener("pointermove", (e) => { if (drag) { view.x = drag.vx - (e.clientX - drag.x) / view.s; view.y = drag.vy + (e.clientY - drag.y) / view.s; } });
+cv.addEventListener("pointerup", () => (drag = null));
+$("ants").onchange = () => spawn(+$("ants").value);
+$("pher").onclick = () => (showPher = !showPher);
+$("reset").onclick = () => { seed = (seed * 48271 + 7) % 2147483647; for (const b of boxes) b.lift = []; world(); };
+resize(); view.s = Math.min(VW, VH) / 70; world();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

@@ -157,6 +157,7 @@ impl Game {
                     let mut c = col;
                     c[3] = 0.5;
                     self.motion.ring(false, p, 0.03, 0.22, 0.012, 0.25, c);
+                    self.cue("soul", p, (orb % 5) as f32);
                     self.tasks.push(OrbSeek { blob, orb, killer, step: 0.02, v });
                     return None;
                 }

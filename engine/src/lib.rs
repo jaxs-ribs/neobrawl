@@ -253,6 +253,38 @@ impl Engine {
         s
     }
 
+    /// Synthesised cues since the last call: [[name, pan, amount]]
+    pub fn drain_cues(&mut self) -> String {
+        let s = serde_json::to_string(&self.game.cues).unwrap();
+        self.game.cues.clear();
+        s
+    }
+
+    /// Continuous mix inputs, every frame: [charge p0, pan p0, charge p1,
+    /// pan p1, lull 0..1, paused 0/1, in match 0/1]
+    pub fn mix(&self) -> Vec<f32> {
+        let g = &self.game;
+        let mut out = Vec::new();
+        let cam = g.camera_main().map(|c| g.w.position(c).x).unwrap_or(0.0);
+        for k in 0..2 {
+            match g.players.iter().filter(|p| !p.playback && !p.single).nth(k) {
+                Some(p) if g.w.active_in_hierarchy(p.node) && p.picked_box.is_some() => {
+                    out.push((p.charge_timer / 90.0).clamp(0.0, 1.0));
+                    out.push(((g.w.position(p.node).x - cam) / 9.0).clamp(-1.0, 1.0));
+                }
+                _ => {
+                    out.push(0.0);
+                    out.push(0.0);
+                }
+            }
+        }
+        let in_match = g.players.iter().any(|p| !p.single && !p.playback && g.w.active_in_hierarchy(p.node));
+        let lull = if in_match { ((g.motion.now - g.motion.last_action - 1.5) / 2.0).clamp(0.0, 1.0) } else { 0.0 };
+        let paused = g.pauses.iter().any(|p| p.resume.map(|r| g.w.active_in_hierarchy(r)).unwrap_or(false));
+        out.extend([lull, paused as i32 as f32, in_match as i32 as f32]);
+        out
+    }
+
     /// Music sources: [[clip, playing, volume]] (muted when Music is OFF)
     pub fn music(&self) -> String {
         let on = self.game.prefs.get_string("Music") == "ON";

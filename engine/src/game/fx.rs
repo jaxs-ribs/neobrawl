@@ -98,6 +98,7 @@ impl Game {
                         s.color = color;
                         self.text_release(old, color, 0.6);
                         self.motion.forms.insert(i, now);
+                        self.cue_ui("tick", center(&old).x, 1.0);
                         let mut col = color;
                         col[3] = 0.7;
                         self.motion.trace(true, 0.0, closed(q), 1.0, 0.5, col);
@@ -130,6 +131,8 @@ impl Game {
             if self.w.active_in_hierarchy(i) || now - s.since < 0.2 {
                 continue;
             }
+            let size = ((s.quad[1][0] - s.quad[0][0]).abs() * (s.quad[3][1] - s.quad[0][1]).abs()).sqrt();
+            self.cue_ui("shatter", center(&s.quad).x, (size / 200.0).clamp(0.2, 1.0));
             if !s.text.is_empty() {
                 self.text_release(s.quad, s.color, 1.0);
             } else {
@@ -194,6 +197,9 @@ impl Game {
                     }
                     self.motion.arc(true, v3(c[0], c[1], 0.0), center(&q), 1.6, 0.2, 0.16, INK);
                 }
+            }
+            if hit.is_some() {
+                self.cue_ui("hover", c[0], 1.0);
             }
         }
     }
@@ -306,6 +312,7 @@ impl Game {
             self.motion.push(Kind::Arc { a: alive[0], b: alive[1], w: 0.04, jitter: 0.08 }, false, 1.35, 0.35, INK);
         }
         self.motion.last_action = now + 1.5;
+        self.cue("assemble", mid, (sprites.len() as f32 / 40.0).clamp(0.3, 1.0));
     }
 
     pub(super) fn fx_pickup(&mut self, k: usize, b: usize, reset: bool) {
@@ -326,6 +333,7 @@ impl Game {
             self.motion.flash(false, p, 0.9, 0.3, hot);
             self.motion.trace_circle(false, 0.0, p, 0.34, std::f32::consts::FRAC_PI_2, 0.035, 0.3, hot);
             self.motion.burst(false, p, 10, 7.0, 0.05, 0.35, hot, None);
+            self.cue("refill", p, 1.0);
         }
         self.motion.last_action = self.motion.now;
     }
@@ -367,6 +375,7 @@ impl Game {
         let Some(p) = self.soul_pos(k) else { return };
         let col = self.soul_color(self.players[k].node);
         self.motion.trace_circle(false, 0.0, p, 0.3, std::f32::consts::FRAC_PI_2, 0.022, 0.32, col);
+        self.cue("ready", p, 1.0);
     }
 
     /// A soul is ended. The original's orbs carry it to the killer; this
@@ -381,6 +390,7 @@ impl Game {
         let hit = self.kill_impulse;
         let a = if hit.length() > 1e-3 { hit.y.atan2(hit.x) } else { 0.0 };
         self.motion.push(crate::motion::Kind::Blob { c: p, a, r: 0.22 }, false, 0.0, 0.14, col);
+        self.cue("fling", p, (hit.length() / 80.0).clamp(0.3, 1.0));
         self.motion.hitstop = 2;
         self.motion.flash(false, p, 1.3, 0.3, col);
         self.motion.ring(false, p, 0.3, 2.4, 0.06, 0.45, col);
@@ -392,6 +402,7 @@ impl Game {
         let p = self.w.position(player);
         let col = self.soul_color(player);
         self.motion.converge(false, p, 14, 2.4, 0.05, 0.55, col);
+        self.cue("gather", p, 1.0);
         self.motion.forms.insert(player, self.motion.now + 0.45);
         self.motion.push(Kind::Flash { c: p, r: 1.1 }, false, 0.45, 0.4, col);
         self.motion.ring_at(false, 0.45, p, 0.2, 1.2, 0.05, 0.4, col);
@@ -427,6 +438,7 @@ impl Game {
     pub(super) fn fx_flex(&mut self, node: usize, pos: V3, normal: V3) {
         if self.w.nodes[node].sprite.as_ref().and_then(|s| s.sprite).and_then(|k| self.w.sprites[k].vector.as_ref()).is_some() {
             self.motion.flex.push(crate::motion::Flex { node, p: pos, dir: -normal, t0: self.motion.now, amp: 0.09 });
+            self.cue("thud", pos, 1.0);
         }
     }
 
