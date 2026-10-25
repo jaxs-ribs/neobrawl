@@ -249,6 +249,32 @@ export class Engine {
         wasm.engine_debug_shatter(this.__wbg_ptr, x, y, vx, vy);
     }
     /**
+     * Profile since the last call: [ticks, frames, (mean ms, worst ms) per
+     * phase in `phase_names()` order]. Resets.
+     * @returns {Float32Array}
+     */
+    profile() {
+        const ret = wasm.engine_profile(this.__wbg_ptr);
+        var v1 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * @returns {string}
+     */
+    phase_names() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.engine_phase_names(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
      * @returns {number}
      */
     render() {
@@ -264,6 +290,15 @@ export class Engine {
     }
     /**
      * Text strings for text records: {node: [text, style]}
+     * A checksum of the visible texts: the host refetches `texts()` only
+     * when this changes (it would otherwise parse them 50 times a second).
+     * @returns {number}
+     */
+    texts_version() {
+        const ret = wasm.engine_texts_version(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
      * @returns {string}
      */
     texts() {
@@ -432,6 +467,14 @@ async function __wbg_load(module, imports) {
 function __wbg_get_imports() {
     const imports = {};
     imports.wbg = {};
+    imports.wbg.__wbg_static_accessor_PERFORMANCE_359f854c55986b6f = function() {
+        const ret = performance;
+        return ret;
+    };
+    imports.wbg.__wbg_now_ba16c792ede337fa = function(arg0) {
+        const ret = arg0.now();
+        return ret;
+    };
     imports.wbg.__wbindgen_throw = function(arg0, arg1) {
         throw new Error(getStringFromWasm0(arg0, arg1));
     };

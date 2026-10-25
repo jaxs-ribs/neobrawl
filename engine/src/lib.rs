@@ -5,6 +5,7 @@
 pub mod game;
 pub mod motion;
 pub mod physics;
+pub mod prof;
 pub mod render;
 pub mod scene;
 pub mod shards;
@@ -216,6 +217,16 @@ impl Engine {
         self.game.fx_debug_impact(x, y, z);
     }
 
+    /// Profile since the last call: [ticks, frames, (mean ms, worst ms) per
+    /// phase in `phase_names()` order]. Resets.
+    pub fn profile(&mut self) -> Vec<f32> {
+        self.game.prof.borrow_mut().take()
+    }
+
+    pub fn phase_names(&self) -> String {
+        serde_json::to_string(&crate::prof::PHASES).unwrap()
+    }
+
     pub fn render(&mut self) -> usize {
         let mut out = std::mem::take(&mut self.records);
         self.game.render(&mut out);
@@ -229,6 +240,24 @@ impl Engine {
     }
 
     /// Text strings for text records: {node: [text, style]}
+    /// A checksum of the visible texts: the host refetches `texts()` only
+    /// when this changes (it would otherwise parse them 50 times a second).
+    pub fn texts_version(&self) -> u32 {
+        let mut h: u32 = 2166136261;
+        for (i, n) in self.game.w.nodes.iter().enumerate() {
+            if let Some(t) = &n.text {
+                if !t.text.is_empty() && self.game.w.active_in_hierarchy(i) {
+                    h = (h ^ i as u32).wrapping_mul(16777619);
+                    for b in t.text.bytes() {
+                        h = (h ^ b as u32).wrapping_mul(16777619);
+                    }
+                    h = (h ^ t.style as u32).wrapping_mul(16777619);
+                }
+            }
+        }
+        h
+    }
+
     pub fn texts(&self) -> String {
         let mut m = serde_json::Map::new();
         for (i, n) in self.game.w.nodes.iter().enumerate() {

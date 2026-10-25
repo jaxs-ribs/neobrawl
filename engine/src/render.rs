@@ -45,11 +45,14 @@ fn ortho_screen(w: f32, h: f32) -> Mat4 {
 
 impl Game {
     pub fn render(&self, out: &mut Vec<f32>) {
+        let lap = |i: usize| self.prof.borrow_mut().lap(i);
+        self.prof.borrow_mut().begin();
         out.clear();
         let w = &self.w;
         let cams: Vec<usize> = (0..w.nodes.len()).filter(|&i| w.nodes[i].camera.is_some() && w.active_in_hierarchy(i)).collect();
         let ui_order = self.ui_draw_order();
         let ui_seq: std::collections::HashMap<usize, usize> = ui_order.iter().enumerate().map(|(k, &n)| (n, k)).collect();
+        let (wm, wact) = w.world_cache();
         let lerp = self.interp_offsets();
         let deform = self.body_deforms();
         let shift = |i: usize, mut m: Mat4| {
@@ -92,13 +95,13 @@ impl Game {
                     continue; // overlay canvases draw in the screen pass
                 }
                 let interesting = n.sprite.is_some() || n.mesh.is_some() || n.line.is_some() || n.image.is_some() || n.text.is_some();
-                if !interesting || !w.active_in_hierarchy(i) {
+                if !interesting || !wact[i] {
                     continue;
                 }
                 let m = if ui.is_some() {
                     self.layout.matrix(w, i)
                 } else {
-                    let mut base = w.matrix(i);
+                    let mut base = wm[i];
                     if let Some(d) = deform.get(&i) {
                         base = d.mul(&base);
                     }
@@ -174,6 +177,7 @@ impl Game {
                     self.ui_items(i, corners, &m, |rec| items.push(Item { order: 1000, dist: d, seq, rec }));
                 }
             }
+            lap(10);
             // trails: a smoothed, tapering ribbon in the player's colour with a soft glow
             for p in &self.players {
                 let Some(tr) = w.nodes[p.node].trail.as_ref() else { continue };
@@ -359,14 +363,21 @@ impl Game {
             // motion graphics in the world
             let tx = crate::motion::Tex { disc, soft, ring };
             self.motion.emit(false, &tx, |p| dist(p), |rec, d| items.push(Item { order: 6, dist: d, seq: 0, rec }));
+            lap(11);
             self.shard_items(|p| dist(p), |rec, d| items.push(Item { order: 4, dist: d, seq: 0, rec }));
+            lap(14);
             if w.nodes[cam].tag == "MainCamera" {
                 self.arena_hum(|p| dist(p), |rec, d| items.push(Item { order: 1, dist: d, seq: 0, rec }));
             }
-            items.sort_by(|a, b| a.order.cmp(&b.order).then(b.dist.partial_cmp(&a.dist).unwrap_or(std::cmp::Ordering::Equal)).then(a.seq.cmp(&b.seq)));
-            for it in items {
-                out.extend_from_slice(&it.rec);
+            lap(15);
+            // sort small keys, not the 112-byte records; the index keeps it stable
+            let mut keys: Vec<(i32, f32, usize, u32)> = items.iter().enumerate().map(|(k, it)| (it.order, it.dist, it.seq, k as u32)).collect();
+            keys.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)).then(a.2.cmp(&b.2)).then(a.3.cmp(&b.3)));
+            out.reserve(items.len() * RECORD);
+            for (_, _, _, k) in keys {
+                out.extend_from_slice(&items[k as usize].rec);
             }
+            lap(12);
         }
         // overlay canvases in screen pixels
         let mut head = [0.0f32; RECORD];
@@ -390,6 +401,8 @@ impl Game {
         self.motion.emit(true, &tx, |_| 0.0, |rec, _| out.extend_from_slice(&rec));
         self.menu_glyphs(|rec| out.extend_from_slice(&rec));
         self.cursor_spark(&tx, |rec| out.extend_from_slice(&rec));
+        lap(13);
+        self.prof.borrow_mut().end(10..16, false);
     }
 
     fn ui_items(&self, i: usize, c: [V3; 4], m: &Mat4, mut push: impl FnMut([f32; RECORD])) {

@@ -272,6 +272,75 @@ nb.Audio = Audio; // for offline level checks
 // tick / turn ~-38, ready ~-40, spark ~-42, hover ~-44
 const CUE_LEVEL = { fling: 1.2, home: 2.1, refill: 2.7, thud: 0.95, gather: 1, soul: 1.45, assemble: 0.72, bolt: 2.8, shatter: 1.45, tick: 2.8, turn: 2.24, ready: 3.85, spark: 9, hover: 10 };
 
+// ----------------------------------------------------------------- perf ---
+// The observables: every rAF frame's interval and CPU split, the engine's
+// per-phase timings, GPU time (timestamp queries), heap, and long tasks.
+// ?perf (or F3) shows the overlay; window.__nb.perf always has the numbers.
+class Perf {
+  constructor() {
+    this.dt = new Float32Array(600); this.cpu = new Float32Array(600); this.n = 0;
+    this.split = { ticks: 0, render: 0, draw: 0, host: 0 }; this.tickCount = 0;
+    this.long = { count: 0, worst: 0 };
+    try { new PerformanceObserver((l) => { for (const e of l.getEntries()) { this.long.count++; this.long.worst = Math.max(this.long.worst, e.duration); } }).observe({ entryTypes: ["longtask"] }); } catch {}
+    this.el = null; this.spark = null; this.shown = false;
+  }
+  frame(dt, parts, ticks) {
+    const i = this.n++ % 600;
+    this.dt[i] = dt; const cpu = parts.ticks + parts.render + parts.draw + parts.host; this.cpu[i] = cpu;
+    for (const k in parts) this.split[k] += parts[k];
+    this.tickCount += ticks;
+  }
+  report(engine, gpuMs) {
+    const m = Math.min(this.n, 600); if (!m) return null;
+    const dts = Array.from(this.dt.slice(0, m)).sort((a, b) => a - b), cpus = Array.from(this.cpu.slice(0, m)).sort((a, b) => a - b);
+    const q = (a, p) => a[Math.min(a.length - 1, Math.floor(p * a.length))];
+    const refresh = q(dts, 0.5), budget = refresh;
+    const late = Array.from(this.dt.slice(0, m)).filter((d) => d > budget * 1.5).length;
+    const prof = engine.profile(), names = JSON.parse(engine.phase_names());
+    const phases = {}; names.forEach((nm, k) => (phases[nm] = { mean: +prof[2 + k * 2].toFixed(3), worst: +prof[3 + k * 2].toFixed(3) }));
+    const frames = Math.max(1, m);
+    const out = {
+      hz: +(1000 / refresh).toFixed(0), p50: +q(dts, 0.5).toFixed(2), p95: +q(dts, 0.95).toFixed(2), p99: +q(dts, 0.99).toFixed(2), worst: +dts[dts.length - 1].toFixed(2),
+      late, lateRate: +(late / frames).toFixed(4), cpuP50: +q(cpus, 0.5).toFixed(2), cpuP99: +q(cpus, 0.99).toFixed(2), cpuWorst: +cpus[cpus.length - 1].toFixed(2),
+      split: Object.fromEntries(Object.entries(this.split).map(([k, v]) => [k, +(v / frames).toFixed(3)])), ticksPerFrame: +(this.tickCount / frames).toFixed(2),
+      gpuMs: +gpuMs.toFixed(3), heapMB: performance.memory ? +(performance.memory.usedJSHeapSize / 1048576).toFixed(1) : null,
+      longTasks: this.long.count, longWorst: +this.long.worst.toFixed(1), records: nb.records, draws: nb.draws, phases,
+    };
+    this.n = 0; this.tickCount = 0; for (const k in this.split) this.split[k] = 0;
+    return out;
+  }
+  show(on) {
+    this.shown = on;
+    if (on && !this.el) {
+      this.el = document.createElement("pre");
+      this.el.style.cssText = "position:fixed;left:8px;top:8px;margin:0;padding:8px 10px;font:11px/1.35 ui-monospace,monospace;background:#fffffff2;color:#111;border:1px solid #ddd;pointer-events:none;z-index:9";
+      this.spark = document.createElement("canvas"); this.spark.width = 240; this.spark.height = 48;
+      this.spark.style.cssText = "display:block;margin-top:6px";
+      document.body.appendChild(this.el);
+    }
+    if (this.el) this.el.style.display = on ? "block" : "none";
+  }
+  draw(r) {
+    if (!this.shown || !r) return;
+    const top = Object.entries(r.phases).filter(([, v]) => v.mean > 0.005).sort((a, b) => b[1].mean - a[1].mean).slice(0, 8);
+    this.el.textContent =
+      `${r.hz} Hz  frame p50 ${r.p50}  p95 ${r.p95}  p99 ${r.p99}  worst ${r.worst} ms\n` +
+      `late frames ${r.late} (${(r.lateRate * 100).toFixed(1)}%)   long tasks ${r.longTasks} (worst ${r.longWorst} ms)\n` +
+      `cpu p50 ${r.cpuP50}  p99 ${r.cpuP99}  worst ${r.cpuWorst} ms   gpu ${r.gpuMs} ms\n` +
+      `per frame: ticks ${r.split.ticks} (${r.ticksPerFrame}/frame)  render ${r.split.render}  draw ${r.split.draw}  host ${r.split.host} ms\n` +
+      `records ${r.records}  draws ${r.draws}  heap ${r.heapMB ?? "?"} MB  res ${r.res ?? 1}\n` +
+      top.map(([k, v]) => `  ${k.padEnd(10)} ${v.mean.toFixed(3)} (worst ${v.worst.toFixed(2)})`).join("\n");
+    this.el.appendChild(this.spark);
+    const g = this.spark.getContext("2d"), w = 240, h = 48; g.clearRect(0, 0, w, h);
+    g.strokeStyle = "#c33"; g.beginPath(); const y8 = h - (8.33 / 25) * h; g.moveTo(0, y8); g.lineTo(w, y8); g.stroke();
+    g.strokeStyle = "#111"; g.beginPath();
+    const m = Math.min(this.lastN || 0, 240);
+    for (let k = 0; k < m; k++) { const v = this.hist[(this.histI - m + k + 240) % 240]; const y = h - Math.min(1, v / 25) * h; k ? g.lineTo(k, y) : g.moveTo(k, y); }
+    g.stroke();
+  }
+  push(dt) { this.hist ||= new Float32Array(240); this.histI = ((this.histI || 0) + 1) % 240; this.hist[this.histI] = dt; this.lastN = Math.min(240, (this.lastN || 0) + 1); }
+}
+
 // ------------------------------------------------------------- renderer ---
 const WGSL = /* wgsl */ `
 struct Pass { vp: mat4x4f };
@@ -301,12 +370,22 @@ class Renderer {
     if (!navigator.gpu) throw new Error("This browser has no WebGPU. Use Chrome, Edge or Safari 26+.");
     const adapter = await navigator.gpu.requestAdapter();
     if (!adapter) throw new Error("No WebGPU adapter.");
-    const device = await adapter.requestDevice();
+    // GPU timing for the perf overlay, where the browser exposes it
+    const ts = adapter.features.has("timestamp-query");
+    const device = await adapter.requestDevice(ts ? { requiredFeatures: ["timestamp-query"] } : undefined);
+    device.__ts = ts;
     device.addEventListener?.("uncapturederror", (e) => nb.errors.push(`gpu: ${e.error.message}`));
     return new Renderer(device);
   }
   constructor(device) {
     this.d = device;
+    this.gpuMs = 0;
+    if (device.__ts) {
+      this.qs = device.createQuerySet({ type: "timestamp", count: 2 });
+      this.qResolve = device.createBuffer({ size: 16, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC });
+      this.qRead = device.createBuffer({ size: 16, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+      this.qBusy = false;
+    }
     this.ctx = canvas.getContext("webgpu");
     this.format = navigator.gpu.getPreferredCanvasFormat();
     this.ctx.configure({ device, format: this.format, alphaMode: "opaque" });
@@ -394,8 +473,17 @@ class Renderer {
     this.atlases.set(key, a);
     return a;
   }
+  // adaptive resolution, once a second: if the GPU can't hold the frame,
+  // render a step smaller (never below 1x CSS pixels); step back up only
+  // with real headroom (a dead band between, so it never oscillates)
+  adapt(budgetMs) {
+    this.res ??= 1;
+    if (this.gpuMs > budgetMs * 0.8 && this.res > 0.6) this.res = +(this.res - 0.1).toFixed(2);
+    else if (this.gpuMs > 0 && this.gpuMs < budgetMs * 0.35 && this.res < 1) this.res = +(this.res + 0.1).toFixed(2);
+  }
   draw(rec, texts, family, screenW, screenH) {
-    const d = this.d, dpr = Math.min(devicePixelRatio || 1, 2);
+    this.res ??= 1;
+    const d = this.d, dpr = Math.max(1, Math.min(devicePixelRatio || 1, 2) * this.res);
     const W = Math.max(1, Math.round(canvas.clientWidth * dpr)), H = Math.max(1, Math.round(canvas.clientHeight * dpr));
     if (canvas.width !== W || canvas.height !== H || !this.depth) {
       canvas.width = W; canvas.height = H;
@@ -514,7 +602,9 @@ class Renderer {
     let calls = 0;
     passes.forEach((p, pi) => {
       const first = pi === 0, last = pi === passes.length - 1;
+      const timing = this.qs && !this.qBusy && (first || last) ? { querySet: this.qs, ...(first ? { beginningOfPassWriteIndex: 0 } : {}), ...(last ? { endOfPassWriteIndex: 1 } : {}) } : undefined;
       const pass = enc.beginRenderPass({
+        timestampWrites: timing,
         colorAttachments: [{ view, resolveTarget: last ? target : undefined, loadOp: p.clear || first ? "clear" : "load", storeOp: "store",
           clearValue: { r: p.bg[0], g: p.bg[1], b: p.bg[2], a: 1 } }],
         depthStencilAttachment: { view: dview, depthLoadOp: "clear", depthClearValue: 1, depthStoreOp: "discard" },
@@ -533,7 +623,17 @@ class Renderer {
       }
       pass.end();
     });
+    const timed = this.qs && !this.qBusy && passes.length;
+    if (timed) { enc.resolveQuerySet(this.qs, 0, 2, this.qResolve, 0); enc.copyBufferToBuffer(this.qResolve, 0, this.qRead, 0, 16); this.qBusy = true; }
     d.queue.submit([enc.finish()]);
+    if (timed) {
+      this.qRead.mapAsync(GPUMapMode.READ).then(() => {
+        const t = new BigUint64Array(this.qRead.getMappedRange());
+        const ms = Number(t[1] - t[0]) / 1e6;
+        if (ms > 0 && ms < 1000) this.gpuMs = ms;
+        this.qRead.unmap(); this.qBusy = false;
+      }).catch(() => { this.qBusy = false; });
+    }
     nb.draws = calls;
   }
 }
@@ -690,12 +790,18 @@ async function main() {
 
   $("overlay").hidden = true;
   const debug = params.has("debug"); $("debug").hidden = !debug;
-  let texts = {}, textsAt = -1;
+  let texts = {}, textsAt = -1, textsVer = -1;
   let last = performance.now(), acc = 0, frames = 0, fpsT = last;
+  const perf = new Perf(); nb.perfObj = perf; let perfT = performance.now();
+  perf.show(params.has("perf"));
+  addEventListener("keydown", (e) => { if (e.code === "F3") { e.preventDefault(); perf.show(!perf.shown); } });
   const loop = (now) => {
-    acc += Math.min(0.25, (now - last) / 1000); last = now;
+    const dtFrame = now - last;
+    acc += Math.min(0.25, dtFrame / 1000); last = now;
     let steps = 0;
+    const tA = performance.now();
     while (acc >= TICK && steps < 8) { pollControls(); engine.frame(); acc -= TICK; steps++; nb.ticks++; }
+    const tB = performance.now();
     if (audio) {
       const s = engine.drain_sounds(); if (s !== "[]") for (const [c, v] of JSON.parse(s)) audio.shot(c, v);
       const q = engine.drain_cues(); if (q !== "[]") for (const [n, p, a] of JSON.parse(q)) audio.cue(n, p, a);
@@ -703,12 +809,22 @@ async function main() {
       audio.music(JSON.parse(engine.music()));
     }
     const p = engine.take_prefs(); if (p) savePrefs(p);
-    if (nb.ticks !== textsAt) { texts = JSON.parse(engine.texts()); textsAt = nb.ticks; }
+    if (nb.ticks !== textsAt) { const v = engine.texts_version(); if (v !== textsVer) { texts = JSON.parse(engine.texts()); textsVer = v; } textsAt = nb.ticks; }
     engine.set_subtick(acc / TICK);
     const t0 = performance.now();
     const len = engine.render();
+    const t1 = performance.now();
+    nb.records = len / 28;
     r.draw(new Float32Array(wasm.memory.buffer, engine.records_ptr(), len), texts, family, cssW(), cssH());
-    nb.cpuMs = nb.cpuMs * 0.95 + (performance.now() - t0) * 0.05; // smoothed render + record time
+    const t2 = performance.now();
+    nb.cpuMs = nb.cpuMs * 0.95 + (t2 - t0) * 0.05; // smoothed render + record time
+    perf.frame(dtFrame, { ticks: tB - tA, render: t1 - t0, draw: t2 - t1, host: t0 - tB }, steps);
+    perf.push(dtFrame);
+    if (now - perfT >= 1000) {
+      nb.perf = perf.report(engine, r.gpuMs);
+      if (nb.perf) { r.adapt(1000 / nb.perf.hz); nb.perf.res = r.res; }
+      perf.draw(nb.perf); perfT = now;
+    }
     frames++;
     if (now - fpsT >= 500) { nb.fps = Math.round((frames * 1000) / (now - fpsT)); frames = 0; fpsT = now; }
     if (debug) $("debug").textContent = `fps ${nb.fps} draws ${nb.draws}\n${engine.state()}`;

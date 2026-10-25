@@ -194,6 +194,8 @@ pub struct Game {
     /// the match is frozen under the pause menu (the original only froze
     /// time in the single-player tutorial; versus kept running under it)
     pub paused: bool,
+    /// per-phase timings (RefCell: render takes &self)
+    pub prof: std::cell::RefCell<crate::prof::Prof>,
 }
 
 pub fn field<'a>(w: &'a World, node: usize, script: &str, name: &str) -> &'a Value {
@@ -255,6 +257,7 @@ impl Game {
             throw_ends: HashMap::new(),
             last_killer: HashMap::new(),
             paused: false,
+            prof: Default::default(),
         };
         for i in 0..g.w.nodes.len() {
             if let Some(clip) = g.w.nodes[i].audio.clone() {
@@ -290,21 +293,34 @@ impl Game {
             self.fx_step();
             return;
         }
+        let lap = |g: &Game, i: usize| g.prof.borrow_mut().lap(i);
+        self.prof.borrow_mut().begin();
         self.snapshot_movers();
         self.ai_step();
+        lap(self, 0);
         self.frame += 1;
         self.run_enables();
+        lap(self, 1);
         self.fixed_update();
+        lap(self, 2);
         self.phys.step(&mut self.w, DT);
         self.dispatch_physics_events();
+        lap(self, 3);
         self.shards_step();
         self.shard_cues();
+        lap(self, 4);
         self.step_tasks();
+        lap(self, 5);
         self.update();
+        lap(self, 6);
         self.relayout();
         self.ui_events();
+        lap(self, 7);
         self.bodies_step();
+        lap(self, 8);
         self.fx_step();
+        lap(self, 9);
+        self.prof.borrow_mut().end(0..10, true);
     }
 
     /// Step the debris; shards bounce off the arena's solid shapes.
@@ -397,13 +413,21 @@ impl Game {
         if self.motion.hitstop > 0 || self.paused {
             return out;
         }
+        // souls under a human's hands are drawn ahead (extrapolated), so input
+        // shows up in the very next frame; everything else is interpolated
+        let human: Vec<usize> = self
+            .players
+            .iter()
+            .filter(|p| self.input.desktop && self.direct_slot_pub(p).map(|s| !self.ai[s].on).unwrap_or(false))
+            .map(|p| p.node)
+            .collect();
         for (&n, &prev) in &self.prev_pos {
             let cur = self.w.position(n);
             let d = cur - prev;
             if d.length() > 3.0 || prev.x == -666.0 || cur.x == -666.0 {
                 continue; // teleports snap
             }
-            let off = d * (a - 1.0);
+            let off = if human.contains(&n) { d * a } else { d * (a - 1.0) };
             let mut sub = Vec::new();
             self.w.descendants(n, &mut sub);
             for s in sub {

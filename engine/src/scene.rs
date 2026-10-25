@@ -555,6 +555,49 @@ impl World {
         Mat4::trs(n.lpos, n.lrot, n.lscale)
     }
 
+    /// Every node's world matrix and active-in-hierarchy flag in one top-down
+    /// pass (`matrix` and `active_in_hierarchy` walk the parent chain per call).
+    pub fn world_cache(&self) -> (Vec<Mat4>, Vec<bool>) {
+        let n = self.nodes.len();
+        let mut m = vec![Mat4::IDENTITY; n];
+        let mut act = vec![false; n];
+        let mut seen = vec![false; n];
+        // inactive branches are skipped entirely (their matrices stay identity:
+        // callers only use matrices of active nodes)
+        let mut stack: Vec<usize> = (0..n).filter(|&i| self.nodes[i].parent.is_none()).collect();
+        for &r in &stack {
+            seen[r] = true;
+            act[r] = self.nodes[r].active;
+            if act[r] {
+                m[r] = self.local_matrix(r);
+            }
+        }
+        stack.retain(|&r| act[r]);
+        while let Some(p) = stack.pop() {
+            for &c in &self.nodes[p].children {
+                if c >= n || seen[c] || self.nodes[c].parent != Some(p) {
+                    continue;
+                }
+                seen[c] = true;
+                if !self.nodes[c].active {
+                    continue;
+                }
+                m[c] = m[p].mul(&self.local_matrix(c));
+                act[c] = true;
+                stack.push(c);
+            }
+        }
+        // anything the child lists missed (descendants of skipped inactive
+        // branches are simply inactive)
+        for i in 0..n {
+            if !seen[i] && self.active_in_hierarchy(i) {
+                m[i] = self.matrix(i);
+                act[i] = true;
+            }
+        }
+        (m, act)
+    }
+
     pub fn matrix(&self, i: usize) -> Mat4 {
         let local = self.local_matrix(i);
         match self.nodes[i].parent {

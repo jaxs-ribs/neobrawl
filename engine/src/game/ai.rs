@@ -54,6 +54,8 @@ struct Fight {
     noticed: std::collections::HashMap<usize, u64>,
     /// since when their loaded aim has been on us
     lined_since: Option<u64>,
+    /// a dash broke its tracking: no shots until then, aim held on the old line
+    lost_until: u64,
 }
 
 /// How well it reads a charging opponent: per-tick juke hazard at full
@@ -77,9 +79,9 @@ struct Level {
 
 fn level(l: u8) -> Level {
     match l {
-        1 => Level { react: 14, flinch: 17.0, aim_err: 0.22, dodge_p: 0.35, range: 5.5 },
-        2 => Level { react: 9, flinch: 13.0, aim_err: 0.11, dodge_p: 0.6, range: 5.0 },
-        _ => Level { react: 5, flinch: 10.0, aim_err: 0.045, dodge_p: 0.8, range: 4.6 },
+        1 => Level { react: 16, flinch: 17.0, aim_err: 0.22, dodge_p: 0.35, range: 5.5 },
+        2 => Level { react: 12, flinch: 13.0, aim_err: 0.11, dodge_p: 0.6, range: 5.0 },
+        _ => Level { react: 9, flinch: 10.0, aim_err: 0.045, dodge_p: 0.8, range: 4.6 },
     }
 }
 
@@ -294,11 +296,22 @@ impl Game {
         // the enemy as perceived: velocity from the delayed track (3-tick
         // average), and position carried forward across the reaction delay
         // to where it must be now
+        let mut burst = false;
         let enemy = old.first().copied().map(|(o, p)| {
             let v = later.iter().find(|(q, _)| *q == o).map(|(_, p2)| (*p2 - p) * (1.0 / (span as f32 * super::DT))).unwrap_or(V3::ZERO);
-            let v = if v.length() > 30.0 { V3::ZERO } else { v };
+            let sp = v.length();
+            // people extrapolate a walk, not a dash: a burst breaks tracking
+            burst = sp > 11.0;
+            let v = if sp > 8.5 { v * (8.5 / sp) } else { v };
+            let v = if sp > 30.0 { V3::ZERO } else { v };
             (o, p + v * lag, v)
         });
+        if burst && t >= w.fight.lost_until {
+            let h = hash(seed ^ 0x9191);
+            let u = (hf(h) * 0.5 + 0.5).max(0.02);
+            w.fight.lost_until = t + (lv.flinch * (1.0 + (-u.ln()).min(2.5) * 0.4)) as u64;
+        }
+        let lost = t < w.fight.lost_until;
         let carrying = self.players[k].picked_box.is_some();
         let charge = self.players[k].charge_timer;
         let mut mv = V3::ZERO;
@@ -465,7 +478,8 @@ impl Game {
                 let lane = solids.clear(me + ad * 0.5, me + ad * dist.min(9.0), 0.45);
                 aiming = true;
                 // hold the aim steady for the last ticks: the throw uses the aim of 2 ticks ago
-                if w.fight.hold_aim == 0 {
+                // (and while a dash has broken its tracking, it stays on the old line)
+                if w.fight.hold_aim == 0 && !lost {
                     w.fight.aim = ad;
                 }
                 aim = V2 { x: w.fight.aim.x, y: w.fight.aim.y };
@@ -477,7 +491,7 @@ impl Game {
                     w.fight.blocked = 0;
                     w.fight.spot = None;
                 }
-                let ready = charge >= w.fight.want_charge && lane && flight_time(dist, power_for(charge)).is_some();
+                let ready = !lost && charge >= w.fight.want_charge && lane && flight_time(dist, power_for(charge)).is_some();
                 if ready && w.fight.hold_aim == 0 {
                     w.fight.hold_aim = 3;
                 }

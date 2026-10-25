@@ -178,8 +178,28 @@ pub fn layers_collide(a: u32, b: u32) -> bool {
 }
 
 pub fn geometry(w: &World, i: usize) -> Option<Geo> {
+    geometry_m(w, i, &w.matrix(i))
+}
+
+/// A shape's bounding circle: centre and radius.
+pub fn bound(g: &Geo) -> (f32, f32, f32) {
+    match g {
+        Geo::Circle { c, r } => (c[0], c[1], *r),
+        Geo::Obb { c, h, .. } => (c[0], c[1], (h[0] * h[0] + h[1] * h[1]).sqrt()),
+        Geo::Poly { n, p } => {
+            let n = *n as usize;
+            let (sx, sy) = p[..n].iter().fold((0.0, 0.0), |a, q| (a.0 + q[0], a.1 + q[1]));
+            let (cx, cy) = (sx / n as f32, sy / n as f32);
+            let r = p[..n].iter().map(|q| ((q[0] - cx).powi(2) + (q[1] - cy).powi(2)).sqrt()).fold(0.0f32, f32::max);
+            (cx, cy, r)
+        }
+    }
+}
+
+/// `geometry` with the node's world matrix already in hand.
+pub fn geometry_m(w: &World, i: usize, m: &crate::shared::math::Mat4) -> Option<Geo> {
     let col = w.nodes[i].collider.as_ref()?;
-    let m = w.matrix(i);
+    let m = *m;
     match col.shape {
         Shape::Hull { n, pts } => {
             let mut p = [[0.0f32; 2]; 16];
@@ -434,7 +454,9 @@ impl Physics {
     /// One FixedUpdate physics step: integrate, resolve, then report events.
     pub fn step(&mut self, w: &mut World, dt: f32) {
         self.events.clear();
-        let cols = Self::colliders(w);
+        // one pass for every world matrix and active flag
+        let (wm, act) = w.world_cache();
+        let cols: Vec<usize> = (0..w.nodes.len()).filter(|&i| act[i] && w.nodes[i].collider.as_ref().map(|c| c.enabled).unwrap_or(false)).collect();
         let solid: Vec<usize> = cols.iter().copied().filter(|&i| !w.nodes[i].collider.as_ref().unwrap().trigger).collect();
         let dynamic: Vec<usize> = solid
             .iter()
@@ -451,8 +473,31 @@ impl Physics {
                 body.velocity = body.velocity * k;
             }
         }
-        // Continuous movement: advance every dynamic body in small substeps.
-        let max_speed = dynamic
+        // only bodies in motion sweep; resting ones act as solids until pushed
+        let is_awake = |w: &World, i: usize| {
+            let b = w.nodes[i].body.as_ref().unwrap();
+            b.velocity.x.abs() + b.velocity.y.abs() > 1e-3 || b.spin.abs() > 1e-3
+        };
+        let mut awake_flag = vec![false; w.nodes.len()];
+        let awake: Vec<usize> = dynamic.iter().copied().filter(|&i| is_awake(w, i)).collect();
+        for &i in &awake {
+            awake_flag[i] = true;
+        }
+        let mut dyn_flag = vec![false; w.nodes.len()];
+        for &i in &dynamic {
+            dyn_flag[i] = true;
+        }
+        // shapes that won't move this step, once, with bounding circles
+        let mut still: Vec<Option<(Geo, (f32, f32, f32))>> = vec![None; w.nodes.len()];
+        for &j in &solid {
+            if !awake_flag[j] {
+                if let Some(g) = geometry_m(w, j, &wm[j]) {
+                    still[j] = Some((g, bound(&g)));
+                }
+            }
+        }
+        // Continuous movement: advance every moving body in small substeps.
+        let max_speed = awake
             .iter()
             .map(|&i| {
                 let v = w.nodes[i].body.as_ref().unwrap().velocity;
@@ -462,7 +507,7 @@ impl Physics {
         let steps = ((max_speed * dt / 0.06).ceil() as usize).clamp(1, 40);
         let h = dt / steps as f32;
         for _ in 0..steps {
-            for &i in &dynamic {
+            for &i in &awake {
                 let body = w.nodes[i].body.as_ref().unwrap();
                 let v = body.velocity;
                 let spin = body.spin;
@@ -473,8 +518,10 @@ impl Physics {
                     w.rotate_self(i, 0.0, 0.0, spin * h);
                 }
             }
-            for &i in &dynamic {
-                let Some(gi) = geometry(w, i) else { continue };
+            let moving: Vec<(usize, Geo, (f32, f32, f32))> = awake.iter().filter_map(|&i| geometry(w, i).map(|g| (i, g, bound(&g)))).collect();
+            for &(i, gi, bi) in moving.iter() {
+                let mut gi = gi;
+                let mut bi = bi;
                 for &j in &solid {
                     if i == j || self.ignore.contains(&key(i, j)) {
                         continue;
@@ -482,12 +529,27 @@ impl Physics {
                     if !layers_collide(w.nodes[i].layer, w.nodes[j].layer) {
                         continue;
                     }
-                    // dynamic pairs are handled once (from the lower index)
-                    let j_dynamic = dynamic.contains(&j);
-                    if j_dynamic && j < i {
+                    // moving pairs are handled once (from the lower index)
+                    if awake_flag[j] && j < i {
                         continue;
                     }
-                    let Some(gj) = geometry(w, j) else { continue };
+                    let (gj, bj) = if awake_flag[j] {
+                        match moving.iter().find(|m| m.0 == j) {
+                            Some(m) => (m.1, m.2),
+                            None => continue,
+                        }
+                    } else {
+                        match still[j] {
+                            Some(x) => x,
+                            None => continue,
+                        }
+                    };
+                    // broad phase: bounding circles
+                    let (dx, dy) = (bi.0 - bj.0, bi.1 - bj.1);
+                    let reach = bi.2 + bj.2 + 0.02;
+                    if dx * dx + dy * dy > reach * reach {
+                        continue;
+                    }
                     let Some(c) = collide(&gi, &gj, 0.01) else { continue };
                     if !touching.contains(&key(i, j)) {
                         contacts.push((i, j, c));
@@ -497,7 +559,7 @@ impl Physics {
                         continue;
                     }
                     let n = v3(c.normal[0], c.normal[1], 0.0);
-                    if j_dynamic {
+                    if dyn_flag[j] {
                         let (ma, mb) = (w.nodes[i].body.as_ref().unwrap().mass, w.nodes[j].body.as_ref().unwrap().mass);
                         let t = ma + mb;
                         w.translate_world(i, n * (c.depth * mb / t));
@@ -511,6 +573,12 @@ impl Physics {
                             w.nodes[i].body.as_mut().unwrap().velocity = va - n * (imp * mb);
                             w.nodes[j].body.as_mut().unwrap().velocity = vb + n * (imp * ma);
                         }
+                        // a resting body that was pushed has moved: refresh its shape
+                        if !awake_flag[j] {
+                            if let Some(g) = geometry(w, j) {
+                                still[j] = Some((g, bound(&g)));
+                            }
+                        }
                     } else {
                         w.translate_world(i, n * c.depth);
                         let b = w.nodes[i].body.as_mut().unwrap();
@@ -518,6 +586,11 @@ impl Physics {
                         if vn < 0.0 {
                             b.velocity = b.velocity - n * vn;
                         }
+                    }
+                    // we moved: later pairs see where we are now
+                    if let Some(g) = geometry(w, i) {
+                        gi = g;
+                        bi = bound(&g);
                     }
                 }
             }
@@ -541,10 +614,19 @@ impl Physics {
         // Triggers: OnTriggerEnter between triggers and dynamic bodies
         let triggers: Vec<usize> = cols.iter().copied().filter(|&i| w.nodes[i].collider.as_ref().unwrap().trigger).collect();
         let mut now = HashSet::new();
+        let dyn_geo: Vec<(usize, Geo, (f32, f32, f32))> = if triggers.is_empty() {
+            Vec::new()
+        } else {
+            dynamic.iter().filter_map(|&i| geometry(w, i).map(|g| (i, g, bound(&g)))).collect()
+        };
         for &t in &triggers {
             let Some(gt) = geometry(w, t) else { continue };
-            for &i in &dynamic {
-                let Some(gi) = geometry(w, i) else { continue };
+            let bt = bound(&gt);
+            for &(i, gi, bi) in &dyn_geo {
+                let (dx, dy) = (bt.0 - bi.0, bt.1 - bi.1);
+                if dx * dx + dy * dy > (bt.2 + bi.2).powi(2) {
+                    continue;
+                }
                 if collide(&gt, &gi, 0.0).map(|c| c.depth > 0.0).unwrap_or(false) {
                     now.insert((t, i));
                     if !self.triggers.contains(&(t, i)) {

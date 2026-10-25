@@ -238,7 +238,7 @@ def main(root):
         tex = assets["textures"][sp["tex"]]
         w, h, a = read_png(f"{root}/{tex['file']}")
         loops = contours(w, h, a)
-        rings = [simplify_loop(l, 0.12) for l in loops]
+        rings = [simplify_loop(l, 0.25) for l in loops]  # within a quarter texel; halves the triangles
         # outer = the biggest ring (made CCW); the rest are holes (made CW)
         rings.sort(key=lambda r: -abs(area(r)))
         o = rings[0] if area(rings[0]) > 0 else rings[0][::-1]
