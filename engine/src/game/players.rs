@@ -296,7 +296,7 @@ impl Game {
     }
 
     /// The point under the mouse cursor on the player's plane (z of the player).
-    fn cursor_world(&self, k: usize) -> Option<V3> {
+    pub(crate) fn cursor_world(&self, k: usize) -> Option<V3> {
         let [sx, sy] = self.input.cursor?;
         let p = &self.players[k];
         let cam = if p.single { self.w.with_tag("CameraMenu") } else { self.camera_main() }?;

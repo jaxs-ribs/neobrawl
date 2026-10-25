@@ -330,8 +330,8 @@ class Renderer {
 // take over both players (left stick move, right stick aim, release to throw).
 const keys = new Set();
 let mouseHeld = false;
-// Orbit aiming: in a match the mouse is pointer-locked and steers a reticle
-// around player 1, so aim never depends on where the (lagging) camera is.
+// Aim is at the absolute cursor point in the arena; ?orbit instead pointer-locks
+// the mouse and steers a reticle around player 1.
 let locked = false;
 const orbit = { x: 1, y: 0 };
 const ORBIT_SENS = 0.012;
@@ -414,7 +414,8 @@ async function main() {
     if (e.button === 0) mouseHeld = true;
     if (locked) return; // clicks while locked are throws, not UI clicks
     ptr(0)(e);
-    if (inPlay() && !params.has("nolock")) canvas.requestPointerLock?.()?.catch?.(() => {});
+    // absolute cursor aim (League-style); opt back into orbit aim with ?orbit
+    if (inPlay() && params.has("orbit")) canvas.requestPointerLock?.()?.catch?.(() => {});
   });
   canvas.addEventListener("pointermove", (e) => {
     if (locked) {
