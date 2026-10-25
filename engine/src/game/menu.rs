@@ -34,6 +34,7 @@ pub struct Menu {
     pub woosh: String,
     pub explosion: String,
     pub blob: String,
+    pub dash_clip: String,
     pub dm_single: Option<usize>,
     pub camera: Option<usize>,
     pub music_onoff: Option<usize>,
@@ -112,6 +113,7 @@ impl Game {
             woosh: clip("WooshSound"),
             explosion: clip("ExplosionSound"),
             blob: clip("BlobSound"),
+            dash_clip: "dash".into(),
             dm_single: r("deathManagerSingle"),
             current_map: field(w, m, "MenuManager", "currentMap").as_i64().unwrap_or(0) as i32,
             ..Default::default()
@@ -758,5 +760,42 @@ impl Game {
                 self.misc.floaters[k].1 = t + 0.04;
             }
         }
+    }
+}
+
+impl Game {
+    /// Desktop edition: rewrite the touch-era tutorial copy and hide the
+    /// pointer arrow that pointed at the on-screen joystick.
+    pub fn apply_desktop_copy(&mut self) {
+        let edits = [
+            ("usetomove", "use W A S D to move\nshift to dash"),
+            ("pressanywhere", "aim with the mouse\nhold click to charge\nlet go to throw"),
+            ("PressToPlay", "CLICK TO PLAY"),
+        ];
+        for (name, text) in edits {
+            for n in self.w.find_any(name) {
+                self.set_text(n, text);
+            }
+        }
+        for n in self.w.find_any("ArrowTutorial") {
+            if let Some(s) = self.w.nodes[n].sprite.as_mut() {
+                s.enabled = false;
+            }
+        }
+        // touch joysticks are gone on desktop
+        for name in ["InnerMovPlayer1", "InnerMovPlayer2", "InnerAimPlayer1", "InnerAimPlayer2", "OuterMovePlayer1", "OuterMovePlayer2", "OuterAimPlayer1", "OuterAimPlayer2"] {
+            for n in self.w.find_any(name) {
+                if let Some(img) = self.w.nodes[n].image.as_mut() {
+                    img.enabled = false;
+                }
+            }
+        }
+    }
+
+    /// Esc: pause, or resume when the pause menu is up.
+    pub fn toggle_pause(&mut self) {
+        let Some(k) = self.pauses.iter().position(|p| self.w.active_in_hierarchy(p.node)) else { return };
+        let resume_up = self.pauses[k].resume.map(|r| self.w.active_in_hierarchy(r)).unwrap_or(false);
+        self.pause_button(k, if resume_up { "ResumeButton" } else { "PauseButton" });
     }
 }

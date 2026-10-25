@@ -155,6 +155,87 @@ impl Game {
                     ribbon_tapered(&seg, [w0 * 0.7, w1 * 0.7], core, soft, |rec| items.push(Item { order: -1, dist: d - 0.001, seq: p.node, rec }));
                 }
             }
+            // dash cooldown rings, dash afterimages and the charging-box effect
+            let disc = tex_named(w, "BlobBW.png");
+            let ring = tex_named(w, "Outer.png");
+            for p in &self.players {
+                if p.playback || !w.active_in_hierarchy(p.node) {
+                    continue;
+                }
+                let pos = w.position(p.node);
+                if pos.x == -666.0 {
+                    continue;
+                }
+                let color = w.nodes[p.node]
+                    .children
+                    .first()
+                    .and_then(|&c| w.nodes[c].sprite.as_ref())
+                    .map(|s| s.color)
+                    .unwrap_or([0.2, 0.2, 0.2, 1.0]);
+                let d = dist(pos);
+                if p.dash_cd > 0 {
+                    let f = 1.0 - p.dash_cd as f32 / crate::game::DASH_COOLDOWN as f32;
+                    let n = 32;
+                    let shown = ((n as f32) * f).round() as usize;
+                    let r = 0.3;
+                    let pts: Vec<V3> = (0..=shown)
+                        .map(|k| {
+                            let a = std::f32::consts::FRAC_PI_2 - k as f32 / n as f32 * std::f32::consts::TAU;
+                            pos + v3(a.cos() * r, a.sin() * r, 0.0)
+                        })
+                        .collect();
+                    if pts.len() >= 2 {
+                        let mut c = color;
+                        c[3] = 0.55;
+                        ribbon(&pts, 0.035, c, -1.0, |rec| items.push(Item { order: 2, dist: d, seq: p.node, rec }));
+                    }
+                }
+                if p.dash_t > 0 && disc >= 0.0 {
+                    for g in 1..=4 {
+                        let back = pos - v3(p.dash_dir.x, p.dash_dir.y, 0.0) * (g as f32 * 0.22);
+                        let rad = 0.2 - g as f32 * 0.02;
+                        let mut c = color;
+                        c[3] = 0.35 - g as f32 * 0.07;
+                        let q = [back + v3(-rad, -rad, 0.0), back + v3(rad, -rad, 0.0), back + v3(rad, rad, 0.0), back + v3(-rad, rad, 0.0)];
+                        items.push(Item { order: -1, dist: d + 0.02, seq: p.node, rec: quad(disc, q, [0.0, 0.0, 1.0, 1.0], c) });
+                    }
+                }
+                if let (Some(b), true) = (p.picked_box, p.charge_timer > 0.0) {
+                    let bp = w.position(b);
+                    let f = (p.charge_timer / 90.0).clamp(0.0, 1.0);
+                    let t = self.frame as f32 * 0.02;
+                    // full charge: the box trembles
+                    let shake = if f >= 1.0 { v3((t * 91.0).sin() * 0.025, (t * 77.0).cos() * 0.025, 0.0) } else { V3::ZERO };
+                    let c0 = bp + shake;
+                    let bd = dist(c0) - 0.05;
+                    // core swelling inside the box, in the thrower's colour
+                    if disc >= 0.0 {
+                        let rad = 0.05 + 0.11 * f + 0.015 * (t * (6.0 + 18.0 * f)).sin();
+                        let mut c = color;
+                        c[3] = 0.55 + 0.45 * f;
+                        let q = [c0 + v3(-rad, -rad, 0.0), c0 + v3(rad, -rad, 0.0), c0 + v3(rad, rad, 0.0), c0 + v3(-rad, rad, 0.0)];
+                        items.push(Item { order: 3, dist: bd, seq: b, rec: quad(disc, q, [0.0, 0.0, 1.0, 1.0], c) });
+                    }
+                    // arcs crawling from the core to the box's edges, more as it charges
+                    let arcs = 1 + (f * 5.0) as u32;
+                    let seed = (b as u32).wrapping_mul(2246822519) ^ (self.frame as u32).wrapping_mul(3266489917);
+                    for k in 0..arcs {
+                        let a = (seed.wrapping_add(k * 2654435761) % 6283) as f32 / 1000.0;
+                        let edge = c0 + v3(a.cos(), a.sin(), 0.0) * 0.26;
+                        let pts = arc_points(c0, edge, 6, 0.25, seed.wrapping_add(k * 97));
+                        ribbon(&pts, 0.018, [0.02, 0.02, 0.05, 0.85], -1.0, |rec| items.push(Item { order: 3, dist: bd - 0.001, seq: b, rec }));
+                    }
+                    // fully charged: a ring pulses outward from the box
+                    if f >= 1.0 && ring >= 0.0 {
+                        let ph = (t * 2.5).fract();
+                        let rad = 0.3 + 0.35 * ph;
+                        let mut c = color;
+                        c[3] = 0.6 * (1.0 - ph);
+                        let q = [c0 + v3(-rad, -rad, 0.0), c0 + v3(rad, -rad, 0.0), c0 + v3(rad, rad, 0.0), c0 + v3(-rad, rad, 0.0)];
+                        items.push(Item { order: 3, dist: bd - 0.002, seq: b, rec: quad(ring, q, [0.0, 0.0, 1.0, 1.0], c) });
+                    }
+                }
+            }
             items.sort_by(|a, b| a.order.cmp(&b.order).then(b.dist.partial_cmp(&a.dist).unwrap_or(std::cmp::Ordering::Equal)).then(a.seq.cmp(&b.seq)));
             for it in items {
                 out.extend_from_slice(&it.rec);
@@ -289,4 +370,8 @@ fn catmull_rom(p: &[V3], steps: usize) -> Vec<V3> {
     }
     out.push(*p.last().unwrap());
     out
+}
+
+fn tex_named(w: &crate::scene::World, file: &str) -> f32 {
+    w.textures.iter().position(|t| t.1.ends_with(file)).map(|t| t as f32).unwrap_or(-1.0)
 }

@@ -328,7 +328,7 @@ class Renderer {
 // take over both players (left stick move, right stick aim, release to throw).
 const keys = new Set();
 let mouseHeld = false;
-const desktop = matchMedia("(hover: hover) and (pointer: fine)").matches || params.has("desktop");
+const desktop = true; // desktop edition: keyboard, mouse and controllers only
 const axis = (up, left, down, right) => {
   const x = (keys.has(right) ? 1 : 0) - (keys.has(left) ? 1 : 0), y = (keys.has(up) ? 1 : 0) - (keys.has(down) ? 1 : 0);
   const l = Math.hypot(x, y) || 1;
@@ -341,7 +341,8 @@ function padSticks(pad) {
   // dpad also moves
   if (pad.buttons[12]?.pressed) my = 1; if (pad.buttons[13]?.pressed) my = -1;
   if (pad.buttons[14]?.pressed) mx = -1; if (pad.buttons[15]?.pressed) mx = 1;
-  return { mx, my, ax, ay, aiming: Math.hypot(ax, ay) > 0.35 };
+  const dash = !!(pad.buttons[0]?.pressed || pad.buttons[5]?.pressed || pad.buttons[4]?.pressed);
+  return { mx, my, ax, ay, aiming: Math.hypot(ax, ay) > 0.35, dash };
 }
 function pollControls() {
   if (!desktop) return;
@@ -350,9 +351,11 @@ function pollControls() {
   if (pads.length >= 2) {
     const p = padSticks(pads[0]);
     engine.direct(0, p.mx, p.my, p.ax, p.ay, p.aiming, false, true);
+    engine.dash(0, p.dash);
   } else {
     const [mx, my] = axis("KeyW", "KeyA", "KeyS", "KeyD");
     engine.direct(0, mx, my, 0, 0, mouseHeld, true, true);
+    engine.dash(0, keys.has("ShiftLeft") || keys.has("Space"));
   }
   // player 2: last pad, else arrows + IJKL (hold IJKL to charge in that direction)
   const pad2 = pads.length >= 2 ? pads[1] : pads[0];
@@ -361,8 +364,10 @@ function pollControls() {
   if (pad2) {
     const p = padSticks(pad2);
     engine.direct(1, p.mx || kx, p.my || ky, p.aiming ? p.ax : ax, p.aiming ? p.ay : ay, p.aiming || !!(ax || ay), false, true);
+    engine.dash(1, p.dash || keys.has("ShiftRight"));
   } else {
     engine.direct(1, kx, ky, ax, ay, !!(ax || ay), false, true);
+    engine.dash(1, keys.has("ShiftRight"));
   }
   engine.any_key(keys.size > 0 || mouseHeld);
 }
@@ -399,7 +404,13 @@ async function main() {
   canvas.addEventListener("contextmenu", (e) => e.preventDefault());
   engine.set_desktop(desktop);
   if (desktop) canvas.style.cursor = "crosshair";
-  addEventListener("keydown", (e) => { audio?.unlock(); if (e.metaKey || e.ctrlKey) return; keys.add(e.code); if (e.code.startsWith("Arrow") || e.code === "Space") e.preventDefault(); });
+  addEventListener("keydown", (e) => {
+    audio?.unlock();
+    if (e.metaKey || e.ctrlKey) return;
+    if (e.code === "Escape" && !e.repeat) engine.toggle_pause();
+    keys.add(e.code);
+    if (e.code.startsWith("Arrow") || e.code === "Space") e.preventDefault();
+  });
   addEventListener("keyup", (e) => keys.delete(e.code));
   addEventListener("blur", () => { keys.clear(); mouseHeld = false; });
   addEventListener("resize", () => engine.set_screen(cssW(), cssH()));

@@ -20,12 +20,13 @@ web/            index.html + main.js (WebGPU, touch/keyboard/gamepad, WebAudio) 
 
 ## Controls
 
-- **Touch (phones/tablets):** the original two-player twin-stick layout — each player
-  owns two corners: one stick moves, the other aims; hold to charge, release to throw.
 - **Desktop:** P1 moves with `WASD` and aims at the mouse cursor — hold the left button to
   charge, release to throw. P2 uses a controller (left stick move, right stick aim, release
   to throw) or arrows + `I J K L`. With two controllers they drive both players.
-  Movement has a short acceleration ramp; on-screen joysticks are hidden on desktop.
+  Movement has a short acceleration ramp. **Dash:** left `Shift`/`Space` (P1), right `Shift`
+  or controller `A`/bumpers (P2) — a 0.12 s burst with a 1 s cooldown shown as a ring
+  around the player. `Esc` pauses. This is a desktop edition: the touch joysticks and
+  touch-era tutorial copy are gone.
 
 Online play used Photon Cloud with the 2016 app id and isn't available in the browser;
 the one-screen two-player mode, tutorial and menus are complete.

@@ -83,6 +83,13 @@ impl Engine {
     /// Desktop mode: players use `direct` controls; on-screen joysticks hide.
     pub fn set_desktop(&mut self, on: bool) {
         self.game.input.desktop = on;
+        if on {
+            self.game.apply_desktop_copy();
+        }
+    }
+
+    pub fn toggle_pause(&mut self) {
+        self.game.toggle_pause();
     }
 
     /// Mouse cursor in screen pixels (origin bottom-left), or negative to clear.
@@ -95,7 +102,15 @@ impl Engine {
     #[allow(clippy::too_many_arguments)]
     pub fn direct(&mut self, player: usize, mx: f32, my: f32, ax: f32, ay: f32, aiming: bool, use_cursor: bool, active: bool) {
         if player < 2 {
-            self.game.input.direct[player] = game::Direct { active, mv: v2(mx, my), aim: v2(ax, ay), aiming, use_cursor };
+            let dash = self.game.input.direct[player].dash;
+            self.game.input.direct[player] = game::Direct { active, mv: v2(mx, my), aim: v2(ax, ay), aiming, use_cursor, dash };
+        }
+    }
+
+    /// Dash button state for player 0/1 (Shift / controller A).
+    pub fn dash(&mut self, player: usize, held: bool) {
+        if player < 2 {
+            self.game.input.direct[player].dash = held;
         }
     }
 

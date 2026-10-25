@@ -39,7 +39,19 @@ pub struct Player {
     pub trail: Vec<(V3, f32)>,
     /// smoothed movement command (desktop acceleration)
     pub cmd: V2,
+    /// dash: ticks left, cooldown ticks left, direction, and last held state
+    pub dash_t: u32,
+    pub dash_cd: u32,
+    pub dash_dir: V2,
+    pub dash_held: bool,
+    /// last non-zero movement direction (dash fallback)
+    pub facing: V2,
 }
+
+/// Dash tuning: ~2.9 units in 0.12 s, then a 1 s cooldown.
+pub const DASH_TICKS: u32 = 6;
+pub const DASH_SPEED: f32 = 24.0;
+pub const DASH_COOLDOWN: u32 = 50;
 
 #[derive(Clone, Debug, Default)]
 pub struct Burner {
@@ -227,6 +239,26 @@ impl Game {
         }
         p.touch[0] = p.cmd.normalized();
         p.mag[0] = p.cmd.len().min(1.0);
+        if !target.is_zero() {
+            p.facing = target.normalized();
+        }
+        // dash on the press edge, if off cooldown and alive
+        let pressed = ctl.active && ctl.dash && !p.dash_held;
+        p.dash_held = ctl.active && ctl.dash;
+        if p.dash_cd > 0 {
+            p.dash_cd -= 1;
+        }
+        if p.dash_t > 0 {
+            p.dash_t -= 1;
+        }
+        let mut dashed = false;
+        if pressed && p.dash_cd == 0 {
+            let dir = if !target.is_zero() { target.normalized() } else if !p.facing.is_zero() { p.facing } else { v2(1.0, 0.0) };
+            p.dash_dir = dir;
+            p.dash_t = DASH_TICKS;
+            p.dash_cd = DASH_COOLDOWN;
+            dashed = true;
+        }
         p.raw = [V2::ZERO; 2];
         let node = p.node;
         let aim = if ctl.active && ctl.aiming {
@@ -241,6 +273,10 @@ impl Game {
         } else {
             None
         };
+        if dashed && self.w.position(node).x != -666.0 {
+            let clip = self.menu.dash_clip.clone();
+            self.play(&clip, 0.8);
+        }
         let p = &mut self.players[k];
         p.touch[1] = match aim {
             Some(d) if d.len() > 1e-3 => d.normalized(),
@@ -285,7 +321,13 @@ impl Game {
         } else {
             (self.touch_count() > 0 && p.trigger_aim != 0 && x != -666.0) || p.playback
         };
-        let v = if go { v3(p.touch[0].x * p.mag[0], p.touch[0].y * p.mag[0], 0.0) * 8.0 } else { V3::ZERO };
+        let v = if go && p.dash_t > 0 {
+            v3(p.dash_dir.x, p.dash_dir.y, 0.0) * DASH_SPEED
+        } else if go {
+            v3(p.touch[0].x * p.mag[0], p.touch[0].y * p.mag[0], 0.0) * 8.0
+        } else {
+            V3::ZERO
+        };
         if let Some(b) = self.w.nodes[node].body.as_mut() {
             b.velocity = v;
         }

@@ -214,3 +214,33 @@ fn fetch_box_desktop(e: &mut Engine) -> bool {
     }
     false
 }
+
+#[test]
+fn shift_dash_bursts_then_cools_down() {
+    let mut e = start_match(4);
+    e.set_desktop(true);
+    let (p1, _) = player_nodes(&e);
+    run(&mut e, 5);
+    let x0 = e.game().w.position(p1);
+    // dash right while standing still: uses the facing / default direction
+    e.direct(0, 1.0, 0.0, 0.0, 0.0, false, true, true);
+    e.dash(0, true);
+    e.frame();
+    e.dash(0, false);
+    run(&mut e, 6);
+    let x1 = e.game().w.position(p1);
+    let moved = (x1 - x0).length();
+    // walking 7 ticks covers ~1 unit; the dash adds ~2.9
+    assert!(moved > 2.4, "dash distance {moved}");
+    let k = e.game().player_of[&p1];
+    assert!(e.game().players[k].dash_cd > 0, "cooldown running");
+    // pressing again during cooldown does nothing
+    e.dash(0, true);
+    e.frame();
+    e.dash(0, false);
+    assert_eq!(e.game().players[k].dash_t, 0, "no dash during cooldown");
+    run(&mut e, 50);
+    e.dash(0, true);
+    e.frame();
+    assert!(e.game().players[k].dash_t > 0, "dash available again after 1 s");
+}

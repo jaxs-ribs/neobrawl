@@ -162,6 +162,9 @@ export class Engine {
     set_desktop(on) {
         wasm.engine_set_desktop(this.__wbg_ptr, on);
     }
+    toggle_pause() {
+        wasm.engine_toggle_pause(this.__wbg_ptr);
+    }
     /**
      * Mouse cursor in screen pixels (origin bottom-left), or negative to clear.
      * @param {number} x
@@ -184,6 +187,14 @@ export class Engine {
      */
     direct(player, mx, my, ax, ay, aiming, use_cursor, active) {
         wasm.engine_direct(this.__wbg_ptr, player, mx, my, ax, ay, aiming, use_cursor, active);
+    }
+    /**
+     * Dash button state for player 0/1 (Shift / controller A).
+     * @param {number} player
+     * @param {boolean} held
+     */
+    dash(player, held) {
+        wasm.engine_dash(this.__wbg_ptr, player, held);
     }
     /**
      * @param {boolean} down

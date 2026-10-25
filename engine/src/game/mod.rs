@@ -18,7 +18,7 @@ use crate::physics::Physics;
 use crate::scene::World;
 use crate::ui::{Layout, Screen};
 
-pub use players::Player;
+pub use players::{Player, DASH_COOLDOWN, DASH_SPEED, DASH_TICKS};
 pub use tasks::Task;
 
 pub const DT: f32 = 0.02;
@@ -89,6 +89,7 @@ pub struct Direct {
     pub aim: V2,
     pub aiming: bool,
     pub use_cursor: bool,
+    pub dash: bool,
 }
 
 #[derive(Default, Clone)]

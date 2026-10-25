@@ -17,14 +17,13 @@
   #help kbd { font: 11px ui-monospace, monospace; border: 1px solid #ccc; border-radius: 3px; padding: 0 3px; }
   #debug { position: fixed; left: 8px; top: 8px; font: 11px/1.35 ui-monospace, monospace; color: #070;
     background: #fffd; padding: 6px 8px; white-space: pre; pointer-events: none; }
-  @media (hover: none) { #help { display: none; } }
 </style>
 </head>
 <body>
 <canvas id="screen"></canvas>
 <div id="overlay"><div><h1>NEOBRAWL</h1><p id="status">loading…</p></div></div>
-<div id="help">P1 <kbd>WASD</kbd> move · mouse aims · hold click to charge, release to throw<br>
-P2 controller (left stick move, right stick aim) or <kbd>←↑↓→</kbd> move + <kbd>I</kbd><kbd>J</kbd><kbd>K</kbd><kbd>L</kbd> aim</div>
+<div id="help">P1 <kbd>WASD</kbd> move · mouse aims · hold click to charge, release to throw · <kbd>Shift</kbd> dash<br>
+P2 controller (sticks, <kbd>A</kbd> dash) or <kbd>←↑↓→</kbd> + <kbd>I</kbd><kbd>J</kbd><kbd>K</kbd><kbd>L</kbd> aim + right <kbd>Shift</kbd> dash · <kbd>Esc</kbd> pause</div>
 <div id="debug" hidden></div>
 <script type="module" src="./main.js"></script>
 </body>
