@@ -68,6 +68,8 @@ pub struct Player {
 pub const DASH_TICKS: u32 = 6;
 pub const DASH_SPEED: f32 = 24.0;
 pub const DASH_COOLDOWN: u32 = 50;
+/// Speed given up at full charge (0.45 = 55% pace).
+pub const CHARGE_SLOW: f32 = 0.45;
 
 #[derive(Clone, Debug, Default)]
 pub struct Burner {
@@ -259,9 +261,13 @@ impl Game {
         // a short ramp keeps it smooth but never floaty: quicker to brake
         // and to reverse than to get going
         let target = if ctl.active { ctl.mv } else { V2::ZERO };
+        // holding a charge costs speed in proportion to it: full speed at the
+        // start, ~55% at full charge; letting go gives it all back at once
+        let charge = if ctl.aiming && p.picked_box.is_some() { (p.charge_timer / 90.0).clamp(0.0, 1.0) } else { 0.0 };
+        p.pace = 1.0 - CHARGE_SLOW * charge;
         let mut uturn = false;
         if self.input.snake {
-            uturn = Self::snake_steer(p, target, ctl.aiming);
+            uturn = Self::snake_steer(p, target);
         } else {
             let braking = target.is_zero() || (target.x * p.cmd.x + target.y * p.cmd.y) < 0.0;
             let a = 1.0 - (-DT / if braking { 0.025 } else { 0.04 }).exp();
@@ -270,7 +276,7 @@ impl Game {
                 p.cmd = V2::ZERO;
             }
             p.touch[0] = p.cmd.normalized();
-            p.mag[0] = p.cmd.len().min(1.0);
+            p.mag[0] = p.cmd.len().min(1.0) * p.pace;
             if !target.is_zero() {
                 p.facing = target.normalized();
             }
@@ -300,6 +306,8 @@ impl Game {
             };
             p.dash_dir = dir;
             p.dash_speed = DASH_SPEED;
+            // bailing out with a dash costs the shot you were winding up
+            p.charge_timer = 0.0;
             p.dash_t = DASH_TICKS;
             p.dash_cd = DASH_COOLDOWN;
             dashed = true;
@@ -342,15 +350,14 @@ impl Game {
     }
 
     /// Snake movement: always going; a new press sets a heading that is
-    /// curved into fast, a head-on wall glances you along it, charging
-    /// slows you to a crawl, and a turn during a dash bends the dash (it
-    /// bleeds speed the sharper it is). Returns true on a U-turn.
-    fn snake_steer(p: &mut Player, mv: V2, aiming: bool) -> bool {
+    /// curved into fast, a head-on wall glances you along it, and a turn
+    /// during a dash bends the dash (it bleeds speed the sharper it is).
+    /// Pace (charge slowdown) is set by the caller. Returns true on a U-turn.
+    fn snake_steer(p: &mut Player, mv: V2) -> bool {
         const TURN: f32 = 0.55; // rad per tick: ~90 degrees in 60 ms
         if p.heading.is_zero() {
             p.heading = if !p.facing.is_zero() { p.facing } else { v2(1.0, 0.0) };
             p.steer = p.heading;
-            p.pace = 1.0;
         }
         let fresh = !mv.is_zero() && ((mv.x - p.last_mv.x).abs() + (mv.y - p.last_mv.y).abs()) > 0.01;
         p.last_mv = mv;
@@ -379,10 +386,6 @@ impl Game {
         d = d.sin().atan2(d.cos());
         let na = ang + d.clamp(-TURN, TURN);
         p.heading = v2(na.cos(), na.sin());
-        // pace: a crawl while holding a charged box, full otherwise
-        let crawl = aiming && p.picked_box.is_some();
-        let want_pace = if crawl { 0.25 } else { 1.0 };
-        p.pace += (want_pace - p.pace) * 0.25;
         p.cmd = v2(p.heading.x * p.pace, p.heading.y * p.pace);
         p.touch[0] = p.heading;
         p.mag[0] = p.pace;
