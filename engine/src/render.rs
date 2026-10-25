@@ -173,6 +173,19 @@ impl Game {
                     .map(|s| s.color)
                     .unwrap_or([0.2, 0.2, 0.2, 1.0]);
                 let d = dist(pos);
+                // orbit-aim reticle (pointer-locked mouse / aim stick): always visible
+                if let Some(slot) = self.direct_slot_pub(p) {
+                    let ctl = self.input.direct[slot];
+                    if ctl.active && !ctl.use_cursor && ctl.aim.len() > 0.05 && ring >= 0.0 {
+                        let a = ctl.aim.normalized();
+                        let c0 = pos + v3(a.x, a.y, 0.0) * 1.3;
+                        let rad = if ctl.aiming { 0.14 } else { 0.11 };
+                        let mut c = color;
+                        c[3] = if ctl.aiming { 0.9 } else { 0.55 };
+                        let q = [c0 + v3(-rad, -rad, 0.0), c0 + v3(rad, -rad, 0.0), c0 + v3(rad, rad, 0.0), c0 + v3(-rad, rad, 0.0)];
+                        items.push(Item { order: 4, dist: d - 0.01, seq: p.node, rec: quad(ring, q, [0.0, 0.0, 1.0, 1.0], c) });
+                    }
+                }
                 if p.dash_cd > 0 {
                     let f = 1.0 - p.dash_cd as f32 / crate::game::DASH_COOLDOWN as f32;
                     let n = 32;

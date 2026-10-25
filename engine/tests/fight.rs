@@ -244,3 +244,23 @@ fn shift_dash_bursts_then_cools_down() {
     e.frame();
     assert!(e.game().players[k].dash_t > 0, "dash available again after 1 s");
 }
+
+#[test]
+fn orbit_aim_throws_along_the_reticle_regardless_of_camera() {
+    let mut e = start_match(5);
+    e.set_desktop(true);
+    assert!(fetch_box_desktop(&mut e));
+    let (p1, _) = player_nodes(&e);
+    let k = e.game().player_of[&p1];
+    let b = e.game().players[k].picked_box.unwrap();
+    // reticle straight up, charge for 40 ticks while the camera does whatever it does
+    for _ in 0..40 {
+        e.direct(0, 0.0, 0.0, 0.0, 1.0, true, false, true);
+        e.frame();
+    }
+    e.direct(0, 0.0, 0.0, 0.0, 1.0, false, false, true);
+    e.frame();
+    e.frame();
+    let v = e.game().w.nodes[b].body.as_ref().unwrap().velocity;
+    assert!(v.y > 15.0 && v.x.abs() < 1.0, "thrown straight up: {v:?}");
+}

@@ -20,8 +20,10 @@ web/            index.html + main.js (WebGPU, touch/keyboard/gamepad, WebAudio) 
 
 ## Controls
 
-- **Desktop:** P1 moves with `WASD` and aims at the mouse cursor — hold the left button to
-  charge, release to throw. P2 uses a controller (left stick move, right stick aim, release
+- **Desktop:** P1 moves with `WASD`. Click into a match and the mouse is captured: moving it
+  swings an aim reticle around your blob (independent of the drifting camera — great on
+  trackpads); hold the button to charge, release to throw. `Esc` frees the mouse and pauses.
+  Without pointer lock it falls back to aiming at the cursor. P2 uses a controller (left stick move, right stick aim, release
   to throw) or arrows + `I J K L`. With two controllers they drive both players.
   Movement has a short acceleration ramp. **Dash:** left `Shift`/`Space` (P1), right `Shift`
   or controller `A`/bumpers (P2) — a 0.12 s burst with a 1 s cooldown shown as a ring

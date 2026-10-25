@@ -2,7 +2,9 @@
 // maps touch / keyboard / gamepads to the original twin-stick controls.
 // URL flags: ?debug  ?mute  ?fresh (ignore saved prefs)  ?seed=N
 
-import init, { Engine } from "./pkg/neobrawl.js";
+// the build stamps ?v=<hash> on this script; pass it on to the engine files
+const V = new URL(import.meta.url).search;
+const { default: init, Engine } = await import(`./pkg/neobrawl.js${V}`);
 
 const params = new URLSearchParams(location.search);
 const TICK = 1 / 50;
@@ -328,6 +330,19 @@ class Renderer {
 // take over both players (left stick move, right stick aim, release to throw).
 const keys = new Set();
 let mouseHeld = false;
+// Orbit aiming: in a match the mouse is pointer-locked and steers a reticle
+// around player 1, so aim never depends on where the (lagging) camera is.
+let locked = false;
+const orbit = { x: 1, y: 0 };
+const ORBIT_SENS = 0.012;
+// dash presses are latched so a quick tap between two game ticks still counts
+const dashLatch = [false, false];
+const dashPlayer = (e) => {
+  if (e.code === "Space" || e.code === "ShiftLeft") return 0;
+  if (e.code === "ShiftRight") return 1;
+  if (e.key === "Shift") return e.location === 2 ? 1 : 0; // keyboards without a left/right code
+  return -1;
+};
 const desktop = true; // desktop edition: keyboard, mouse and controllers only
 const axis = (up, left, down, right) => {
   const x = (keys.has(right) ? 1 : 0) - (keys.has(left) ? 1 : 0), y = (keys.has(up) ? 1 : 0) - (keys.has(down) ? 1 : 0);
@@ -354,8 +369,9 @@ function pollControls() {
     engine.dash(0, p.dash);
   } else {
     const [mx, my] = axis("KeyW", "KeyA", "KeyS", "KeyD");
-    engine.direct(0, mx, my, 0, 0, mouseHeld, true, true);
-    engine.dash(0, keys.has("ShiftLeft") || keys.has("Space"));
+    if (locked) engine.direct(0, mx, my, orbit.x, orbit.y, mouseHeld, false, true);
+    else engine.direct(0, mx, my, 0, 0, mouseHeld, true, true);
+    engine.dash(0, keys.has("ShiftLeft") || keys.has("Space") || keys.has("Shift0") || dashLatch[0]);
   }
   // player 2: last pad, else arrows + IJKL (hold IJKL to charge in that direction)
   const pad2 = pads.length >= 2 ? pads[1] : pads[0];
@@ -364,16 +380,17 @@ function pollControls() {
   if (pad2) {
     const p = padSticks(pad2);
     engine.direct(1, p.mx || kx, p.my || ky, p.aiming ? p.ax : ax, p.aiming ? p.ay : ay, p.aiming || !!(ax || ay), false, true);
-    engine.dash(1, p.dash || keys.has("ShiftRight"));
+    engine.dash(1, p.dash || keys.has("ShiftRight") || keys.has("Shift1") || dashLatch[1]);
   } else {
     engine.direct(1, kx, ky, ax, ay, !!(ax || ay), false, true);
-    engine.dash(1, keys.has("ShiftRight"));
+    engine.dash(1, keys.has("ShiftRight") || keys.has("Shift1") || dashLatch[1]);
   }
   engine.any_key(keys.size > 0 || mouseHeld);
+  dashLatch[0] = dashLatch[1] = false;
 }
 
 async function main() {
-  const [wasm, sceneText, assetsText] = await Promise.all([init(), fetch("assets/scene.json").then((r) => r.text()), fetch("assets/assets.json").then((r) => r.text())]);
+  const [wasm, sceneText, assetsText] = await Promise.all([init(`./pkg/neobrawl_bg.wasm${V}`), fetch(`assets/scene.json${V}`).then((r) => r.text()), fetch(`assets/assets.json${V}`).then((r) => r.text())]);
   const assets = JSON.parse(assetsText);
   const cssW = () => canvas.clientWidth || innerWidth, cssH = () => canvas.clientHeight || innerHeight;
   engine = new Engine(sceneText, assetsText, loadPrefs(), BigInt(params.get("seed") || Math.floor(Math.random() * 2 ** 31)), cssW(), cssH());
@@ -392,12 +409,32 @@ async function main() {
 
   const toGame = (e) => { const b = canvas.getBoundingClientRect(); return [e.clientX - b.left, b.height - (e.clientY - b.top)]; };
   const ptr = (kind) => (e) => { audio?.unlock(); if (kind === 0) canvas.setPointerCapture?.(e.pointerId); const [x, y] = toGame(e); engine.pointer(e.pointerId, x, y, kind); e.preventDefault(); };
-  canvas.addEventListener("pointerdown", (e) => { if (e.button === 0) mouseHeld = true; ptr(0)(e); });
+  const inPlay = () => { const s = JSON.parse(engine.state()).screens; return s.includes("game") || s.includes("tutorial"); };
+  canvas.addEventListener("pointerdown", (e) => {
+    if (e.button === 0) mouseHeld = true;
+    if (locked) return; // clicks while locked are throws, not UI clicks
+    ptr(0)(e);
+    if (inPlay() && !params.has("nolock")) canvas.requestPointerLock?.()?.catch?.(() => {});
+  });
   canvas.addEventListener("pointermove", (e) => {
-    if (desktop) { const [x, y] = toGame(e); engine.cursor(x, y); }
+    if (locked) {
+      orbit.x += e.movementX * ORBIT_SENS;
+      orbit.y -= e.movementY * ORBIT_SENS;
+      const l = Math.hypot(orbit.x, orbit.y) || 1;
+      orbit.x /= l; orbit.y /= l;
+      return;
+    }
+    const [x, y] = toGame(e); engine.cursor(x, y);
     if (e.buttons || e.pointerType === "touch") ptr(1)(e);
   });
-  const up = (e) => { if (e.button === 0) mouseHeld = false; ptr(2)(e); };
+  document.addEventListener("pointerlockchange", () => {
+    const now = document.pointerLockElement === canvas;
+    // Esc releases the lock (the browser eats that keydown): treat it as pause
+    if (locked && !now && inPlay()) engine.toggle_pause();
+    locked = now;
+    canvas.style.cursor = locked ? "none" : "crosshair";
+  });
+  const up = (e) => { if (e.button === 0) mouseHeld = false; if (!locked) ptr(2)(e); };
   canvas.addEventListener("pointerup", up);
   canvas.addEventListener("pointercancel", up);
   canvas.addEventListener("pointerleave", () => engine.cursor(-1, -1));
@@ -407,11 +444,13 @@ async function main() {
   addEventListener("keydown", (e) => {
     audio?.unlock();
     if (e.metaKey || e.ctrlKey) return;
-    if (e.code === "Escape" && !e.repeat) engine.toggle_pause();
+    if (e.code === "Escape" && !e.repeat && !locked) engine.toggle_pause();
+    const dp = dashPlayer(e);
+    if (dp >= 0 && !e.repeat) { dashLatch[dp] = true; if (!e.code) keys.add("Shift" + dp); }
     keys.add(e.code);
     if (e.code.startsWith("Arrow") || e.code === "Space") e.preventDefault();
   });
-  addEventListener("keyup", (e) => keys.delete(e.code));
+  addEventListener("keyup", (e) => { keys.delete(e.code); const dp = dashPlayer(e); if (dp >= 0) keys.delete("Shift" + dp); });
   addEventListener("blur", () => { keys.clear(); mouseHeld = false; });
   addEventListener("resize", () => engine.set_screen(cssW(), cssH()));
 

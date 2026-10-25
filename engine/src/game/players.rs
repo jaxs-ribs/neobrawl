@@ -224,6 +224,13 @@ impl Game {
         Some(if p.single || p.player1 { 0 } else { 1 })
     }
 
+    pub fn direct_slot_pub(&self, p: &Player) -> Option<usize> {
+        if !self.input.desktop || p.playback {
+            return None;
+        }
+        Some(if p.single || p.player1 { 0 } else { 1 })
+    }
+
     /// Desktop input: smoothed movement and mouse / stick aiming.
     fn direct_fixed(&mut self, k: usize, slot: usize) {
         let ctl = self.input.direct[slot];
