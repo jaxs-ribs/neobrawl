@@ -51,6 +51,7 @@ impl Game {
         let ui_order = self.ui_draw_order();
         let ui_seq: std::collections::HashMap<usize, usize> = ui_order.iter().enumerate().map(|(k, &n)| (n, k)).collect();
         let lerp = self.interp_offsets();
+        let deform = self.body_deforms();
         let shift = |i: usize, mut m: Mat4| {
             if let Some(o) = lerp.get(&i) {
                 m.0[12] += o.x;
@@ -89,7 +90,19 @@ impl Game {
                 if !interesting || !w.active_in_hierarchy(i) {
                     continue;
                 }
-                let m = if ui.is_some() { self.layout.matrix(w, i) } else { shift(i, w.matrix(i)) };
+                let m = if ui.is_some() {
+                    self.layout.matrix(w, i)
+                } else {
+                    let mut base = w.matrix(i);
+                    if let Some(d) = deform.get(&i) {
+                        base = d.mul(&base);
+                    }
+                    if let Some((o, _)) = self.motion.jostles.get(&i).or_else(|| n.parent.and_then(|p| self.motion.jostles.get(&p))) {
+                        base.0[12] += o.x;
+                        base.0[13] += o.y;
+                    }
+                    shift(i, base)
+                };
                 if let Some((mesh, mat, true)) = n.mesh {
                     let mut r = [0.0; RECORD];
                     r[1] = mesh as f32;
@@ -120,8 +133,12 @@ impl Game {
                             // traced vector fill instead of the bitmap
                             let k = self.form_of(i).map(|f| f.0).unwrap_or(1.0);
                             let color = [color[0] * v.ink[0], color[1] * v.ink[1], color[2] * v.ink[2], color[3]];
+                            let flexing = self.motion.flex.iter().any(|f| f.node == i);
                             for t in &v.tris {
-                                let pt = |x: f32, y: f32| center + (m.point(v3(x, y, 0.0)) - center) * k;
+                                let pt = |x: f32, y: f32| {
+                                    let q = center + (m.point(v3(x, y, 0.0)) - center) * k;
+                                    if flexing { q + self.motion.flex_at(i, q) } else { q }
+                                };
                                 let (a, b, c) = (pt(t[0], t[1]), pt(t[2], t[3]), pt(t[4], t[5]));
                                 items.push(Item { order: s.order, dist: d, seq, rec: quad(-1.0, [a, b, c, c], [0.0, 0.0, 1.0, 1.0], color) });
                             }
@@ -302,6 +319,9 @@ impl Game {
             let tx = crate::motion::Tex { disc, soft, ring };
             self.motion.emit(false, &tx, |p| dist(p), |rec, d| items.push(Item { order: 6, dist: d, seq: 0, rec }));
             self.shard_items(|p| dist(p), |rec, d| items.push(Item { order: 4, dist: d, seq: 0, rec }));
+            if w.nodes[cam].tag == "MainCamera" {
+                self.arena_hum(|p| dist(p), |rec, d| items.push(Item { order: 1, dist: d, seq: 0, rec }));
+            }
             items.sort_by(|a, b| a.order.cmp(&b.order).then(b.dist.partial_cmp(&a.dist).unwrap_or(std::cmp::Ordering::Equal)).then(a.seq.cmp(&b.seq)));
             for it in items {
                 out.extend_from_slice(&it.rec);
@@ -732,6 +752,54 @@ impl Game {
             let pt = |q: [f32; 2]| c + v3((q[0] * cs - q[1] * sn) * hs, (q[0] * sn + q[1] * cs) * hs, 0.0);
             let (a, b, cc) = (pt(p.tri[0]), pt(p.tri[1]), pt(p.tri[2]));
             push(quad(-1.0, [a, b, cc, cc], [0.0, 0.0, 1.0, 1.0], [0.067, 0.067, 0.067, life * life]), dist(c) - 0.002);
+        }
+    }
+}
+
+impl Game {
+    /// In a lull the arena holds its breath: faint ink outlines on the
+    /// obstacles, a slow wave running round each.
+    fn arena_hum(&self, dist: impl Fn(V3) -> f32, mut push: impl FnMut([f32; RECORD], f32)) {
+        let idle = ((self.motion.now - self.motion.last_action - 1.5) / 2.0).clamp(0.0, 1.0);
+        if idle <= 0.0 || self.players.iter().all(|p| !self.w.active_in_hierarchy(p.node)) {
+            return;
+        }
+        let t = self.motion.render_now;
+        let Some(cam) = self.camera_main() else { return };
+        let cp = self.w.position(cam);
+        for i in 0..self.w.nodes.len() {
+            let n = &self.w.nodes[i];
+            let Some(s) = n.sprite.as_ref().filter(|s| s.enabled) else { continue };
+            if n.collider.is_none() || self.player_of.contains_key(&i) || self.layout.canvas_of.contains_key(&i) {
+                continue;
+            }
+            if s.sprite.and_then(|k| self.w.sprites[k].vector.as_ref()).is_none() || !self.w.active_in_hierarchy(i) {
+                continue;
+            }
+            let c = self.w.position(i);
+            if (c.x - cp.x).abs() > 22.0 || (c.y - cp.y).abs() > 14.0 {
+                continue;
+            }
+            let Some(rings) = self.outline_world(i) else { continue };
+            // float just outside the shape (ink on ink would vanish), breathing
+            let swell = 0.06 + 0.02 * (t * 1.1 + i as f32).sin();
+            let ring: Vec<V3> = rings[0]
+                .iter()
+                .map(|&q| {
+                    let d = q - c;
+                    let l = (d.x * d.x + d.y * d.y).sqrt().max(1e-4);
+                    q + v3(d.x / l, d.y / l, 0.0) * swell
+                })
+                .collect();
+            let m = ring.len() - 1;
+            for k in (0..m).step_by(2) {
+                let wave = 0.5 + 0.5 * ((k as f32 / m as f32) * std::f32::consts::TAU * 2.0 - t * 1.4 + i as f32 * 0.7).sin();
+                let a = 0.24 * idle * wave * wave;
+                if a < 0.008 {
+                    continue;
+                }
+                ribbon(&ring[k..=(k + 1).min(m)], 0.018, [0.04, 0.04, 0.06, a], -1.0, |rec| push(rec, dist(c) - 0.01));
+            }
         }
     }
 }

@@ -111,6 +111,7 @@ impl Game {
         self.play(&clip, 5.0 / 5.0);
         if self.w.nodes[other].layer != crate::physics::LAYER_PLAYER {
             self.fx_impact(pos, normal);
+            self.fx_flex(other, pos, normal);
         }
         let prev = self.boxes[b].prev_vel;
         let other_tag = self.w.nodes[other].tag.clone();

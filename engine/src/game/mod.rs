@@ -2,6 +2,7 @@
 //! one-screen match. Each MonoBehaviour is ported as a state struct plus
 //! methods on `Game`; coroutines become `Task`s stepped once per FixedUpdate.
 
+mod body;
 mod boxes;
 mod fx;
 mod matchplay;
@@ -177,6 +178,8 @@ pub struct Game {
     pub prev_pos: HashMap<usize, V3>,
     /// Shard Lab debris and electricity
     pub shards: crate::shards::ShardSim,
+    /// soft-body state per player (render-only springs)
+    pub bodies: Vec<body::SoulBody>,
 }
 
 pub fn field<'a>(w: &'a World, node: usize, script: &str, name: &str) -> &'a Value {
@@ -232,6 +235,7 @@ impl Game {
             kill_impulse: V3::ZERO,
             prev_pos: HashMap::new(),
             shards: crate::shards::ShardSim::new(0x5eed),
+            bodies: Vec::new(),
         };
         for i in 0..g.w.nodes.len() {
             if let Some(clip) = g.w.nodes[i].audio.clone() {
@@ -269,6 +273,7 @@ impl Game {
         self.update();
         self.relayout();
         self.ui_events();
+        self.bodies_step();
         self.fx_step();
     }
 

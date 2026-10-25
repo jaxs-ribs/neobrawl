@@ -289,3 +289,27 @@ fn picking_up_a_box_refills_the_dash() {
     // and the moment is drawn
     assert!(!e.game().motion.fx.is_empty(), "pickup leaves motion graphics");
 }
+
+#[test]
+fn souls_stretch_when_moving_and_squash_when_stopping() {
+    let mut e = start_match(8);
+    e.set_desktop(true);
+    let (p1, _) = player_nodes(&e);
+    let k = e.game().player_of[&p1];
+    let mut max_st = 0.0f32;
+    for _ in 0..25 {
+        e.direct(0, 0.0, 1.0, 0.0, 0.0, false, true, true);
+        e.frame();
+        max_st = max_st.max(e.game().bodies[k].st);
+    }
+    assert!(max_st > 0.08, "stretches along its run: {max_st}");
+    let mut min_st = 0.0f32;
+    for _ in 0..25 {
+        e.direct(0, 0.0, 0.0, 0.0, 0.0, false, true, true);
+        e.frame();
+        min_st = min_st.min(e.game().bodies[k].st);
+    }
+    assert!(min_st < -0.03, "squashes as it stops: {min_st}");
+    // and the deformation reaches the renderer
+    assert!(!e.game().body_deforms().is_empty());
+}

@@ -28,6 +28,8 @@ pub enum Kind {
     Flash { c: V3, r: f32 },
     /// a short tapered stroke that fades (dart trails)
     Streak { a: V3, b: V3, w: f32 },
+    /// a soul flattened by a blow (angle of the hit), then gone
+    Blob { c: V3, a: f32, r: f32 },
 }
 
 #[derive(Clone, Debug)]
@@ -76,8 +78,21 @@ pub struct Snap {
     pub button: bool,
 }
 
+/// An obstacle flexing where it was struck (render-only).
+#[derive(Clone, Debug)]
+pub struct Flex {
+    pub node: usize,
+    pub p: V3,
+    pub dir: V3,
+    pub t0: f32,
+    pub amp: f32,
+}
+
 #[derive(Default)]
 pub struct Motion {
+    pub flex: Vec<Flex>,
+    /// boxes nudged by nearby blows: node -> (offset, velocity)
+    pub jostles: HashMap<usize, (V3, V3)>,
     pub fx: Vec<Fx>,
     /// game time of the last fixed step (s)
     pub now: f32,
@@ -269,7 +284,35 @@ impl Motion {
             }
         }
         self.fx.retain(|f| now < f.t0 + f.life);
+        self.flex.retain(|f| now - f.t0 < 0.8);
+        // jostled boxes spring home
+        let (k, c) = (160.0f32, 2.0 * 160.0f32.sqrt() * 0.3);
+        for (_, (x, v)) in self.jostles.iter_mut() {
+            *v = *v + (*x * -k - *v * c) * dt;
+            *x = *x + *v * dt;
+        }
+        self.jostles.retain(|_, (x, v)| x.length() + v.length() > 1e-3);
         self.forms.retain(|_, t| now < *t + 3.0);
+    }
+
+    pub fn jostle(&mut self, node: usize, kick: V3) {
+        let e = self.jostles.entry(node).or_insert((V3::ZERO, V3::ZERO));
+        e.1 = e.1 + kick;
+    }
+
+    /// Displacement of a world point on a flexing obstacle.
+    pub fn flex_at(&self, node: usize, q: V3) -> V3 {
+        let mut d = V3::ZERO;
+        for f in self.flex.iter().filter(|f| f.node == node) {
+            let age = self.render_now - f.t0;
+            if age < 0.0 {
+                continue;
+            }
+            let r2 = (q.x - f.p.x).powi(2) + (q.y - f.p.y).powi(2);
+            let w = (-r2 / 0.3).exp() * (age * 38.0).sin() * (-age * 7.0).exp();
+            d = d + f.dir * (f.amp * w);
+        }
+        d
     }
 
     /// Add a smooth, decaying shake (strongest wins).
@@ -430,6 +473,18 @@ impl Motion {
                 Kind::Streak { a, b, w } => {
                     col[3] *= (1.0 - u) * (1.0 - u);
                     ribbon_tapered(&[*a, *b], [0.0, w * (1.0 - 0.5 * u)], col, -1.0, |rec| push(rec, depth(*b)));
+                }
+                Kind::Blob { c, a, r } => {
+                    // squashed along the hit, spreading across it, then gone
+                    let along = r * (0.7 - 0.45 * ease_out(u));
+                    let across = r * (1.3 + 0.9 * ease_out(u));
+                    col[3] *= 1.0 - u * u;
+                    let (s, co) = a.sin_cos();
+                    let ax = v3(co, s, 0.0) * along;
+                    let ay = v3(-s, co, 0.0) * across;
+                    if tex.disc >= 0.0 {
+                        push(quad(tex.disc, [*c - ax - ay, *c + ax - ay, *c + ax + ay, *c - ax + ay], [0.0, 0.0, 1.0, 1.0], col), depth(*c));
+                    }
                 }
                 Kind::Flash { c, r } => {
                     // ink on paper, not glow: barely there

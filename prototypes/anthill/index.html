@@ -7,15 +7,22 @@
 <style>
   :root { --bg: #fbfbfb; --ink: #111; --dim: #8a8a8a; }
   html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; font: 12px/1.4 system-ui, sans-serif; color: var(--ink); user-select: none; }
-  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; cursor: crosshair; }
+  canvas#c { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; cursor: crosshair; }
   #ui { position: fixed; left: 16px; top: 14px; display: flex; flex-direction: column; gap: 6px; max-width: calc(100vw - 32px); }
   h1 { font-weight: 300; letter-spacing: .45em; font-size: 15px; margin: 0 0 4px; }
   .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; color: var(--dim); }
-  .row label { display: flex; gap: 6px; align-items: center; }
-  input[type=range] { width: 90px; accent-color: #111; }
-  button { font: inherit; background: none; border: 1px solid #ccc; border-radius: 3px; padding: 2px 8px; cursor: pointer; color: var(--ink); }
+  .row label { display: flex; gap: 5px; align-items: center; }
+  input[type=range] { width: 80px; accent-color: #111; }
+  button, select { font: inherit; background: none; border: 1px solid #ccc; border-radius: 3px; padding: 2px 8px; cursor: pointer; color: var(--ink); }
   button:hover { border-color: #111; }
-  #stat { color: var(--dim); }
+  button.on { border-color: #111; background: #111; color: #fbfbfb; }
+  #stat, #log { color: var(--dim); }
+  #gallery { position: fixed; right: 12px; top: 12px; bottom: 34px; width: 268px; overflow-y: auto; display: none; grid-template-columns: 1fr 1fr; gap: 6px; align-content: start; }
+  #gallery.show { display: grid; }
+  #gallery div { position: relative; cursor: pointer; border: 1px solid #e4e4e4; border-radius: 3px; background: #fbfbfb; }
+  #gallery div:hover { border-color: #111; }
+  #gallery canvas { width: 100%; display: block; }
+  #gallery span { position: absolute; left: 4px; bottom: 2px; font-size: 10px; color: var(--dim); }
   #hint { position: fixed; right: 16px; bottom: 12px; color: var(--dim); text-align: right; pointer-events: none; }
 </style>
 </head>
@@ -24,496 +31,486 @@
 <div id="ui">
   <h1>ANTHILL</h1>
   <div class="row">
-    <button data-p="seed">garden</button><button data-p="maze">labyrinth</button><button data-p="mega">megastructure</button><button data-p="swarm">swarm</button><button data-p="raid">raid · 2014 vs 35</button>
-  </div>
-  <div class="row">
-    <label>order <input id="order" type="range" min="2" max="6" value="5"></label>
-    <label>loops <input id="loops" type="range" min="0" max="40" value="4"></label>
-    <label>ants <input id="ants" type="range" min="0" max="4000" step="1" value="2014"></label>
-    <label><select id="sym"><option value="rot">C4 rotate</option><option value="mir">D2 mirror</option></select></label>
+    <label>fold <select id="fold"><option>1</option><option>2</option><option>3</option><option selected>4</option><option>6</option></select></label>
+    <label>food <input id="food" type="range" min="4" max="24" value="11"></label>
+    <label>hilbert <input id="hil" type="range" min="0" max="3" value="2"></label>
+    <label>ants <input id="ants" type="range" min="0" max="5000" step="1" value="2014"></label>
     <button id="reseed">reseed</button>
+    <button id="evolve">evolve 64 on GPU</button>
+    <button id="raid">raid 35</button>
+  </div>
+  <div class="row" id="layers">
+    show <button data-l="biome">1 biome</button><button data-l="graph">2 graph</button><button data-l="terrain" class="on">3 terrain</button><button data-l="flow">4 flow</button><button data-l="ants" class="on">ants</button>
   </div>
   <div id="stat"></div>
+  <div id="log"></div>
 </div>
+<div id="gallery"></div>
 <div id="hint">scroll to zoom · drag to pan · click to drop an intruder</div>
 <script>
-const cv = document.getElementById("c"), g = cv.getContext("2d");
-const INK = "#111", RED = "rgb(255,32,32)", BLUE = "rgb(64,128,255)";
-const CELL = 2.4; // one wall length, as in the game (lens 2.4, box 0.86)
-let W = 0, H = 0, dpr = 1;
-const view = { x: 0, y: 0, s: 30 }; // s = px per world unit
-let map = null, ants = [], intruders = [], stock = 20, seed = 7, kills = 0, target = 2014, born = 0, lost = 0, births = [];
+// =====================================================================
+// Pipeline:  1 biome (food)  ->  2 nests at food centroids + curved trail graph
+//            -> 3 terrain from ONE wall (lens, 2.4) and ONE box (0.86), in layers
+//               that add, add-politely or carve  ->  4 grid solver: reachability,
+//               repair, flow fields  ->  ants.  "evolve" scores many seeds at once
+//               with a WebGPU distance relaxation and lets you pick.
+// =====================================================================
+const L = 2.4, BOX = 0.86, S = 160, TAU = Math.PI * 2, INK = "#111", BG = "#fbfbfb";
+const $ = (id) => document.getElementById(id);
+function rng(seed) { let a = seed >>> 0; return () => { a = (a + 0x6d2b79f5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+const hash = (...v) => { let h = 2166136261; for (const x of v) { h ^= x | 0; h = Math.imul(h, 16777619); h ^= h >>> 13; } return (h >>> 0) / 4294967296; };
+const rot = (p, a) => [p[0] * Math.cos(a) - p[1] * Math.sin(a), p[0] * Math.sin(a) + p[1] * Math.cos(a)];
+const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+function d2xy(n, d) { let x = 0, y = 0, t = d; for (let s = 1; s < n; s *= 2) { const rx = 1 & (t / 2), ry = 1 & (t ^ rx); if (ry === 0) { if (rx === 1) { x = s - 1 - x; y = s - 1 - y; } const tmp = x; x = y; y = tmp; } x += s * rx; y += s * ry; t = Math.floor(t / 4); } return [x, y]; }
+function segDist(p, a, b) { const dx = b[0] - a[0], dy = b[1] - a[1], l2 = dx * dx + dy * dy; const t = l2 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l2)) : 0; return Math.hypot(p[0] - a[0] - dx * t, p[1] - a[1] - dy * t); }
+function segSeg(a, b, c, d) { return Math.min(segDist(a, c, d), segDist(b, c, d), segDist(c, a, b), segDist(d, a, b), crosses(a, b, c, d) ? 0 : 1e9); }
+function crosses(a, b, c, d) { const o = (p, q, r) => Math.sign((q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])); return o(a, b, c) * o(a, b, d) < 0 && o(c, d, a) * o(c, d, b) < 0; }
 
-// ---------------------------------------------------------------- hilbert
-function d2xy(n, d) {
-  let x = 0, y = 0, t = d;
-  for (let s = 1; s < n; s *= 2) {
-    const rx = 1 & (t / 2), ry = 1 & (t ^ rx);
-    if (ry === 0) { if (rx === 1) { x = s - 1 - x; y = s - 1 - y; } const tmp = x; x = y; y = tmp; }
-    x += s * rx; y += s * ry; t = Math.floor(t / 4);
+// ---------------------------------------------------------------- 3: elements
+// Only two primitives exist. A wall is a lens of length L; a box is BOX wide.
+class Terrain {
+  constructor() { this.els = []; this.grid = new Map(); this.cs = 3; }
+  key(x, y) { return (Math.floor(x / this.cs) + 1000) * 4096 + Math.floor(y / this.cs) + 1000; }
+  near(x, y, r, fn) { const c = this.cs; for (let gx = Math.floor((x - r) / c); gx <= Math.floor((x + r) / c); gx++) for (let gy = Math.floor((y - r) / c); gy <= Math.floor((y + r) / c); gy++) { const b = this.grid.get((gx + 1000) * 4096 + gy + 1000); if (b) for (const e of b) if (e.alive) fn(e); } }
+  ends(e) { const c = Math.cos(e.a) * L / 2, s = Math.sin(e.a) * L / 2; return [[e.x - c, e.y - s], [e.x + c, e.y + s]]; }
+  overlaps(e, f) {
+    if (e.t === "box" && f.t === "box") return Math.hypot(e.x - f.x, e.y - f.y) < BOX * 1.05;
+    if (e.t === "wall" && f.t === "wall") {
+      // tips may kiss; bodies may not cross
+      const [a, b] = this.ends(e), [c, d] = this.ends(f), sh = (p, q, k) => [p[0] + (q[0] - p[0]) * k, p[1] + (q[1] - p[1]) * k];
+      return segSeg(sh(a, b, 0.1), sh(b, a, 0.1), sh(c, d, 0.1), sh(d, c, 0.1)) < 0.26;
+    }
+    const w = e.t === "wall" ? e : f, bx = e.t === "box" ? e : f, [a, b] = this.ends(w);
+    return segDist([bx.x, bx.y], a, b) < BOX * 0.5 + 0.14;
   }
-  return [x, y];
+  add(e, mode, layer) {
+    // mode: "force" always lands; "polite" only where it overlaps nothing
+    e.alive = true; e.layer = layer;
+    if (mode === "polite") { let hit = false; this.near(e.x, e.y, L, (f) => { if (!hit && this.overlaps(e, f)) hit = true; }); if (hit) return false; }
+    this.els.push(e);
+    const k = this.key(e.x, e.y); let b = this.grid.get(k); if (!b) this.grid.set(k, (b = [])); b.push(e);
+    return true;
+  }
+  wall(p, q, mode, layer) { return this.add({ t: "wall", x: (p[0] + q[0]) / 2, y: (p[1] + q[1]) / 2, a: Math.atan2(q[1] - p[1], q[0] - p[0]) }, mode, layer); }
+  box(x, y, a, mode, layer) { return this.add({ t: "box", x, y, a }, mode, layer); }
+  // carve: everything whose body comes within hw of the polyline goes
+  carve(poly, hw) {
+    for (let i = 0; i < poly.length; i++) this.near(poly[i][0], poly[i][1], hw + L, (e) => {
+      const pts = e.t === "wall" ? [0.15, 0.5, 0.85].map((k) => { const [a, b] = this.ends(e); return [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k]; }) : [[e.x, e.y]];
+      const r = e.t === "box" ? hw + BOX * 0.4 : hw;
+      for (const p of pts) for (let j = Math.max(0, i - 1); j < Math.min(poly.length - 1, i + 1); j++) if (segDist(p, poly[j], poly[j + 1]) < r) { e.alive = false; return; }
+    });
+  }
+  live() { return this.els.filter((e) => e.alive); }
 }
-const hash = (a, b, c, d) => { let h = (a * 374761393 + b * 668265263 + c * 2147483647 + d * 1274126177) | 0; h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h ^ (h >>> 16)) >>> 0) / 4294967296; };
 
-// ---------------------------------------------------------------- map
-function build(order, loops, sym) {
-  const n = 1 << order, N = 2 * n;
-  // quadrant k maps local cell (x, y) to a global cell; all four curves start at the centre
-  const maps = sym === "rot"
-    ? [(x, y) => [n + x, n + y], (x, y) => [n - 1 - y, n + x], (x, y) => [n - 1 - x, n - 1 - y], (x, y) => [n + y, n - 1 - x]]
-    : [(x, y) => [n + x, n + y], (x, y) => [n - 1 - x, n + y], (x, y) => [n - 1 - x, n - 1 - y], (x, y) => [n + x, n - 1 - y]];
-  const open = new Set();
-  const ek = (a, b) => { const [p, q] = a[0] * N + a[1] < b[0] * N + b[1] ? [a, b] : [b, a]; return p[0] + "," + p[1] + "|" + q[0] + "," + q[1]; };
-  const local = [];
-  for (let d = 0; d < n * n; d++) local.push(d2xy(n, d));
-  const paths = maps.map((m) => local.map(([x, y]) => m(x, y)));
-  for (const p of paths) for (let i = 1; i < p.length; i++) open.add(ek(p[i - 1], p[i]));
-  // symmetric shortcuts: chosen once in local space, applied to every quadrant
-  for (let x = 0; x < n; x++) for (let y = 0; y < n; y++) for (const [dx, dy] of [[1, 0], [0, 1]]) {
-    if (x + dx >= n || y + dy >= n) continue;
-    if (hash(seed, x, y, dx) < loops / 100) for (const m of maps) open.add(ek(m(x, y), m(x + dx, y + dy)));
+// curves: a quadratic arc between nodes, sampled densely
+function arc(a, b, bow, n = 48) { const m = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2], l = dist(a, b), nx = -(b[1] - a[1]) / l, ny = (b[0] - a[0]) / l, c = [m[0] + nx * bow * l, m[1] + ny * bow * l]; const out = []; for (let i = 0; i <= n; i++) { const t = i / n, u = 1 - t; out.push([u * u * a[0] + 2 * u * t * c[0] + t * t * b[0], u * u * a[1] + 2 * u * t * c[1] + t * t * b[1]]); } return out; }
+function offsetPoly(P, d) { return P.map((p, i) => { const q = P[Math.min(P.length - 1, i + 1)], o = P[Math.max(0, i - 1)], dx = q[0] - o[0], dy = q[1] - o[1], l = Math.hypot(dx, dy) || 1; return [p[0] - (dy / l) * d, p[1] + (dx / l) * d]; }); }
+function trim(P, r0, r1) { const a = P[0], b = P[P.length - 1]; return P.filter((p) => dist(p, a) > r0 && dist(p, b) > r1); }
+// walk a polyline laying lenses whose chord is exactly L, tip to tip
+function chordWalk(P, fn) {
+  if (P.length < 2) return;
+  let cur = P[0], i = 0;
+  while (i < P.length - 1) {
+    let j = i + 1;
+    while (j < P.length && dist(cur, P[j]) < L) j++;
+    if (j >= P.length) break;
+    const a = P[j - 1], b = P[j];
+    // solve |cur + (a + (b - a) t) ...| = L on segment a-b
+    let lo = 0, hi = 1;
+    for (let it = 0; it < 24; it++) { const m = (lo + hi) / 2, q = [a[0] + (b[0] - a[0]) * m, a[1] + (b[1] - a[1]) * m]; if (dist(cur, q) < L) lo = m; else hi = m; }
+    const q = [a[0] + (b[0] - a[0]) * lo, a[1] + (b[1] - a[1]) * lo];
+    fn(cur, q); cur = q; i = j - 1;
   }
-  // Districts: the quadrant is cut into blocks; each block keeps the curve's
-  // topology but reads it at its own scale. Because a Hilbert curve visits
-  // every aligned 2^j square in one go, dissolving the walls inside those
-  // squares turns fine labyrinth into rooms of size 2^j while the whole stays
-  // one curve. Chosen in local space, so all four quadrants agree.
-  const B = Math.max(4, n >> 2), lb = Math.log2(B);
-  const rooms = [], roomOf = new Map();
-  for (let bx = 0; bx < n; bx += B) for (let by = 0; by < n; by += B) {
-    const h = hash(seed, bx, by, 99);
-    if (bx === 0 && by === 0) continue; // the approach to the hill stays a fine maze
-    const j = h < 0.45 ? 0 : h < 0.7 ? 1 : h < 0.88 ? 2 : Math.min(lb, 3);
-    if (j === 0) continue;
-    const R = 1 << j, pat = Math.floor(hash(seed, bx, by, 7) * 7);
-    for (let x0 = bx; x0 < bx + B; x0 += R) for (let y0 = by; y0 < by + B; y0 += R) {
-      for (let x = x0; x < x0 + R; x++) for (let y = y0; y < y0 + R; y++) {
-        for (const m of maps) {
-          if (x + 1 < x0 + R) open.add(ek(m(x, y), m(x + 1, y)));
-          if (y + 1 < y0 + R) open.add(ek(m(x, y), m(x, y + 1)));
-        }
-      }
-      for (const m of maps) {
-        const a = m(x0, y0), b = m(x0 + R - 1, y0 + R - 1);
-        const room = { x: Math.min(a[0], b[0]), y: Math.min(a[1], b[1]), R, pat, j };
-        rooms.push(room);
-        for (let x = 0; x < R; x++) for (let y = 0; y < R; y++) roomOf.set((room.x + x) * N + room.y + y, room);
-      }
-    }
+}
+// a ring of n lenses whose chords are exactly L
+const ringR = (n) => L / (2 * Math.sin(Math.PI / n));
+function ring(T, c, n, phase, mode, layer, skip) {
+  const R = ringR(n);
+  for (let k = 0; k < n; k++) { const a0 = phase + (k / n) * TAU, a1 = phase + ((k + 1) / n) * TAU; if (skip && skip(k)) continue; T.wall([c[0] + Math.cos(a0) * R, c[1] + Math.sin(a0) * R], [c[0] + Math.cos(a1) * R, c[1] + Math.sin(a1) * R], mode, layer); }
+  return R;
+}
+
+// ---------------------------------------------------------------- the pipeline
+function generate(seed, opt) {
+  const R = rng(seed), K = opt.fold, sec = TAU / K, log = [];
+  const t0 = performance.now();
+  // ---- 1. biome: food patches in one sector, Poisson-spaced, then the K copies
+  const foodS = [];
+  for (let tries = 0; foodS.length < Math.ceil(opt.food / Math.max(1, K / 2)) && tries < 4000; tries++) {
+    const r = 14 + Math.sqrt(R()) * 60, a = R() * sec, p = [Math.cos(a) * r, Math.sin(a) * r];
+    const all = foodS.flatMap((f) => Array.from({ length: K }, (_, k) => rot(f.p, k * sec)));
+    if (all.every((q) => dist(p, q) > 11) && Array.from({ length: K }, (_, k) => rot(p, k * sec)).every((q, k) => k === 0 || dist(p, q) > 11)) foodS.push({ p, rich: 0.3 + Math.pow(R(), 1.6) * 0.7 });
   }
-  // the colony chamber: the four centre cells open into each other
-  const cc = [[n - 1, n - 1], [n, n - 1], [n, n], [n - 1, n]];
-  for (let i = 0; i < 4; i++) open.add(ek(cc[i], cc[(i + 1) % 4]));
-  // exits: each curve's end opens through the outer wall
-  const exits = paths.map((p) => p[p.length - 1]);
-  // walls: every grid edge that isn't open (lens shapes on cell edges)
-  const walls = [];
-  const inside = (c) => c[0] >= 0 && c[1] >= 0 && c[0] < N && c[1] < N;
-  for (let x = 0; x <= N; x++) for (let y = 0; y < N; y++) {
-    const a = [x - 1, y], b = [x, y];
-    if (inside(a) && inside(b) && open.has(ek(a, b))) continue;
-    if (exits.some((e) => (e[0] === a[0] || e[0] === b[0]) && e[1] === y && (x === 0 || x === N))) continue;
-    walls.push([x, y, x, y + 1]);
+  const food = []; for (let k = 0; k < K; k++) foodS.forEach((f, i) => food.push({ p: rot(f.p, k * sec), rich: f.rich, orb: i, k }));
+  // ---- 2a. nests: weighted k-means on the sector's food (centroids of what they serve)
+  const kn = Math.max(1, Math.round(foodS.length / 3));
+  let cent = [...foodS].sort((a, b) => b.rich - a.rich).slice(0, kn).map((f) => [...f.p]);
+  for (let it = 0; it < 12; it++) {
+    const acc = cent.map(() => [0, 0, 0]);
+    for (const f of foodS) { let b = 0; cent.forEach((c, i) => { if (dist(f.p, c) < dist(f.p, cent[b])) b = i; }); acc[b][0] += f.p[0] * f.rich; acc[b][1] += f.p[1] * f.rich; acc[b][2] += f.rich; }
+    cent = cent.map((c, i) => (acc[i][2] ? [acc[i][0] / acc[i][2], acc[i][1] / acc[i][2]] : c));
   }
-  for (let y = 0; y <= N; y++) for (let x = 0; x < N; x++) {
-    const a = [x, y - 1], b = [x, y];
-    if (inside(a) && inside(b) && open.has(ek(a, b))) continue;
-    if (exits.some((e) => e[0] === x && (e[1] === a[1] || e[1] === b[1]) && (y === 0 || y === N))) continue;
-    walls.push([x, y, x + 1, y]);
-  }
-  // boxes: one tucked into the outer corner of every turn; resource gardens
-  // (a pair along the walls) on a rhythm of straight runs
-  const boxes = [], gardens = [];
-  const period = 5 + order;
-  const cellIndex = new Map();
-  paths.forEach((p, q) => p.forEach((c, i) => cellIndex.set(c[0] * N + c[1], [q, i])));
-  for (const rm of rooms) {
-    const cx = rm.x + rm.R / 2, cy = rm.y + rm.R / 2, R = rm.R, put = (x, y, s, rot = 0) => boxes.push([cx + x, cy + y, s, rot]);
-    const S = 0.3;
-    switch (rm.pat) {
-      case 0: // lattice, centre cross left open
-        for (let x = 0; x < R; x++) for (let y = 0; y < R; y++) { const dx = x - R / 2 + 0.5, dy = y - R / 2 + 0.5; if (Math.abs(dx) > 0.6 && Math.abs(dy) > 0.6) put(dx, dy, S); }
-        break;
-      case 1: { // ring of boxes turned to face the middle
-        const k = 4 * R;
-        for (let i = 0; i < k; i++) { const a = (i / k) * 6.283; put(Math.cos(a) * R * 0.36, Math.sin(a) * R * 0.36, S * 0.8, a); }
-        break;
-      }
-      case 2: // both diagonals
-        for (let i = 0; i < R; i++) { const d = i - R / 2 + 0.5; put(d, d, S, Math.PI / 4); if (Math.abs(d) > 0.1) put(d, -d, S, Math.PI / 4); }
-        break;
-      case 3: // concentric square rings, every other one
-        for (let ring = 0.5; ring < R / 2; ring += 1) { const m2 = Math.max(1, Math.round(ring * 2)); for (let i = 0; i < m2; i++) { const t = -ring + (i + 0.5) * (2 * ring / m2); put(t, ring, S * 0.7); put(-t, -ring, S * 0.7); put(ring, -t, S * 0.7); put(-ring, t, S * 0.7); } ring += 1; }
-        break;
-      case 4: // diamond checker of 45-degree boxes
-        for (let x = 0; x < R; x++) for (let y = 0; y < R; y++) if ((x + y) % 2 === 0) put(x - R / 2 + 0.5, y - R / 2 + 0.5, S * 0.75, Math.PI / 4);
-        break;
-      case 5: { // four spiral arms (C4)
-        const k = 3 * R;
-        for (let arm = 0; arm < 4; arm++) for (let i = 1; i < k; i++) { const u = i / k, a = arm * Math.PI / 2 + u * 3.2, rr = u * R * 0.46; put(Math.cos(a) * rr, Math.sin(a) * rr, S * (0.45 + 0.4 * u), a); }
-        break;
-      }
-      default: // a tight 2x2 knot in the middle, sentries at the corners
-        for (const [x, y] of [[-0.17, -0.17], [0.17, -0.17], [0.17, 0.17], [-0.17, 0.17]]) put(x, y, S);
-        for (const [x, y] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) put(x * (R / 2 - 0.5), y * (R / 2 - 0.5), S * 0.7, Math.PI / 4);
-    }
-    // every room is a food source
-    const at = cellIndex.get(Math.floor(cx) * N + Math.floor(cy));
-    if (at) gardens.push({ q: at[0], i: at[1], amt: 2 * R, cap: 2 * R, cells: [] });
-  }
-  paths.forEach((p, q) => {
-    for (let i = 1; i < p.length - 1; i++) {
-      const [a, b, c] = [p[i - 1], p[i], p[i + 1]];
-      if (roomOf.has(b[0] * N + b[1])) continue;
-      const din = [b[0] - a[0], b[1] - a[1]], dout = [c[0] - b[0], c[1] - b[1]];
-      const cx = b[0] + 0.5, cy = b[1] + 0.5;
-      if (din[0] !== dout[0] || din[1] !== dout[1]) {
-        // outer corner = forward along din, away from dout
-        boxes.push([cx + (din[0] - dout[0]) * 0.27, cy + (din[1] - dout[1]) * 0.27, 0.3, 0]);
-      } else if (i % period === 0) {
-        const sx = -din[1], sy = din[0];
-        const res = { q, i, amt: 4, cap: 4, cells: [[cx + sx * 0.3, cy + sy * 0.3], [cx - sx * 0.3, cy - sy * 0.3]] };
-        gardens.push(res);
-      }
-    }
+  // nests sit between their food and the hill: pull them 25% inward
+  cent = cent.map((c) => [c[0] * 0.75, c[1] * 0.75]).filter((c) => Math.hypot(...c) > 14);
+  const nests = [{ p: [0, 0], hill: true, rich: 1, orb: -1, k: 0 }];
+  for (let k = 0; k < K; k++) cent.forEach((c, i) => nests.push({ p: rot(c, k * sec), rich: 0.6, orb: i, k }));
+  // ---- 2b. graph: tree to the hill, ring roads between copies, food to its nest; all as arcs
+  const edges = [];
+  const sectorEdge = (a, b, kind, id) => { for (let k = 0; k < K; k++) edges.push({ a: rot(a, k * sec), b: rot(b, k * sec), kind, bow: (hash(seed, id, 7) - 0.5) * 0.55 }); };
+  cent.forEach((c, i) => {
+    // parent: the nearest node clearly closer to the hill
+    let best = [0, 0], bd = Math.hypot(...c);
+    for (let k = 0; k < K; k++) cent.forEach((d, j) => { const q = rot(d, k * sec); if (Math.hypot(...q) < Math.hypot(...c) - 6 && dist(q, c) < bd) { bd = dist(q, c); best = q; } });
+    sectorEdge(best, c, "trunk", i);
+    if (K > 1 && hash(seed, i, 3) < 0.7) { const q = rot(c, sec); if (dist(q, c) < 55) sectorEdge(c, q, "ring", 100 + i); }
   });
-  return { n, N, paths, walls, boxes, gardens, rooms, pher: paths.map((p) => new Float32Array(p.length)), alarm: paths.map((p) => new Float32Array(p.length)) };
-}
-const w2 = (gx) => (gx - map.N / 2) * CELL; // grid -> world
+  foodS.forEach((f, i) => { let best = [0, 0], bd = Math.hypot(...f.p); for (let k = 0; k < K; k++) cent.forEach((d) => { const q = rot(d, k * sec); if (dist(q, f.p) < bd) { bd = dist(q, f.p); best = q; } }); sectorEdge(best, f.p, "twig", 200 + i); });
+  for (const e of edges) e.poly = arc(e.a, e.b, e.bow);
+  log.push(`biome ${food.length} patches · ${nests.length - 1} nests · ${edges.length} trails`);
 
-// ---------------------------------------------------------------- ants
-function newAnt(q, t) {
-  const [x, y] = pathPoint(q, t, 0);
-  return { q, t, x: x + (Math.random() - 0.5) * 0.6, y: y + (Math.random() - 0.5) * 0.6, vx: 0, vy: 0, dir: 1, v: 1.6 + Math.random() * 1.6, carry: false, goal: pickGoal(q), aggro: 0, wob: Math.random() * 6.28, dead: false };
-}
-function spawnAnts(k) {
-  target = k;
-  ants = [];
-  for (let j = 0; j < k; j++) {
-    const q = j % 4, len = map.paths[q].length;
-    ants.push(newAnt(q, Math.random() * Math.min(len - 1, 40)));
+  // ---- 3. terrain, layer by layer
+  const T = new Terrain();
+  const nodeR = new Map();
+  // 3a mandalas at the hill and nests (force): rings of exactly-L lenses, box rosettes
+  const hillRings = [8, 16, 24];
+  let hr = 0; hillRings.forEach((n, i) => { hr = ring(T, [0, 0], n, (i % 2) * Math.PI / n, "force", "mandala"); });
+  for (let k = 0; k < 8; k++) { const a = k * TAU / 8 + TAU / 16; T.wall([Math.cos(a) * 0.6, Math.sin(a) * 0.6], [Math.cos(a) * (0.6 + L), Math.sin(a) * (0.6 + L)], "force", "mandala"); }
+  T.box(0, 0, Math.PI / 4, "force", "mandala");
+  nodeR.set("0,0", hr);
+  for (const n of nests.slice(1)) {
+    const rr = [6, 12], phase = Math.atan2(n.p[1], n.p[0]);
+    let r = 0; rr.forEach((m, i) => { r = ring(T, n.p, m, phase + (i % 2) * Math.PI / m, "force", "mandala"); });
+    // box rosette between the rings
+    const rb = (ringR(6) + ringR(12)) / 2, nb = Math.floor((TAU * rb) / 1.55);
+    for (let j = 0; j < nb; j++) { const a = phase + (j / nb) * TAU; T.box(n.p[0] + Math.cos(a) * rb, n.p[1] + Math.sin(a) * rb, a, "polite", "mandala"); }
+    nodeR.set(n.p.join(","), r);
   }
+  // 3b recursive Hilbert overlays (polite): one patch per sector per level, facing the hill
+  const hil = [];
+  for (let lv = 0; lv < opt.hil; lv++) {
+    const order = lv === 0 ? 3 : 2, n = 1 << order, cell = lv === 0 ? 2 * L : L, side = n * cell;
+    const rr = lv === 0 ? 34 : lv === 1 ? 58 : 20, a0 = sec * (0.5 + 0.17 * lv) + hash(seed, lv) * 0.2;
+    for (let k = 0; k < K; k++) {
+      const a = a0 + k * sec, c = [Math.cos(a) * rr, Math.sin(a) * rr], u = [-Math.sin(a), Math.cos(a)], v = [Math.cos(a), Math.sin(a)];
+      const P = (x, y) => [c[0] + (x - n / 2) * cell * u[0] + (y - n / 2) * cell * v[0], c[1] + (x - n / 2) * cell * u[1] + (y - n / 2) * cell * v[1]];
+      const path = []; for (let d = 0; d < n * n; d++) path.push(d2xy(n, d));
+      const open = new Set(); const kk = (p, q) => (p[0] * 64 + p[1] < q[0] * 64 + q[1] ? `${p}|${q}` : `${q}|${p}`);
+      for (let d = 1; d < path.length; d++) open.add(kk(path[d - 1], path[d]));
+      const steps = cell / L; // an edge of the patch lattice is 1 or 2 lenses
+      const edgeWall = (x0, y0, x1, y1) => { for (let s = 0; s < steps; s++) { const p = P(x0 + ((x1 - x0) * s) / steps, y0 + ((y1 - y0) * s) / steps), q = P(x0 + ((x1 - x0) * (s + 1)) / steps, y0 + ((y1 - y0) * (s + 1)) / steps); T.wall(p, q, "polite", "hilbert" + lv); } };
+      for (let x = 0; x <= n; x++) for (let y = 0; y < n; y++) { const inner = x > 0 && x < n && open.has(kk([x - 1, y], [x, y])); const door = (x === 0 && y === 0) || (x === n && y === 0); if (!inner && !door) edgeWall(x, y, x, y + 1); }
+      for (let y = 0; y <= n; y++) for (let x = 0; x < n; x++) { const inner = y > 0 && y < n && open.has(kk([x, y - 1], [x, y])); if (!inner) edgeWall(x, y, x + 1, y); }
+      // subtractive echo: the curve's own path carves a thin passage through whatever it lies over
+      const centre = path.map(([x, y]) => P(x + 0.5, y + 0.5));
+      hil.push({ c, side, centre, lv });
+    }
+  }
+  // 3c trails carve corridors, then line them with lenses (polite: they yield to rings)
+  const hw = { trunk: 1.7, ring: 1.4, twig: 1.2 };
+  for (const e of edges) {
+    const ra = nodeR.get(e.a.join(",")) || 2, rb = nodeR.get(e.b.join(",")) || 2.5;
+    // the corridor punches clean through rings: that's where gates come from
+    T.carve(e.poly, hw[e.kind]);
+    for (const s of [-1, 1]) chordWalk(trim(offsetPoly(e.poly, s * hw[e.kind]), ra + 0.6, rb + 0.6), (p, q) => T.wall(p, q, "polite", "trail"));
+  }
+  for (const h of hil) T.carve(h.centre.filter((_, i) => i % 3 === 0), 0.35);
+  // 3d food: phyllotaxis box gardens; zen raking: a row of boxes beside each trunk
+  for (const f of food) {
+    const nb = Math.round(5 + f.rich * 14), ga = Math.PI * (3 - Math.sqrt(5)), base = Math.atan2(f.p[1], f.p[0]);
+    for (let j = 2; j < nb + 2; j++) { const r = 0.95 * Math.sqrt(j), a = base + j * ga; T.box(f.p[0] + Math.cos(a) * r, f.p[1] + Math.sin(a) * r, a, "polite", "food"); }
+  }
+  for (const e of edges) if (e.kind === "trunk") for (const s of [-1, 1]) { const P = offsetPoly(e.poly, s * (hw.trunk + 1.5)); for (let i = 3; i < P.length - 3; i += 2) T.box(P[i][0], P[i][1], Math.atan2(P[i + 1][1] - P[i][1], P[i + 1][0] - P[i][0]), "polite", "rake"); }
+  log.push(`terrain ${T.live().length} pieces`);
+  return { seed, K, food, nests, edges, T, hil, log, ms: performance.now() - t0 };
 }
-function pickGoal(q) {
-  const gs = map.gardens.filter((g) => g.q === q && g.amt > 0);
-  if (!gs.length) return Math.floor(Math.random() * (map.paths[q].length - 1));
-  return gs[Math.floor(Math.random() * gs.length)].i;
+
+// ---------------------------------------------------------------- 4. solver
+function raster(T, G) {
+  const occ = new Uint8Array(G * G), cell = S / G, mark = (x, y, r) => {
+    const x0 = Math.floor((x - r + S / 2) / cell), x1 = Math.floor((x + r + S / 2) / cell), y0 = Math.floor((y - r + S / 2) / cell), y1 = Math.floor((y + r + S / 2) / cell);
+    for (let gx = Math.max(0, x0); gx <= Math.min(G - 1, x1); gx++) for (let gy = Math.max(0, y0); gy <= Math.min(G - 1, y1); gy++) { const cx = (gx + 0.5) * cell - S / 2, cy = (gy + 0.5) * cell - S / 2; if (Math.hypot(cx - x, cy - y) <= r + cell * 0.5) occ[gy * G + gx] = 1; }
+  };
+  // coarse grids mark only the cells a shape actually passes through (dense
+  // point samples stay 8-connected, so 4-connected paths can't leak through)
+  const coarse = cell > 0.8, pt = (x, y) => { const gx = Math.floor((x + S / 2) / cell), gy = Math.floor((y + S / 2) / cell); if (gx >= 0 && gy >= 0 && gx < G && gy < G) occ[gy * G + gx] = 1; };
+  for (const e of T.live()) {
+    if (e.t === "box") { if (coarse) { for (let k = 0; k < 9; k++) pt(e.x + (k % 3 - 1) * 0.3, e.y + (Math.floor(k / 3) - 1) * 0.3); } else mark(e.x, e.y, BOX * 0.42); continue; }
+    const [a, b] = T.ends(e);
+    for (let s = 0; s <= 12; s++) { const t = s / 12, x = a[0] + (b[0] - a[0]) * t, y = a[1] + (b[1] - a[1]) * t; if (coarse) pt(x, y); else mark(x, y, 0.04 + 0.21 * t * (1 - t) * 2); }
+  }
+  // the world's rim
+  for (let i = 0; i < G; i++) { occ[i] = occ[(G - 1) * G + i] = occ[i * G] = occ[i * G + G - 1] = 1; }
+  return occ;
 }
-function pathPoint(q, t, lat) {
-  const p = map.paths[q], i = Math.max(0, Math.min(p.length - 2, Math.floor(t))), f = t - i;
-  const dx = p[i + 1][0] - p[i][0], dy = p[i + 1][1] - p[i][1];
-  return [w2(p[i][0] + dx * f + 0.5 - dy * lat), w2(p[i][1] + dy * f + 0.5 + dx * lat)];
+const cellOf = (G, x, y) => { const cell = S / G; return Math.max(0, Math.min(G - 1, Math.floor((y + S / 2) / cell))) * G + Math.max(0, Math.min(G - 1, Math.floor((x + S / 2) / cell))); };
+function bfs(occ, G, sources) {
+  const D = new Uint16Array(G * G).fill(65535), q = new Int32Array(G * G);
+  let h = 0, t = 0;
+  for (const s of sources) { if (D[s] === 65535) { D[s] = 0; q[t++] = s; } }
+  while (h < t) { const c = q[h++], d = D[c] + 1, x = c % G; for (const n of [c - 1, c + 1, c - G, c + G]) { if (n < 0 || n >= G * G) continue; if ((n === c - 1 && x === 0) || (n === c + 1 && x === G - 1)) continue; if (!occ[n] && D[n] === 65535) { D[n] = d; q[t++] = n; } } }
+  return D;
 }
-function antPos(a) { return [a.x, a.y]; }
-function antPosOld(a) {
-  const p = map.paths[a.q], i = Math.max(0, Math.min(p.length - 2, Math.floor(a.t))), f = a.t - i;
-  const x = p[i][0] + (p[i + 1][0] - p[i][0]) * f + 0.5, y = p[i][1] + (p[i + 1][1] - p[i][1]) * f + 0.5;
-  // drift off the centre line a little so a column reads as a crowd
-  const s = Math.sin(a.wob) * 0.22;
-  const dx = p[i + 1][0] - p[i][0], dy = p[i + 1][1] - p[i][1];
-  return [w2(x - dy * s), w2(y + dx * s)];
+function discCells(G, p, r) { const out = [], cell = S / G; for (let dx = -r; dx <= r; dx += cell) for (let dy = -r; dy <= r; dy += cell) if (dx * dx + dy * dy <= r * r) out.push(cellOf(G, p[0] + dx, p[1] + dy)); return out; }
+// solve, then repair: unreachable food gets a straight corridor carved toward its trail
+function solve(W, G) {
+  let occ, D, pass = 0, fixed = 0;
+  for (; pass < 5; pass++) {
+    occ = raster(W.T, G);
+    for (const c of discCells(G, [0, 0], 0.9)) occ[c] = 0;
+    D = bfs(occ, G, discCells(G, [0, 0], 0.6));
+    const lost = W.food.filter((f) => !discCells(G, f.p, 1.6).some((c) => D[c] < 65535 && !occ[c]));
+    if (!lost.length) break;
+    for (const f of lost) { const tw = W.edges.find((e) => e.kind === "twig" && dist(e.b, f.p) < 0.01); const to = tw ? tw.a : [0, 0]; W.T.carve([f.p, to], 1.0); fixed++; }
+  }
+  const reach = W.food.filter((f) => discCells(G, f.p, 1.6).some((c) => D[c] < 65535)).length / W.food.length;
+  W.log.push(`solver ${G}×${G} · ${pass + 1} pass${pass ? "es" : ""} · ${fixed} repairs · ${(reach * 100) | 0}% food reachable`);
+  return { occ, D, G, reach, fields: new Map() };
 }
-function nearestIndex(q, wx, wy) {
-  const p = map.paths[q]; let best = 0, bd = 1e9;
-  for (let i = 0; i < p.length; i++) { const dx = w2(p[i][0] + 0.5) - wx, dy = w2(p[i][1] + 0.5) - wy, d = dx * dx + dy * dy; if (d < bd) { bd = d; best = i; } }
-  return [best, Math.sqrt(bd)];
-}
-function raiderPos(z) {
-  const p = map.paths[z.q], i = Math.max(0, Math.min(p.length - 2, Math.floor(z.t))), f = z.t - i;
-  return [w2(p[i][0] + (p[i + 1][0] - p[i][0]) * f + 0.5 + z.ox), w2(p[i][1] + (p[i + 1][1] - p[i][1]) * f + 0.5 + z.oy)];
+
+// ---------------------------------------------------------------- ants (flow fields)
+let W = null, SV = null, ants = [], raiders = [], heat = null, stock = 30, born = 0, lost = 0, target = 2014, flashes = [];
+function field(f) { if (!SV.fields.has(f)) { const free = discCells(SV.G, f.p, 1.8).filter((c) => !SV.occ[c]); SV.fields.set(f, bfs(SV.occ, SV.G, free)); } return SV.fields.get(f); }
+function pickFood() { const pool = W.food.filter((f) => (f.amt ?? 1) > 0 && SV.D[cellOf(SV.G, ...f.p)] < 65535); const p = pool.length ? pool : W.food; for (let t = 0; ; t++) { const f = p[Math.floor(Math.random() * p.length)]; if (Math.random() < 30 / (30 + Math.hypot(...f.p)) || t > 3) return f; } }
+function newAnt() { const a = Math.random() * TAU, r = Math.random() * 0.8; return { x: Math.cos(a) * r, y: Math.sin(a) * r, vx: 0, vy: 0, f: pickFood(), carry: false, v: 2.2 + Math.random() * 1.6, aggro: 0 }; }
+function spawnAnts(n) { target = n; ants = []; for (let i = 0; i < n; i++) { const a = newAnt(); // scatter along their flow so the colony starts mid-work
+  for (let s = Math.floor(Math.random() * 120); s > 0; s--) { const d = flowDir(a, field(a.f)); if (!d) break; a.x += d[0] * 0.5; a.y += d[1] * 0.5; } ants.push(a); } }
+function flowDir(a, F) {
+  const G = SV.G, c = cellOf(G, a.x, a.y), cell = S / G; let best = F[c], bn = -1;
+  for (const n of [c - 1, c + 1, c - G, c + G, c - G - 1, c - G + 1, c + G - 1, c + G + 1]) if (n >= 0 && n < G * G && !SV.occ[n] && F[n] < best) { best = F[n]; bn = n; }
+  if (bn < 0) return null;
+  const tx = ((bn % G) + 0.5) * cell - S / 2, ty = (Math.floor(bn / G) + 0.5) * cell - S / 2, dx = tx - a.x, dy = ty - a.y, l = Math.hypot(dx, dy) || 1;
+  return [dx / l, dy / l];
 }
 function step(dt) {
-  // raiders walk the curve inward from the exits toward the colony
-  for (const z of intruders) if (z.alive && z.raid) { z.t = Math.max(0, z.t - z.v * dt); [z.x, z.y] = raiderPos(z); if (z.t === 0) z.home = true; }
-  const live = intruders.filter((z) => z.alive);
-  for (const z of live) z.idx = map.paths.map((_, q) => nearestIndex(q, z.x, z.y)[0]);
-  for (const P of map.pher) for (let i = 0; i < P.length; i++) P[i] *= 0.996;
-  for (const A of map.alarm) for (let i = 0; i < A.length; i++) A[i] *= 0.97;
+  const G = SV.G, cell = S / G;
+  for (let i = 0; i < heat.length; i++) heat[i] *= 0.994;
+  for (const z of raiders) if (z.alive) { const d = flowDir(z, SV.D); if (d) { z.x += d[0] * z.v * dt; z.y += d[1] * z.v * dt; } }
+  const live = raiders.filter((z) => z.alive);
   for (const a of ants) {
-    const len = map.paths[a.q].length;
-    a.wob += dt * (2 + a.v);
-    const [ax, ay] = antPos(a);
-    const ci = Math.round(a.t);
-    // stuck in the crowd? the point on the curve waits for its ant
-    const [px0, py0] = pathPoint(a.q, a.t, Math.sin(a.wob) * 0.28);
-    const lag = Math.hypot(px0 - ax, py0 - ay), go = lag < 0.8 ? 1 : 0.15;
-    const dt0 = dt; dt = dt0 * go;
-    let tgt = null, td = 1e9;
-    if (live.length) {
-      for (const z of live) { const d = Math.hypot(ax - z.x, ay - z.y); if (d < td) { td = d; tgt = z; } }
-      // sees an intruder, or smells the alarm others laid down
-      if (td < 4.5 || map.alarm[a.q][ci] > 0.35) a.aggro = 2.5;
-      // raiders (players) cut down the ants they reach; one blow each
-    if (td < 0.3 && tgt.alive && tgt.raid && (tgt.cd = (tgt.cd || 0) - dt) <= 0) {
-      a.dead = true; tgt.cd = 0.18; lost++;
-      flashes.push({ x: ax, y: ay, t: 0.3, red: true });
-      continue;
-    }
-    if (td < 0.35 && tgt.alive) {
-        // one touch kills (raiders take a few touches)
-        tgt.hp -= 1;
-        if (tgt.hp <= 0) { tgt.alive = false; tgt.t2 = 0; kills++; flashes.push({ x: tgt.x, y: tgt.y, t: 0 }); }
-      }
-    }
-    if (a.aggro > 0 && tgt) {
-      a.aggro -= dt;
-      map.alarm[a.q][ci] = Math.min(1, map.alarm[a.q][ci] + dt * 3);
-      const target = tgt.idx[a.q];
-      a.dir = target > a.t ? 1 : -1;
-      a.t += a.dir * a.v * 1.8 * dt;
-    } else {
+    let tgt = null, td = 1e9; for (const z of live) { const d = Math.hypot(a.x - z.x, a.y - z.y); if (d < td) { td = d; tgt = z; } }
+    if (tgt && td < 5) a.aggro = 2;
+    if (tgt && td < 0.3 && (tgt.cd = (tgt.cd || 0) - dt) <= 0) { a.dead = true; tgt.cd = 0.15; lost++; flashes.push({ x: a.x, y: a.y, t: 0.3, red: true }); continue; }
+    if (tgt && td < 0.35) { tgt.hp--; if (tgt.hp <= 0 && tgt.alive) { tgt.alive = false; flashes.push({ x: tgt.x, y: tgt.y, t: 0 }); } }
+    let dir;
+    if (a.aggro > 0 && tgt) { a.aggro -= dt; const dx = tgt.x - a.x, dy = tgt.y - a.y, l = Math.hypot(dx, dy) || 1; dir = [dx / l, dy / l]; }
+    else {
       a.aggro = 0;
-      if (!a.carry) {
-        a.dir = a.goal > a.t ? 1 : -1;
-        a.t += a.dir * a.v * dt;
-        if (Math.abs(a.t - a.goal) < 0.1) {
-          const gd = map.gardens.find((g) => g.q === a.q && g.i === a.goal && g.amt > 0);
-          if (gd) { gd.amt--; a.carry = true; } else a.goal = pickGoal(a.q);
-        }
-      } else {
-        a.t -= a.v * 0.8 * dt;
-        map.pher[a.q][ci] = Math.min(1, map.pher[a.q][ci] + dt * 0.8);
-        if (a.t <= 0) { a.t = 0; a.carry = false; stock++; a.goal = pickGoal(a.q); }
+      const F = a.carry ? SV.D : field(a.f), c = cellOf(G, a.x, a.y);
+      if (F[c] <= 2) {
+        if (a.carry) { a.carry = false; stock++; a.f = pickFood(); }
+        else if ((a.f.amt ?? 1) > 0) { a.f.amt = (a.f.amt ?? 6) - 1; a.carry = true; } else a.f = pickFood();
       }
+      dir = flowDir(a, a.carry ? SV.D : field(a.f)) || [Math.cos(a.x * 7 + a.y), Math.sin(a.y * 7 - a.x)];
+      if (a.carry) heat[c] = Math.min(60, heat[c] + 1.2);
     }
-    a.t = Math.max(0, Math.min(len - 1.001, a.t));
-    dt = dt0;
-  }
-  // bodies: each ant is pulled to its point on the curve and shoved by its
-  // neighbours; near the hill the shove fades and they pack in
-  const cs = 0.45, grid = new Map(), key = (x, y) => (Math.floor(x / cs) + 4096) * 8192 + Math.floor(y / cs) + 4096;
-  for (const a of ants) { const k = key(a.x, a.y); let b = grid.get(k); if (!b) grid.set(k, (b = [])); b.push(a); }
-  const rs = 0.34;
-  for (const a of ants) {
-    const [tx, ty] = pathPoint(a.q, a.t, Math.sin(a.wob) * 0.28);
-    let fx = (tx - a.x) * 9, fy = (ty - a.y) * 9;
-    const hill = Math.hypot(a.x, a.y), crowd = Math.min(1, Math.max(0.12, (hill - 3) / 7));
-    const gx = Math.floor(a.x / cs), gy = Math.floor(a.y / cs);
-    for (let ox = -1; ox <= 1; ox++) for (let oy = -1; oy <= 1; oy++) {
-      const b = grid.get((gx + ox + 4096) * 8192 + gy + oy + 4096); if (!b) continue;
-      for (const o of b) {
-        if (o === a) continue;
-        const dx = a.x - o.x, dy = a.y - o.y, d2 = dx * dx + dy * dy;
-        if (d2 > rs * rs || d2 < 1e-8) continue;
-        const d = Math.sqrt(d2), push = (1 - d / rs) * 40 * crowd;
-        fx += (dx / d) * push; fy += (dy / d) * push;
-      }
-    }
-    a.vx = a.vx * 0.82 + fx * dt; a.vy = a.vy * 0.82 + fy * dt;
-    const sp = Math.hypot(a.vx, a.vy), mx = 7;
-    if (sp > mx) { a.vx *= mx / sp; a.vy *= mx / sp; }
-    a.x += a.vx * dt; a.y += a.vy * dt;
+    a.dx = dir[0]; a.dy = dir[1];
   }
   ants = ants.filter((a) => !a.dead);
-  // the hill is alive: hauled food becomes new ants, born at the centre
-  for (let k = 0; k < 6 && ants.length < target && stock > 0; k++) {
-    stock--; born++;
-    const q = Math.floor(Math.random() * 4);
-    ants.push(newAnt(q, 0));
-    if (Math.random() < 0.15) births.push({ t: 0 });
+  for (let n = 0; n < 6 && ants.length < target && stock > 0; n++) { stock--; born++; ants.push(newAnt()); }
+  for (const f of W.food) if ((f.amt ?? 6) < 6 + f.rich * 10 && Math.random() < dt * 0.15) f.amt = (f.amt ?? 6) + 1;
+  // bodies: follow the flow, shove neighbours (less near the hill), never enter walls
+  const cs = 0.45, grid = new Map(), key = (x, y) => (Math.floor(x / cs) + 8192) * 16384 + Math.floor(y / cs) + 8192;
+  for (const a of ants) { const k = key(a.x, a.y); let b = grid.get(k); if (!b) grid.set(k, (b = [])); b.push(a); }
+  for (const a of ants) {
+    let fx = a.dx * a.v * 6 - a.vx * 6, fy = a.dy * a.v * 6 - a.vy * 6;
+    const crowd = Math.min(1, Math.max(0.1, (Math.hypot(a.x, a.y) - 4) / 8));
+    for (let ox = -1; ox <= 1; ox++) for (let oy = -1; oy <= 1; oy++) { const b = grid.get(key(a.x + ox * cs, a.y + oy * cs)); if (!b) continue; for (const o of b) { if (o === a) continue; const dx = a.x - o.x, dy = a.y - o.y, d2 = dx * dx + dy * dy; if (d2 > 0.1 || d2 < 1e-8) continue; const d = Math.sqrt(d2), p = (1 - d / 0.32) * 50 * crowd; if (p > 0) { fx += (dx / d) * p; fy += (dy / d) * p; } } }
+    a.vx += fx * dt; a.vy += fy * dt;
+    const sp = Math.hypot(a.vx, a.vy), mx = a.aggro > 0 ? 6 : 4.5; if (sp > mx) { a.vx *= mx / sp; a.vy *= mx / sp; }
+    const nx = a.x + a.vx * dt, ny = a.y + a.vy * dt;
+    if (!SV.occ[cellOf(G, nx, ny)]) { a.x = nx; a.y = ny; } else if (!SV.occ[cellOf(G, nx, a.y)]) { a.x = nx; a.vy *= 0.3; } else if (!SV.occ[cellOf(G, a.x, ny)]) { a.y = ny; a.vx *= 0.3; } else { a.vx *= -0.3; a.vy *= -0.3; }
   }
-  births.forEach((b) => (b.t += dt));
-  births = births.filter((b) => b.t < 0.8);
-  // and food grows back in the gardens
-  for (const gd of map.gardens) if (gd.amt < gd.cap && Math.random() < dt * 0.12) gd.amt++;
-  for (const z of intruders) if (!z.alive) z.t2 += dt;
-  intruders = intruders.filter((z) => z.alive || z.t2 < 1.2);
-}
-function raid(k) {
-  intruders = [];
-  for (let j = 0; j < k; j++) {
-    const q = j % 4, len = map.paths[q].length;
-    // a loose column per exit
-    intruders.push({ raid: true, q, t: len - 1 - Math.floor(j / 4) * 0.45, v: 1.1 + Math.random() * 0.3, ox: (Math.random() - 0.5) * 0.4, oy: (Math.random() - 0.5) * 0.4, alive: true, hp: 40, t2: 0, x: 0, y: 0 });
-  }
-  kills = 0;
 }
 
 // ---------------------------------------------------------------- drawing
-function lens(ctx, x0, y0, x1, y1, s) {
-  const mx = (x0 + x1) / 2, my = (y0 + y1) / 2, dx = x1 - x0, dy = y1 - y0, L = Math.hypot(dx, dy);
-  const nx = -dy / L, ny = dx / L, b = L * 0.105 * s; // ~0.25 bulge on a 2.4 lens, like the game
-  // pull tips in a hair so neighbouring lenses touch only at points
-  const ix = dx * 0.015, iy = dy * 0.015;
-  ctx.moveTo(x0 + ix, y0 + iy);
-  ctx.quadraticCurveTo(mx + nx * b, my + ny * b, x1 - ix, y1 - iy);
-  ctx.quadraticCurveTo(mx - nx * b, my - ny * b, x0 + ix, y0 + iy);
+function lensPath(ctx, a, b) { const mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2, dx = b[0] - a[0], dy = b[1] - a[1], l = Math.hypot(dx, dy), nx = -dy / l, ny = dx / l, k = l * 0.105; ctx.moveTo(a[0] + dx * 0.015, a[1] + dy * 0.015); ctx.quadraticCurveTo(mx + nx * k, my + ny * k, b[0] - dx * 0.015, b[1] - dy * 0.015); ctx.quadraticCurveTo(mx - nx * k, my - ny * k, a[0] + dx * 0.015, a[1] + dy * 0.015); }
+function boxPath(ctx, x, y, a) {
+  const s = BOX, h = s / 2, r = s * 0.2, k = s * 0.045, c = Math.cos(a), sn = Math.sin(a), P = (dx, dy) => [x + dx * c - dy * sn, y + dx * sn + dy * c], Q = (ax, ay, bx, by) => ctx.quadraticCurveTo(...P(ax, ay), ...P(bx, by));
+  ctx.moveTo(...P(-h + r, -h)); Q(0, -h + k, h - r, -h); Q(h, -h, h, -h + r); Q(h - k, 0, h, h - r); Q(h, h, h - r, h); Q(0, h - k, -h + r, h); Q(-h, h, -h, h - r); Q(-h + k, 0, -h, -h + r); Q(-h, -h, -h + r, -h); ctx.closePath();
+  ctx.moveTo(x + s * 0.33, y); ctx.arc(x, y, s * 0.33, 0, TAU, true);
 }
-function box(ctx, x, y, s, rot = 0) {
-  // rounded square with gently concave sides and a round hole (even-odd)
-  const h = s / 2, r = s * 0.2, k = s * 0.045, c = Math.cos(rot), sn = Math.sin(rot);
-  const P = (dx, dy) => [x + dx * c - dy * sn, y + dx * sn + dy * c];
-  const M = (dx, dy) => ctx.moveTo(...P(dx, dy));
-  const Q = (ax, ay, bx, by) => ctx.quadraticCurveTo(...P(ax, ay), ...P(bx, by));
-  M(-h + r, -h);
-  Q(0, -h + k, h - r, -h); Q(h, -h, h, -h + r);
-  Q(h - k, 0, h, h - r); Q(h, h, h - r, h);
-  Q(0, h - k, -h + r, h); Q(-h, h, -h, h - r);
-  Q(-h + k, 0, -h, -h + r); Q(-h, -h, -h + r, -h);
-  ctx.closePath();
-  ctx.moveTo(x + s * 0.33, y);
-  ctx.arc(x, y, s * 0.33, 0, Math.PI * 2, true);
-}
-// static layer, re-rendered crisp for the current view
-let cache = null, cacheView = null, dirty = true, settle = 0;
-function renderStatic() {
-  const c = cache || (cache = document.createElement("canvas"));
-  c.width = W * dpr; c.height = H * dpr;
-  const ctx = c.getContext("2d");
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.translate(W / 2 - view.x * view.s, H / 2 + view.y * view.s);
-  ctx.scale(view.s, -view.s);
-  const px = 1 / view.s, cell = CELL * view.s;
-  const vis = (x, y, pad) => Math.abs(x - view.x) < W / 2 / view.s + pad && Math.abs(y - view.y) < H / 2 / view.s + pad;
-  const drawAll = (shadow) => {
-    ctx.beginPath();
-    if (cell < 5) {
-      // far away the lenses become hairlines: the curve itself shows
-      ctx.lineWidth = Math.max(px, CELL * 0.08);
-      for (const [x0, y0, x1, y1] of map.walls) { const a = w2(x0), b = w2(y0), c2 = w2(x1), d = w2(y1); if (!vis((a + c2) / 2, (b + d) / 2, CELL)) continue; ctx.moveTo(a, b); ctx.lineTo(c2, d); }
-      ctx.strokeStyle = shadow ? "rgba(0,0,0,0.12)" : INK; ctx.stroke();
-      if (!shadow) { ctx.beginPath(); for (const [x, y, s] of map.boxes) { const wx = w2(x), wy = w2(y), h = s * CELL * 0.5; ctx.rect(wx - h, wy - h, h * 2, h * 2); } ctx.fillStyle = INK; ctx.fill(); }
-      return;
-    }
-    for (const [x0, y0, x1, y1] of map.walls) { const a = w2(x0), b = w2(y0), c2 = w2(x1), d = w2(y1); if (!vis((a + c2) / 2, (b + d) / 2, CELL)) continue; lens(ctx, a, b, c2, d, 1); }
-    for (const [x, y, s, rot] of map.boxes) { const wx = w2(x), wy = w2(y); if (vis(wx, wy, 1)) box(ctx, wx, wy, s * CELL, rot); }
-    // the hill: a rosette of lenses around a diamond box
-    for (let k = 0; k < 8; k++) { const a = k * Math.PI / 4 + Math.PI / 8, c = Math.cos(a), sn = Math.sin(a); lens(ctx, c * 0.62, sn * 0.62, c * 2.3, sn * 2.3, 1.15); }
-    box(ctx, 0, 0, 0.62, Math.PI / 4);
-    for (const gd of map.gardens) for (const [x, y] of gd.cells) { const wx = w2(x), wy = w2(y); if (vis(wx, wy, 1)) box(ctx, wx, wy, 0.3 * CELL); }
-    ctx.fillStyle = shadow ? "rgba(0,0,0,0.16)" : INK;
-    ctx.fill("evenodd");
-  };
-  // soft offset shadow first, like the sprites' blurred shadow copies
-  if (cell >= 5) {
-    ctx.save(); ctx.translate(0.07, -0.07); ctx.filter = `blur(${Math.max(0.5, 0.06 * view.s)}px)`; drawAll(true); ctx.restore();
-    ctx.filter = "none";
+function drawTerrain(ctx, T, px, detail) {
+  const els = T.live();
+  if (!detail) {
+    ctx.lineWidth = Math.max(px * 1.2, 0.18); ctx.strokeStyle = INK; ctx.beginPath();
+    for (const e of els) if (e.t === "wall") { const [a, b] = T.ends(e); ctx.moveTo(...a); ctx.lineTo(...b); }
+    ctx.stroke(); ctx.fillStyle = INK; ctx.beginPath();
+    for (const e of els) if (e.t === "box") { const h = Math.max(0.36, px); ctx.rect(e.x - h, e.y - h, 2 * h, 2 * h); }
+    ctx.fill(); return;
   }
-  drawAll(false);
+  const fillAll = (style) => { ctx.beginPath(); for (const e of els) { if (e.t === "wall") lensPath(ctx, ...T.ends(e)); else boxPath(ctx, e.x, e.y, e.a); } ctx.fillStyle = style; ctx.fill("evenodd"); };
+  ctx.save(); ctx.translate(0.07, -0.07); ctx.filter = `blur(${Math.max(0.5, 0.06 / px)}px)`; fillAll("rgba(0,0,0,0.16)"); ctx.restore(); ctx.filter = "none";
+  fillAll(INK);
+}
+const cv = $("c"), g = cv.getContext("2d");
+let VW = 0, VH = 0, dpr = 1;
+const view = { x: 0, y: 0, s: 4 };
+const show = { biome: false, graph: false, terrain: true, flow: false, ants: true };
+let cache = null, cacheView = null, dirty = true, settle = 0, heatCanvas = null, flowCanvas = null;
+function renderStatic() {
+  const c = cache || (cache = document.createElement("canvas")); c.width = Math.max(1, VW * dpr); c.height = Math.max(1, VH * dpr);
+  const ctx = c.getContext("2d"); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.translate(VW / 2 - view.x * view.s, VH / 2 + view.y * view.s); ctx.scale(view.s, -view.s);
+  const px = 1 / view.s;
+  if (show.flow && flowCanvas) { ctx.save(); ctx.imageSmoothingEnabled = false; ctx.globalAlpha = 0.5; ctx.drawImage(flowCanvas, -S / 2, -S / 2, S, S); ctx.restore(); }
+  if (show.biome) {
+    // food as a stippled density: dots thicken toward each patch, weighted by richness
+    const r2 = rng(W.seed + 9); ctx.fillStyle = "rgba(0,0,0,0.28)";
+    for (let i = 0; i < 9000; i++) { const x = (r2() - 0.5) * S, y = (r2() - 0.5) * S; let v = 0; for (const f of W.food) v += f.rich * Math.exp(-((x - f.p[0]) ** 2 + (y - f.p[1]) ** 2) / 90); if (r2() < v * 0.9) ctx.fillRect(x, y, 0.35, 0.35); }
+  }
+  if (show.terrain) drawTerrain(ctx, W.T, px, L * view.s >= 6);
+  if (show.graph) {
+    ctx.lineWidth = Math.max(px, 0.08);
+    for (const e of W.edges) { ctx.strokeStyle = e.kind === "trunk" ? "rgba(64,128,255,0.9)" : e.kind === "ring" ? "rgba(64,128,255,0.55)" : "rgba(64,128,255,0.35)"; ctx.beginPath(); e.poly.forEach((p, i) => (i ? ctx.lineTo(...p) : ctx.moveTo(...p))); ctx.stroke(); }
+    for (const n of W.nests) { ctx.strokeStyle = "rgba(64,128,255,0.9)"; ctx.beginPath(); ctx.arc(n.p[0], n.p[1], n.hill ? 2.4 : 1.4, 0, TAU); ctx.stroke(); }
+    for (const f of W.food) { ctx.fillStyle = "rgba(64,128,255,0.8)"; ctx.beginPath(); ctx.arc(f.p[0], f.p[1], 0.5 + f.rich, 0, TAU); ctx.fill(); }
+  }
   cacheView = { ...view }; dirty = false;
 }
-let flashes = [], t0 = performance.now();
+function buildFlowCanvas() {
+  // the hill's distance field as banded isolines: the labyrinth's true shape
+  const G = SV.G, cvs = document.createElement("canvas"); cvs.width = G; cvs.height = G;
+  const ctx = cvs.getContext("2d"), img = ctx.createImageData(G, G);
+  for (let y = 0; y < G; y++) for (let x = 0; x < G; x++) { const d = SV.D[y * G + x], o = ((G - 1 - y) * G + x) * 4; if (SV.occ[y * G + x] || d === 65535) { img.data[o + 3] = 0; continue; } const band = (d % 24) < 12 ? 1 : 0; img.data[o] = 64; img.data[o + 1] = 128; img.data[o + 2] = 255; img.data[o + 3] = band ? 34 : 12; }
+  ctx.putImageData(img, 0, 0); flowCanvas = cvs;
+}
+let t0 = performance.now(), intro = null;
 function frame(now) {
-  const dt = Math.min(0.05, (now - t0) / 1000); t0 = now;
-  if (intro) {
-    // slow pull-back from the colony to the whole structure
-    intro.t += dt;
-    const u = Math.min(1, intro.t / 6), e = 1 - Math.pow(1 - u, 3);
-    view.s = intro.s0 * Math.pow(intro.s1 / intro.s0, e); dirty = true;
-    if (u >= 1) intro = null;
-  }
-  step(dt);
-  settle -= dt;
-  if (!W || !H) { if (innerWidth) resize(); requestAnimationFrame(frame); return; }
-  if (!isFinite(view.s) || view.s <= 0) view.s = Math.min(W, H) / (map.N * CELL * 1.08);
-  if (dirty && (settle <= 0 || !cache)) renderStatic();
-  g.setTransform(1, 0, 0, 1, 0, 0);
-  g.fillStyle = "#fbfbfb"; g.fillRect(0, 0, cv.width, cv.height);
-  // static layer (scaled live while zooming, re-rendered when settled)
-  if (cache && cache.width > 0 && cache.height > 0) {
-    const k = view.s / cacheView.s;
-    g.setTransform(dpr * k, 0, 0, dpr * k, dpr * (W / 2 - (view.x - cacheView.x) * view.s - W / 2 * k), dpr * (H / 2 + (view.y - cacheView.y) * view.s - H / 2 * k));
-    g.drawImage(cache, 0, 0, cache.width / dpr, cache.height / dpr);
-  }
-  g.setTransform(dpr, 0, 0, dpr, 0, 0);
-  g.translate(W / 2 - view.x * view.s, H / 2 + view.y * view.s);
-  g.scale(view.s, -view.s);
+  const dt = Math.min(0.04, (now - t0) / 1000); t0 = now;
+  if (!VW) { if (innerWidth) resize(); requestAnimationFrame(frame); return; }
+  if (intro) { intro.t += dt; const u = Math.min(1, intro.t / 5), e = 1 - Math.pow(1 - u, 3); view.s = intro.s0 * Math.pow(intro.s1 / intro.s0, e); dirty = true; if (u >= 1) intro = null; }
+  if (W && SV) step(dt);
+  settle -= dt; if (W && dirty && (settle <= 0 || !cache)) renderStatic();
+  g.setTransform(1, 0, 0, 1, 0, 0); g.fillStyle = BG; g.fillRect(0, 0, cv.width, cv.height);
+  if (cache && cache.width > 1) { const k = view.s / cacheView.s; g.setTransform(dpr * k, 0, 0, dpr * k, dpr * (VW / 2 - (view.x - cacheView.x) * view.s - (VW / 2) * k), dpr * (VH / 2 + (view.y - cacheView.y) * view.s - (VH / 2) * k)); g.drawImage(cache, 0, 0, cache.width / dpr, cache.height / dpr); }
+  if (!W) { requestAnimationFrame(frame); return; }
+  g.setTransform(dpr, 0, 0, dpr, 0, 0); g.translate(VW / 2 - view.x * view.s, VH / 2 + view.y * view.s); g.scale(view.s, -view.s);
   const px = 1 / view.s;
-  // pheromone: faint red ink along the paths they haul over; alarm in a hotter tone
-  for (let q = 0; q < 4; q++) {
-    const p = map.paths[q], P = map.pher[q], A = map.alarm[q];
-    for (let i = 0; i < p.length; i++) {
-      const v = P[i], al = A[i];
-      if (v < 0.04 && al < 0.04) continue;
-      const x = w2(p[i][0] + 0.5), y = w2(p[i][1] + 0.5);
-      if (al > 0.04) { g.fillStyle = `rgba(255,32,32,${0.18 * al})`; g.beginPath(); g.arc(x, y, CELL * 0.42, 0, 6.283); g.fill(); }
-      if (v > 0.04) { g.fillStyle = `rgba(255,32,32,${0.12 * v})`; g.fillRect(x - CELL * 0.05, y - CELL * 0.05, CELL * 0.1, CELL * 0.1); }
-    }
+  if (show.ants) {
+    // trail heat: where the hauling actually happens
+    const G = SV.G, hc = heatCanvas || (heatCanvas = document.createElement("canvas")); hc.width = G; hc.height = G;
+    const hx = hc.getContext("2d"), img = hx.createImageData(G, G);
+    for (let i = 0; i < G * G; i++) { const v = heat[i]; if (v < 0.5) continue; const x = i % G, y = Math.floor(i / G), o = ((G - 1 - y) * G + x) * 4; img.data[o] = 255; img.data[o + 1] = 32; img.data[o + 2] = 32; img.data[o + 3] = Math.min(90, v * 3); }
+    hx.putImageData(img, 0, 0); g.save(); g.scale(1, -1); g.drawImage(hc, -S / 2, -S / 2, S, S); g.restore();
+    const r = Math.max(0.09, 1.2 * px); g.fillStyle = "rgb(255,32,32)"; g.beginPath();
+    for (const a of ants) { g.moveTo(a.x + r, a.y); g.arc(a.x, a.y, r, 0, TAU); } g.fill();
+    if (view.s > 14) { g.fillStyle = INK; g.beginPath(); for (const a of ants) if (a.carry) g.rect(a.x - r * 0.7, a.y + r, r * 1.4, r * 1.4); g.fill(); }
+    for (const z of raiders) { g.fillStyle = z.alive ? "rgb(64,128,255)" : "rgba(64,128,255,0.3)"; g.beginPath(); g.arc(z.x, z.y, Math.max(0.16, 2 * px), 0, TAU); g.fill(); }
+    for (const f of flashes) { f.t += dt; const u = f.t / 0.6; if (u < 1) { g.strokeStyle = f.red ? `rgba(255,32,32,${(1 - u) * 0.8})` : `rgba(64,128,255,${1 - u})`; g.lineWidth = Math.max(px, 0.04); g.beginPath(); g.arc(f.x, f.y, 0.2 + u * 1.6, 0, TAU); g.stroke(); } }
+    flashes = flashes.filter((f) => f.t < 0.6);
   }
-  // births: soft hairline rings breathing out of the colony mouth
-  g.lineWidth = Math.max(px, 0.02);
-  for (const b of births) { const u = b.t / 0.8; g.strokeStyle = `rgba(255,32,32,${0.35 * (1 - u)})`; g.beginPath(); g.arc(0, 0, 0.3 + u * 1.4, 0, 6.283); g.stroke(); }
-  // ants
-  const r = Math.max(0.09, 1.6 * px);
-  g.fillStyle = RED; g.beginPath();
-  for (const a of ants) { const [x, y] = antPos(a); g.moveTo(x + r, y); g.arc(x, y, r, 0, 6.283); }
-  g.fill();
-  if (view.s > 12) {
-    g.fillStyle = INK; g.beginPath();
-    for (const a of ants) if (a.carry) { const [x, y] = antPos(a); g.rect(x - r * 0.7, y + r * 0.9, r * 1.4, r * 1.4); }
-    g.fill();
-  }
-  // intruders
-  for (const z of intruders) {
-    const al = z.alive ? 1 : Math.max(0, 1 - z.t2);
-    g.fillStyle = `rgba(64,128,255,${al})`; g.beginPath(); g.arc(z.x, z.y, 0.16, 0, 6.283); g.fill();
-    if (z.alive && !z.raid) { g.strokeStyle = "rgba(64,128,255,0.25)"; g.lineWidth = px; g.beginPath(); g.arc(z.x, z.y, 4.5, 0, 6.283); g.stroke(); }
-  }
-  for (const f of flashes) {
-    f.t += dt; const u = f.t / 0.6;
-    if (u < 1) { g.strokeStyle = f.red ? `rgba(255,32,32,${(1 - u) * 0.8})` : `rgba(64,128,255,${1 - u})`; g.lineWidth = Math.max(px, 0.04); g.beginPath(); g.arc(f.x, f.y, 0.2 + u * 1.6, 0, 6.283); g.stroke(); }
-  }
-  flashes = flashes.filter((f) => f.t < 0.6);
-  document.getElementById("stat").textContent = `${map.N}×${map.N} cells · ${map.walls.length} walls · ${map.boxes.length + map.gardens.length * 2} boxes · ${ants.length} ants · food ${stock} · born ${born} · lost ${lost}` + (intruders.some((z) => z.raid) || kills ? ` · raiders ${intruders.filter((z) => z.alive).length} left, ${intruders.filter((z) => z.alive && z.home).length} reached the hill` : "");
+  $("stat").textContent = `seed ${W.seed} · ${W.K}-fold · ${W.T.live().length} pieces (1 wall, 1 box) · ${ants.length} ants · food ${stock} · born ${born} · lost ${lost}` + (raiders.length ? ` · raiders ${raiders.filter((z) => z.alive).length}` : "");
   requestAnimationFrame(frame);
 }
-
-// ---------------------------------------------------------------- input
-function resize() {
-  const was = W;
-  dpr = Math.min(devicePixelRatio || 1, 2); W = innerWidth; H = innerHeight; cv.width = Math.max(1, W * dpr); cv.height = Math.max(1, H * dpr); dirty = true;
-  // a pane that opened at zero size gets its framing once it has one
-  if (!was && W && map) { const fit = Math.min(W, H) / (map.N * CELL * 1.08); if (intro) intro.s1 = fit, intro.s0 = Math.max(fit * 6, 40); else view.s = fit; }
-}
+function fit() { return Math.min(VW, VH) / (S * 1.02); }
+function resize() { const was = VW; dpr = Math.min(devicePixelRatio || 1, 2); VW = innerWidth; VH = innerHeight; cv.width = Math.max(1, VW * dpr); cv.height = Math.max(1, VH * dpr); dirty = true; if (!was && VW) { if (intro) { intro.s1 = fit(); intro.s0 = fit() * 8; } else view.s = fit(); } }
 addEventListener("resize", resize);
-const toWorld = (e) => [view.x + (e.clientX - W / 2) / view.s, view.y - (e.clientY - H / 2) / view.s];
-cv.addEventListener("wheel", (e) => {
-  e.preventDefault(); intro = null;
-  const [wx, wy] = toWorld(e), k = Math.exp(-e.deltaY * 0.0015);
-  view.s = Math.max(0.25, Math.min(140, view.s * k));
-  view.x = wx - (e.clientX - W / 2) / view.s; view.y = wy + (e.clientY - H / 2) / view.s;
-  dirty = true; settle = 0.12;
-}, { passive: false });
+const toWorld = (e) => [view.x + (e.clientX - VW / 2) / view.s, view.y - (e.clientY - VH / 2) / view.s];
+cv.addEventListener("wheel", (e) => { e.preventDefault(); intro = null; const [wx, wy] = toWorld(e); view.s = Math.max(1, Math.min(160, view.s * Math.exp(-e.deltaY * 0.0015))); view.x = wx - (e.clientX - VW / 2) / view.s; view.y = wy + (e.clientY - VH / 2) / view.s; dirty = true; settle = 0.12; }, { passive: false });
 let drag = null;
 cv.addEventListener("pointerdown", (e) => { drag = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y, moved: false }; cv.setPointerCapture(e.pointerId); });
-cv.addEventListener("pointermove", (e) => {
-  if (!drag) return;
-  const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
-  if (Math.hypot(dx, dy) > 4) drag.moved = true;
-  if (drag.moved) { intro = null; view.x = drag.vx - dx / view.s; view.y = drag.vy + dy / view.s; dirty = true; settle = 0.12; }
-});
-cv.addEventListener("pointerup", (e) => {
-  if (drag && !drag.moved) { const [x, y] = toWorld(e); intruders.push({ x, y, alive: true, hp: 1, t2: 0 }); }
-  drag = null;
-});
-let intro = null;
-function regen(opts = {}) {
-  const order = +document.getElementById("order").value, loops = +document.getElementById("loops").value, sym = document.getElementById("sym").value;
-  map = build(order, loops, sym); stock = 20; born = 0; lost = 0; intruders = []; kills = 0;
-  spawnAnts(+document.getElementById("ants").value);
-  const fit = Math.min(W, H) / (map.N * CELL * 1.08);
-  if (opts.intro) intro = { t: 0, s0: Math.max(fit * 6, 40), s1: fit }; else view.s = fit;
-  view.x = 0; view.y = 0; dirty = true;
+cv.addEventListener("pointermove", (e) => { if (!drag) return; const dx = e.clientX - drag.x, dy = e.clientY - drag.y; if (Math.hypot(dx, dy) > 4) drag.moved = true; if (drag.moved) { intro = null; view.x = drag.vx - dx / view.s; view.y = drag.vy + dy / view.s; dirty = true; settle = 0.12; } });
+cv.addEventListener("pointerup", (e) => { if (drag && !drag.moved) { const [x, y] = toWorld(e); raiders.push({ x, y, v: 0, alive: true, hp: 1 }); } drag = null; });
+
+let seed = 20141, opts = () => ({ fold: +$("fold").value, food: +$("food").value, hil: +$("hil").value });
+function load(s, introOn = true) {
+  seed = s;
+  W = generate(seed, opts());
+  SV = solve(W, 320);
+  heat = new Float32Array(SV.G * SV.G); stock = 30; born = 0; lost = 0; raiders = []; flashes = [];
+  for (const f of W.food) f.amt = Math.round(6 + f.rich * 10);
+  buildFlowCanvas();
+  spawnAnts(+$("ants").value);
+  view.x = 0; view.y = 0; if (introOn && VW) intro = { t: 0, s0: fit() * 8, s1: fit() }; else if (VW) view.s = fit();
+  $("log").textContent = W.log.join("  →  ") + `  ·  ${(performance.now() - 0) | 0 ? "" : ""}generated in ${W.ms | 0} ms`;
+  dirty = true;
 }
-const presets = {
-  seed: { order: 4, loops: 8, ants: 600, sym: "rot" },
-  maze: { order: 4, loops: 0, ants: 500, sym: "rot" },
-  mega: { order: 6, loops: 6, ants: 2500, sym: "mir" },
-  swarm: { order: 5, loops: 30, ants: 4000, sym: "rot" },
-  raid: { order: 5, loops: 6, ants: 2014, sym: "rot", raid: 35 },
-};
-document.querySelectorAll("[data-p]").forEach((b) => b.addEventListener("click", () => {
-  const p = presets[b.dataset.p];
-  for (const k of ["order", "loops", "ants", "sym"]) document.getElementById(k).value = p[k];
-  regen({ intro: true });
-  if (p.raid) raid(p.raid);
-}));
-["order", "loops", "sym"].forEach((id) => document.getElementById(id).addEventListener("change", () => regen()));
-document.getElementById("ants").addEventListener("change", () => spawnAnts(+document.getElementById("ants").value));
-document.getElementById("reseed").addEventListener("click", () => { seed = (seed * 48271) % 2147483647; regen(); });
+document.querySelectorAll("[data-l]").forEach((b) => b.addEventListener("click", () => { show[b.dataset.l] = !show[b.dataset.l]; b.classList.toggle("on", show[b.dataset.l]); dirty = true; }));
+["fold", "food", "hil"].forEach((id) => $(id).addEventListener("change", () => load(seed, false)));
+$("ants").addEventListener("change", () => spawnAnts(+$("ants").value));
+$("reseed").addEventListener("click", () => load((seed * 48271 + 7) % 2147483647));
+$("raid").addEventListener("click", () => { raiders = []; for (let i = 0; i < 35; i++) { const a = (i / 35) * TAU, r = S * 0.47; raiders.push({ x: Math.cos(a) * r, y: Math.sin(a) * r, v: 1.4, alive: true, hp: 30 }); } });
+
+// ---------------------------------------------------------------- GPU batch evaluation
+// Many seeds generated on the CPU, rasterised coarse, then ONE compute shader relaxes
+// all their distance fields in parallel (z = environment). Score: food reachable,
+// path tortuosity near a target, and openness. Click a thumbnail to load it.
+const GB = 128;
+const WGSL = `
+@group(0) @binding(0) var<storage, read> occ: array<u32>;
+@group(0) @binding(1) var<storage, read> src: array<u32>;
+@group(0) @binding(2) var<storage, read_write> dst: array<u32>;
+const G: u32 = ${GB}u;
+@compute @workgroup_size(8, 8, 1) fn main(@builtin(global_invocation_id) id: vec3u) {
+  let x = id.x; let y = id.y; let b = id.z;
+  if (x >= G || y >= G) { return; }
+  let i = b * G * G + y * G + x;
+  var d = src[i];
+  if (occ[i] == 0u) {
+    if (x > 0u) { d = min(d, src[i - 1u] + 1u); }
+    if (x + 1u < G) { d = min(d, src[i + 1u] + 1u); }
+    if (y > 0u) { d = min(d, src[i - G] + 1u); }
+    if (y + 1u < G) { d = min(d, src[i + G] + 1u); }
+  }
+  dst[i] = d;
+}`;
+let gpu = null;
+async function gpuInit() {
+  if (gpu !== null) return gpu;
+  try { const ad = await navigator.gpu?.requestAdapter(); const dev = await ad?.requestDevice(); if (!dev) return (gpu = false); gpu = { dev, pipe: dev.createComputePipeline({ layout: "auto", compute: { module: dev.createShaderModule({ code: WGSL }), entryPoint: "main" } }) }; } catch (e) { gpu = false; }
+  return gpu;
+}
+async function relaxAll(occs, B, iters) {
+  const INF = 0x3fffffff, N = B * GB * GB, occ = new Uint32Array(N), init = new Uint32Array(N).fill(INF);
+  occs.forEach((o, b) => { occ.set(o, b * GB * GB); for (const c of discCells(GB, [0, 0], 1.0)) { occ[b * GB * GB + c] = 0; init[b * GB * GB + c] = 0; } });
+  const G = await gpuInit();
+  if (!G) { // CPU fallback: plain BFS per environment
+    return occs.map((o, b) => { const oo = occ.subarray(b * GB * GB, (b + 1) * GB * GB); const D = bfs(Uint8Array.from(oo), GB, discCells(GB, [0, 0], 1.0)); return Uint32Array.from(D, (v) => (v === 65535 ? INF : v)); });
+  }
+  const { dev, pipe } = G, U = GPUBufferUsage;
+  const mk = (data, usage) => { const b = dev.createBuffer({ size: data.byteLength, usage, mappedAtCreation: true }); new Uint32Array(b.getMappedRange()).set(data); b.unmap(); return b; };
+  const bo = mk(occ, U.STORAGE), b0 = mk(init, U.STORAGE | U.COPY_SRC), b1 = mk(init, U.STORAGE | U.COPY_SRC), rd = dev.createBuffer({ size: N * 4, usage: U.MAP_READ | U.COPY_DST });
+  const bg = (s, d) => dev.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: bo } }, { binding: 1, resource: { buffer: s } }, { binding: 2, resource: { buffer: d } }] });
+  const g01 = bg(b0, b1), g10 = bg(b1, b0), enc = dev.createCommandEncoder(), pass = enc.beginComputePass();
+  pass.setPipeline(pipe);
+  for (let i = 0; i < iters; i++) { pass.setBindGroup(0, i % 2 ? g10 : g01); pass.dispatchWorkgroups(GB / 8, GB / 8, B); }
+  pass.end();
+  enc.copyBufferToBuffer(iters % 2 ? b1 : b0, 0, rd, 0, N * 4);
+  dev.queue.submit([enc.finish()]);
+  await rd.mapAsync(GPUMapMode.READ);
+  const out = new Uint32Array(rd.getMappedRange()).slice(); rd.unmap();
+  [bo, b0, b1, rd].forEach((b) => b.destroy());
+  return occs.map((_, b) => out.subarray(b * GB * GB, (b + 1) * GB * GB));
+}
+$("evolve").addEventListener("click", async () => {
+  const B = 64, base = (seed * 69069 + 1) % 2147483647, gal = $("gallery");
+  gal.classList.add("show"); gal.innerHTML = ""; $("log").textContent = `generating ${B} worlds…`;
+  await new Promise((r) => setTimeout(r, 20));
+  const t0 = performance.now(), worlds = [], occs = [];
+  for (let b = 0; b < B; b++) { const w = generate(base + b * 7919, opts()); worlds.push(w); occs.push(raster(w.T, GB)); }
+  const tg = performance.now();
+  const ds = await relaxAll(occs, B, 720);
+  const tr = performance.now();
+  const INF = 0x3fffffff, cell = S / GB;
+  const scored = worlds.map((w, b) => {
+    const D = ds[b]; let reach = 0, tort = 0;
+    for (const f of w.food) { const cs2 = discCells(GB, f.p, 2.2); const d = Math.min(...cs2.map((c) => D[c])); if (d < INF) { reach++; tort += (d * cell) / Math.max(1, Math.hypot(...f.p)); } }
+    const open = occs[b].reduce((a, v) => a + (1 - v), 0) / (GB * GB);
+    const tor = reach ? tort / reach : 0;
+    const score = (reach / w.food.length) * 70 + Math.max(0, 20 - Math.abs(tor - 1.8) * 14) + Math.max(0, 10 - Math.abs(open - 0.78) * 60);
+    return { w, score, reach: reach / w.food.length, tor, open };
+  }).sort((a, b) => b.score - a.score);
+  $("log").textContent = `${B} worlds: generated in ${(tg - t0) | 0} ms on the CPU, ${B} distance fields relaxed in parallel in ${(tr - tg) | 0} ms on ${gpu ? "the GPU" : "the CPU (no WebGPU)"} · click one to load`;
+  for (const s of scored) {
+    const d = document.createElement("div"), c = document.createElement("canvas"); c.width = 240; c.height = 240;
+    const x = c.getContext("2d"); x.translate(120, 120); x.scale(240 / S, -240 / S); drawTerrain(x, s.w.T, S / 240, false);
+    d.append(c); const sp = document.createElement("span"); sp.textContent = `${s.score.toFixed(0)} · reach ${(s.reach * 100) | 0}% · tort ${s.tor.toFixed(2)}`; d.append(sp);
+    d.addEventListener("click", () => load(s.w.seed)); gal.append(d);
+  }
+});
 resize();
-regen({ intro: true });
+load(seed);
 requestAnimationFrame(frame);
 </script>
 </body>

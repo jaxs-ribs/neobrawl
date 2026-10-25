@@ -477,6 +477,9 @@ impl Game {
             self.menu.failsafe = true;
         }
         let a = if dir == 1 { (i + 1) as f32 / 30.0 } else { 1.0 - (i + 1) as f32 / 30.0 };
+        // on desktop the screens shatter out and assemble in on their own:
+        // the white wipe is only a breath over the swap
+        let a = if self.input.desktop { a * 0.35 } else { a };
         for n in [self.menu.white_fade, self.menu.white_fade2].into_iter().flatten() {
             self.image_alpha(n, a);
         }

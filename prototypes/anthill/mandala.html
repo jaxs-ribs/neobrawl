@@ -1,0 +1,440 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Anthill</title>
+<style>
+  :root { --bg: #fbfbfb; --ink: #111; --dim: #8a8a8a; }
+  html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; font: 12px/1.4 system-ui, sans-serif; color: var(--ink); user-select: none; }
+  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; cursor: crosshair; }
+  #ui { position: fixed; left: 16px; top: 14px; display: flex; flex-direction: column; gap: 6px; max-width: calc(100vw - 32px); }
+  h1 { font-weight: 300; letter-spacing: .45em; font-size: 15px; margin: 0 0 4px; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; color: var(--dim); }
+  .row label { display: flex; gap: 6px; align-items: center; }
+  input[type=range] { width: 90px; accent-color: #111; }
+  button, select { font: inherit; background: none; border: 1px solid #ccc; border-radius: 3px; padding: 2px 8px; cursor: pointer; color: var(--ink); }
+  button:hover { border-color: #111; }
+  #stat { color: var(--dim); }
+  #hint { position: fixed; right: 16px; bottom: 12px; color: var(--dim); text-align: right; pointer-events: none; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui">
+  <h1>ANTHILL</h1>
+  <div class="row">
+    <button data-p="lotus">lotus</button><button data-p="wheel">wheel</button><button data-p="cathedral">cathedral</button><button data-p="raid">raid · 2014 vs 35</button>
+  </div>
+  <div class="row">
+    <label>rings <input id="rings" type="range" min="5" max="18" value="11"></label>
+    <label>fold <select id="fold"><option>6</option><option selected>8</option><option>12</option></select></label>
+    <label>hilbert <input id="hil" type="range" min="0" max="40" value="20">%</label>
+    <label>ants <input id="ants" type="range" min="0" max="5000" step="1" value="2014"></label>
+    <button id="reseed">reseed</button>
+  </div>
+  <div id="stat"></div>
+</div>
+<div id="hint">scroll to zoom · drag to pan · click to drop an intruder</div>
+<script>
+const cv = document.getElementById("c"), g = cv.getContext("2d");
+const INK = "#111", BG = "#fbfbfb", L = 2.4; // one wall length, as in the game
+let W = 0, H = 0, dpr = 1;
+const view = { x: 0, y: 0, s: 10 };
+let M = null, ants = [], intruders = [], seed = 3, stock = 20, born = 0, lost = 0, target = 2014, births = [], flashes = [], alarms = [];
+const TAU = Math.PI * 2;
+const hash = (a, b, c, d) => { let h = (a * 374761393 + b * 668265263 + c * 2147483647 + d * 1274126177) | 0; h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h ^ (h >>> 16)) >>> 0) / 4294967296; };
+function d2xy(n, d) {
+  let x = 0, y = 0, t = d;
+  for (let s = 1; s < n; s *= 2) {
+    const rx = 1 & (t / 2), ry = 1 & (t ^ rx);
+    if (ry === 0) { if (rx === 1) { x = s - 1 - x; y = s - 1 - y; } const tmp = x; x = y; y = tmp; }
+    x += s * rx; y += s * ry; t = Math.floor(t / 4);
+  }
+  return [x, y];
+}
+
+// ================================================================ mandala
+// Ring i carries k*i lens segments, so its radius is k*i*L/2pi: every ring
+// outward adds exactly k walls, a rational growth. Band i (between rings i
+// and i+1) has k*i cells. Gates and spokes follow rules on (index mod i), so
+// each 1/k turn repeats exactly and the gates drift into spirals.
+function build(NR, k, hilPct) {
+  const R = (i) => (k * i * L) / TAU;
+  const cells = [{ i: 0, j: 0, x: 0, y: 0, a: 0, r: 0 }]; // 0 = the hill
+  const off = [0, 1];
+  for (let i = 1; i < NR; i++) {
+    for (let j = 0; j < k * i; j++) {
+      const a = ((j + 0.5) / (k * i)) * TAU, r = (R(i) + R(i + 1)) / 2;
+      cells.push({ i, j, a, r, x: Math.cos(a) * r, y: Math.sin(a) * r });
+    }
+    off.push(cells.length);
+  }
+  const id = (i, j) => (i === 0 ? 0 : off[i] + (((j % (k * i)) + k * i) % (k * i)));
+  const phi = 0.6180339887;
+  const gate = (i, s) => (i === 1 ? s % 2 === 0 : (s % i) === Math.floor(i * phi * 3 + seed) % i || (i % 4 === 0 && (s % i) === Math.floor(i / 2)));
+  const spoke = (i, j) => { const m = 1 + ((i + seed) % 3); return ((j + 1) % i) % m === 0 && hash(seed, i, (j + 1) % i, 5) < 0.8; };
+  const ringOpen = new Set(), spokeOpen = new Set(); // overrides from the connectivity pass
+  const isGate = (i, s) => gate(i, s) || ringOpen.has(i * 10000 + (s % i));
+  const isSpoke = (i, j) => spoke(i, j) && !spokeOpen.has(i * 10000 + (j % i));
+  const adj = () => {
+    const A = cells.map(() => []);
+    const link = (a, b) => { A[a].push(b); A[b].push(a); };
+    for (let j = 0; j < k; j++) if (isGate(1, j)) link(0, id(1, j));
+    for (let i = 1; i < NR; i++) {
+      for (let j = 0; j < k * i; j++) {
+        if (!isSpoke(i, j)) link(id(i, j), id(i, j + 1));
+        if (i + 1 < NR) {
+          // ring i+1 segment s = outer cell s; link where angular spans overlap and it's a gate
+          const a0 = j / (k * i), a1 = (j + 1) / (k * i);
+          for (let s = Math.floor(a0 * k * (i + 1)); s < Math.ceil(a1 * k * (i + 1)); s++) if (isGate(i + 1, s)) link(id(i, j), id(i + 1, s));
+        }
+      }
+    }
+    return A;
+  };
+  // connectivity: open what's needed, symmetrically (per residue mod i)
+  let A;
+  for (let pass = 0; pass < 400; pass++) {
+    A = adj();
+    const seen = new Uint8Array(cells.length), q = [0]; seen[0] = 1;
+    while (q.length) { const c = q.shift(); for (const n of A[c]) if (!seen[n]) { seen[n] = 1; q.push(n); } }
+    const lostCell = cells.findIndex((_, c) => !seen[c]);
+    if (lostCell < 0) break;
+    const { i, j } = cells[lostCell];
+    const s = j;
+    if (!ringOpen.has(i * 10000 + (s % i)) && !gate(i, s)) ringOpen.add(i * 10000 + (s % i)); else spokeOpen.add(i * 10000 + (j % i));
+  }
+  // BFS tree from the hill: every cell knows its way home
+  const parent = new Int32Array(cells.length).fill(-1), depth = new Int32Array(cells.length);
+  { const q = [0]; parent[0] = 0; while (q.length) { const c = q.shift(); for (const n of A[c]) if (parent[n] < 0) { parent[n] = c; depth[n] = depth[c] + 1; q.push(n); } } }
+  const homeRoute = (c) => { const r = []; while (c !== 0 && c >= 0) { r.push(c); c = parent[c]; } r.push(0); return r.reverse(); };
+
+  // walls
+  const walls = [];
+  const lensAt = (x0, y0, x1, y1, tag) => walls.push({ x0, y0, x1, y1, tag, layer: 0 });
+  const exitRes = Math.floor(NR * phi * 3 + seed) % NR;
+  for (let i = 1; i <= NR; i++) {
+    for (let s = 0; s < k * i; s++) {
+      const outer = i === NR;
+      if (outer ? s % i === exitRes : isGate(i, s)) continue;
+      const a0 = (s / (k * i)) * TAU, a1 = ((s + 1) / (k * i)) * TAU;
+      lensAt(Math.cos(a0) * R(i), Math.sin(a0) * R(i), Math.cos(a1) * R(i), Math.sin(a1) * R(i), { ring: i, s });
+    }
+  }
+  for (let i = 1; i < NR; i++) for (let j = 0; j < k * i; j++) if (isSpoke(i, j)) {
+    const a = ((j + 1) / (k * i)) * TAU;
+    lensAt(Math.cos(a) * R(i), Math.sin(a) * R(i), Math.cos(a) * R(i + 1), Math.sin(a) * R(i + 1), { spoke: i, j });
+  }
+
+  // boxes: each band has its own rule, always aligned to the turn of the ring
+  const boxes = [], sites = [];
+  for (let i = 1; i < NR; i++) {
+    const rule = (i + seed) % 5, band = R(i + 1) - R(i);
+    for (let j = 0; j < k * i; j++) {
+      const c = cells[id(i, j)], rot = c.a, rr = (dr, da) => [Math.cos(c.a + da) * (c.r + dr), Math.sin(c.a + da) * (c.r + dr)];
+      const da = TAU / (k * i);
+      const res = j % i;
+      if (rule === 0 && res % 2 === 0) boxes.push([c.x, c.y, 0.72, rot]);
+      if (rule === 1 && res % 3 === 1) { boxes.push([...rr(band * 0.22, 0), 0.6, rot]); boxes.push([...rr(-band * 0.22, 0), 0.6, rot]); }
+      if (rule === 2 && res === 0) for (const t of [-0.3, 0.3]) boxes.push([...rr(band * 0.3, da * t), 0.5, rot + Math.PI / 4]);
+      if (rule === 3 && (res === Math.floor(i / 2) || res === 0)) boxes.push([...rr(0, 0), 0.8, rot + Math.PI / 4]);
+      if (rule === 4 && res % 4 === 2) for (const [dr, t] of [[0, 0], [band * 0.25, 0.25], [band * 0.25, -0.25]]) boxes.push([...rr(dr, da * t), 0.45, rot]);
+      // food grows in the cells that hold box clusters
+      if ((rule === 4 && res % 4 === 2) || (rule === 2 && res === 0)) sites.push({ cell: id(i, j), amt: 3, cap: 3 });
+    }
+  }
+
+  // ================================================================ hilbert patches
+  // ~hilPct of the disc is covered by k-fold placed square Hilbert labyrinths,
+  // turned to face the centre. Where they cross the mandala the two weave:
+  // ring/spoke and curve walls alternate over and under in a checkerboard.
+  const discA = Math.PI * R(NR) ** 2, patches = [];
+  const bandsP = hilPct > 0 ? [Math.round(NR * 0.42), Math.round(NR * 0.78)].filter((b, ix, a) => b >= 2 && b < NR && a.indexOf(b) === ix) : [];
+  for (const b of bandsP) {
+    const side = Math.sqrt(((hilPct / 100) * discA) / (k * bandsP.length)), n = 8, cs = side / n;
+    for (let m = 0; m < k; m++) {
+      const a = ((m + (b % 2) * 0.5) / k) * TAU, r = (R(b) + R(b + 1)) / 2;
+      const cx = Math.cos(a) * r, cy = Math.sin(a) * r;
+      const ux = -Math.sin(a), uy = Math.cos(a), vx = Math.cos(a), vy = Math.sin(a); // u tangential, v outward
+      const P = (u, v) => [cx + (u - n / 2) * cs * ux + (v - n / 2) * cs * vx, cy + (u - n / 2) * cs * uy + (v - n / 2) * cs * vy];
+      const path = []; for (let d = 0; d < n * n; d++) path.push(d2xy(n, d));
+      const po = new Set(); const pk = (a2, b2) => ((a2[0] * 16 + a2[1]) < (b2[0] * 16 + b2[1]) ? `${a2}|${b2}` : `${b2}|${a2}`);
+      for (let d = 1; d < path.length; d++) po.add(pk(path[d - 1], path[d]));
+      const pw = [];
+      for (let u = 0; u <= n; u++) for (let v = 0; v < n; v++) {
+        const inside = u > 0 && u < n && po.has(pk([u - 1, v], [u, v]));
+        const door = (u === 0 && v === 0) || (u === n && v === 0); // entry and exit open onto the mandala
+        if (!inside && !door) pw.push([u, v, u, v + 1]);
+      }
+      for (let v = 0; v <= n; v++) for (let u = 0; u < n; u++) {
+        const inside = v > 0 && v < n && po.has(pk([u, v - 1], [u, v]));
+        if (!inside) pw.push([u, v, u + 1, v]);
+      }
+      for (const [u0, v0, u1, v1] of pw) { const p0 = P(u0, v0), p1 = P(u1, v1); walls.push({ x0: p0[0], y0: p0[1], x1: p1[0], y1: p1[1], tag: { patch: patches.length, par: (u0 + v0) % 2 }, layer: 0, w: cs / L }); }
+      for (let d = 1; d < path.length - 1; d++) {
+        const [p, q2, s2] = [path[d - 1], path[d], path[d + 1]];
+        const din = [q2[0] - p[0], q2[1] - p[1]], dout = [s2[0] - q2[0], s2[1] - q2[1]];
+        if ((din[0] !== dout[0] || din[1] !== dout[1]) && (d + m) % 3 === 0) boxes.push([...P(q2[0] + 0.5 + (din[0] - dout[0]) * 0.25, q2[1] + 0.5 + (din[1] - dout[1]) * 0.25), cs * 0.32, a]);
+      }
+      const pts = path.map(([u, v]) => P(u + 0.5, v + 0.5));
+      patches.push({ cx, cy, ux, uy, vx, vy, side, a, pts });
+    }
+  }
+  // weave: inside a patch's square, mandala walls alternate over/under against the curve
+  const inPatch = (x, y) => patches.findIndex((p) => { const dx = x - p.cx, dy = y - p.cy; return Math.abs(dx * p.ux + dy * p.uy) < p.side / 2 + 0.3 && Math.abs(dx * p.vx + dy * p.vy) < p.side / 2 + 0.3; });
+  for (const w of walls) {
+    if (inPatch((w.x0 + w.x1) / 2, (w.y0 + w.y1) / 2) < 0) continue;
+    if (w.tag.patch !== undefined) w.layer = w.tag.par === 0 ? 1 : 0;
+    else w.layer = ((w.tag.ring || 0) + (w.tag.s || 0) + (w.tag.spoke || 0) + (w.tag.j || 0)) % 2 === 0 ? 1 : 0;
+  }
+
+  // routes: from the hill to each food site (cells, then into a patch's curve)
+  const nearestCell = (x, y) => { let b = 0, bd = 1e9; cells.forEach((c, ix) => { const d = (c.x - x) ** 2 + (c.y - y) ** 2; if (d < bd) { bd = d; b = ix; } }); return b; };
+  const routes = [];
+  for (const st of sites) routes.push({ pts: homeRoute(st.cell).map((c) => [cells[c].x, cells[c].y]), site: st });
+  for (const p of patches) {
+    const st = { amt: 6, cap: 6 }; sites.push(st);
+    routes.push({ pts: homeRoute(nearestCell(...p.pts[0])).map((c) => [cells[c].x, cells[c].y]).concat(p.pts), site: st });
+  }
+  for (const r of routes) r.pher = new Float32Array(r.pts.length);
+  // raid routes: from each outer exit to the hill
+  const outerCells = cells.map((c, ix) => ix).filter((ix) => cells[ix].i === NR - 1 && cells[ix].j % (NR - 1) === exitRes % (NR - 1));
+  const raidRoutes = outerCells.map((c) => { const pts = homeRoute(c).map((x) => [cells[x].x, cells[x].y]); const last = cells[c]; pts.push([Math.cos(last.a) * (R(NR) + 3), Math.sin(last.a) * (R(NR) + 3)]); return pts.reverse(); });
+  return { NR, k, R, cells, walls, boxes, patches, routes, raidRoutes, sites, radius: R(NR) };
+}
+
+// ================================================================ ants
+function routePoint(rt, t, lat) {
+  const p = rt.pts, i = Math.max(0, Math.min(p.length - 2, Math.floor(t))), f = t - i;
+  const dx = p[i + 1][0] - p[i][0], dy = p[i + 1][1] - p[i][1], l = Math.hypot(dx, dy) || 1;
+  return [p[i][0] + dx * f - (dy / l) * lat, p[i][1] + dy * f + (dx / l) * lat];
+}
+function pickRoute() {
+  const live = M.routes.filter((r) => r.site.amt > 0);
+  const pool = live.length ? live : M.routes;
+  // nearer food is favoured, the far reaches still get scouts
+  for (let tries = 0; ; tries++) { const r = pool[Math.floor(Math.random() * pool.length)]; if (Math.random() < 8 / (r.pts.length + 2) || tries >= 3) return r; }
+}
+function newAnt(rt = pickRoute()) {
+  const [x, y] = routePoint(rt, 0, 0);
+  return { rt, t: 0, x: x + (Math.random() - 0.5) * 0.5, y: y + (Math.random() - 0.5) * 0.5, vx: 0, vy: 0, v: 1.6 + Math.random() * 1.6, carry: false, aggro: 0, wob: Math.random() * 6.28, dead: false };
+}
+function spawnAnts(n) {
+  target = n; ants = []; if (!M.routes.length) return;
+  for (let j = 0; j < n; j++) { const a = newAnt(); a.t = Math.random() * (a.rt.pts.length - 1); [a.x, a.y] = routePoint(a.rt, a.t, 0); ants.push(a); }
+}
+function raid(n) {
+  intruders = [];
+  const rr = M.raidRoutes; if (!rr.length) return;
+  for (let j = 0; j < n; j++) { const pts = rr[j % rr.length]; intruders.push({ raid: true, pts, t: -Math.floor(j / rr.length) * 0.5, v: 1.0 + Math.random() * 0.3, x: pts[0][0], y: pts[0][1], ox: (Math.random() - 0.5) * 0.5, oy: (Math.random() - 0.5) * 0.5, alive: true, hp: 40, t2: 0 }); }
+}
+function step(dt) {
+  for (const z of intruders) if (z.alive && z.raid) {
+    z.t = Math.min(z.pts.length - 1.001, z.t + z.v * dt * 0.5);
+    const tt = Math.max(0, z.t), i = Math.floor(tt), f = tt - i, p = z.pts, q = p[Math.min(p.length - 1, i + 1)];
+    z.x = p[i][0] + (q[0] - p[i][0]) * f + z.ox; z.y = p[i][1] + (q[1] - p[i][1]) * f + z.oy;
+  }
+  const live = intruders.filter((z) => z.alive);
+  for (const r of M.routes) for (let i = 0; i < r.pher.length; i++) r.pher[i] *= 0.996;
+  for (const al of alarms) al.t -= dt;
+  alarms = alarms.filter((al) => al.t > 0);
+  for (const a of ants) {
+    a.wob += dt * (2 + a.v);
+    let tgt = null, td = 1e9;
+    for (const z of live) { const d = Math.hypot(a.x - z.x, a.y - z.y); if (d < td) { td = d; tgt = z; } }
+    if (tgt && td < 4.5) a.aggro = 2.5;
+    else if (tgt && alarms.some((al) => Math.abs(al.x - a.x) < 2.5 && Math.abs(al.y - a.y) < 2.5)) a.aggro = 2.5;
+    if (tgt && td < 0.3 && tgt.raid && (tgt.cd = (tgt.cd || 0) - dt) <= 0) { a.dead = true; tgt.cd = 0.18; lost++; flashes.push({ x: a.x, y: a.y, t: 0.3, red: true }); continue; }
+    if (tgt && td < 0.35) { tgt.hp -= 1; if (tgt.hp <= 0 && tgt.alive) { tgt.alive = false; flashes.push({ x: tgt.x, y: tgt.y, t: 0 }); } }
+    if (a.aggro > 0 && tgt) {
+      // abandon the route and swarm straight at the intruder
+      a.aggro -= dt; a.chase = [tgt.x, tgt.y];
+      if (alarms.length < 400 && Math.random() < dt * 2) alarms.push({ x: a.x, y: a.y, t: 1.2 });
+      continue;
+    }
+    a.chase = null; a.aggro = 0;
+    const [px0, py0] = routePoint(a.rt, a.t, Math.sin(a.wob) * 0.3);
+    const go = Math.hypot(px0 - a.x, py0 - a.y) < 0.8 ? 1 : 0.15;
+    const end = a.rt.pts.length - 1;
+    if (!a.carry) {
+      a.t += a.v * dt * go * 0.9;
+      if (a.t >= end) { a.t = end; if (a.rt.site.amt > 0) { a.rt.site.amt--; a.carry = true; } else { a.rt = pickRoute(); a.t = 0; } }
+    } else {
+      a.t -= a.v * dt * go * 0.7;
+      const ci = Math.max(0, Math.round(a.t)); a.rt.pher[ci] = Math.min(1, a.rt.pher[ci] + dt * 0.8);
+      if (a.t <= 0) { a.t = 0; a.carry = false; stock++; a.rt = pickRoute(); }
+    }
+  }
+  ants = ants.filter((a) => !a.dead);
+  for (let n = 0; n < 6 && ants.length < target && stock > 0 && M.routes.length; n++) { stock--; born++; ants.push(newAnt()); if (Math.random() < 0.15) births.push({ t: 0 }); }
+  births.forEach((b) => (b.t += dt)); births = births.filter((b) => b.t < 0.8);
+  for (const st of M.sites) if (st.amt < st.cap && Math.random() < dt * 0.1) st.amt++;
+  for (const z of intruders) if (!z.alive) z.t2 += dt;
+  intruders = intruders.filter((z) => z.alive || z.t2 < 1.2);
+  // bodies: pulled to the route (or the intruder), shoved by neighbours;
+  // near the hill the shove fades and they pack in
+  const cs = 0.45, grid = new Map(), key = (gx, gy) => (gx + 8192) * 16384 + gy + 8192;
+  for (const a of ants) { const kk = key(Math.floor(a.x / cs), Math.floor(a.y / cs)); let b = grid.get(kk); if (!b) grid.set(kk, (b = [])); b.push(a); }
+  const rs = 0.34;
+  for (const a of ants) {
+    const [tx, ty] = a.chase || routePoint(a.rt, a.t, Math.sin(a.wob) * 0.3);
+    let fx = (tx - a.x) * (a.chase ? 4 : 9), fy = (ty - a.y) * (a.chase ? 4 : 9);
+    const crowd = Math.min(1, Math.max(0.12, (Math.hypot(a.x, a.y) - 2.5) / 7));
+    const gx = Math.floor(a.x / cs), gy = Math.floor(a.y / cs);
+    for (let ox = -1; ox <= 1; ox++) for (let oy = -1; oy <= 1; oy++) {
+      const b = grid.get(key(gx + ox, gy + oy)); if (!b) continue;
+      for (const o of b) {
+        if (o === a) continue;
+        const dx = a.x - o.x, dy = a.y - o.y, d2 = dx * dx + dy * dy;
+        if (d2 > rs * rs || d2 < 1e-8) continue;
+        const d = Math.sqrt(d2), push = (1 - d / rs) * 40 * crowd;
+        fx += (dx / d) * push; fy += (dy / d) * push;
+      }
+    }
+    a.vx = a.vx * 0.82 + fx * dt; a.vy = a.vy * 0.82 + fy * dt;
+    const sp = Math.hypot(a.vx, a.vy), mx = a.chase ? 8 : 7;
+    if (sp > mx) { a.vx *= mx / sp; a.vy *= mx / sp; }
+    a.x += a.vx * dt; a.y += a.vy * dt;
+  }
+}
+
+// ================================================================ drawing
+function lens(ctx, x0, y0, x1, y1, bulge = 1) {
+  const mx = (x0 + x1) / 2, my = (y0 + y1) / 2, dx = x1 - x0, dy = y1 - y0, Ln = Math.hypot(dx, dy);
+  const nx = -dy / Ln, ny = dx / Ln, b = Math.min(Ln, L) * 0.105 * bulge;
+  const ix = dx * 0.015, iy = dy * 0.015;
+  ctx.moveTo(x0 + ix, y0 + iy);
+  ctx.quadraticCurveTo(mx + nx * b, my + ny * b, x1 - ix, y1 - iy);
+  ctx.quadraticCurveTo(mx - nx * b, my - ny * b, x0 + ix, y0 + iy);
+}
+function box(ctx, x, y, s, rot = 0) {
+  const h = s / 2, r = s * 0.2, k = s * 0.045, c = Math.cos(rot), sn = Math.sin(rot);
+  const P = (dx, dy) => [x + dx * c - dy * sn, y + dx * sn + dy * c];
+  const Q = (ax, ay, bx, by) => ctx.quadraticCurveTo(...P(ax, ay), ...P(bx, by));
+  ctx.moveTo(...P(-h + r, -h));
+  Q(0, -h + k, h - r, -h); Q(h, -h, h, -h + r); Q(h - k, 0, h, h - r); Q(h, h, h - r, h);
+  Q(0, h - k, -h + r, h); Q(-h, h, -h, h - r); Q(-h + k, 0, -h, -h + r); Q(-h, -h, -h + r, -h);
+  ctx.closePath();
+  ctx.moveTo(x + s * 0.33, y); ctx.arc(x, y, s * 0.33, 0, TAU, true);
+}
+let cache = null, cacheView = null, dirty = true, settle = 0;
+function renderStatic() {
+  const c = cache || (cache = document.createElement("canvas"));
+  c.width = Math.max(1, W * dpr); c.height = Math.max(1, H * dpr);
+  const ctx = c.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.translate(W / 2 - view.x * view.s, H / 2 + view.y * view.s);
+  ctx.scale(view.s, -view.s);
+  const px = 1 / view.s, far = L * view.s < 6;
+  const vis = (x, y, pad) => Math.abs(x - view.x) < W / 2 / view.s + pad && Math.abs(y - view.y) < H / 2 / view.s + pad;
+  const wv = (w) => vis((w.x0 + w.x1) / 2, (w.y0 + w.y1) / 2, L);
+  const bul = (w) => (w.w ? Math.max(0.7, w.w * 1.6) : 1);
+  const fillWalls = (list, style) => { ctx.beginPath(); for (const w of list) lens(ctx, w.x0, w.y0, w.x1, w.y1, bul(w)); ctx.fillStyle = style; ctx.fill(); };
+  const fillBoxes = (style) => {
+    ctx.beginPath();
+    for (const [x, y, s, rot] of M.boxes) if (vis(x, y, 1)) box(ctx, x, y, s, rot);
+    // the hill: a rosette of lenses around a diamond box
+    for (let kk = 0; kk < 8; kk++) { const a = (kk * Math.PI) / 4 + Math.PI / 8, cc = Math.cos(a), sn = Math.sin(a); lens(ctx, cc * 0.62, sn * 0.62, cc * 2.3, sn * 2.3, 1.15); }
+    box(ctx, 0, 0, 0.62, Math.PI / 4);
+    ctx.fillStyle = style; ctx.fill("evenodd");
+  };
+  if (far) {
+    // from afar: hairlines and specks, the structure reads as a drawing
+    ctx.lineWidth = Math.max(px * 1.1, 0.16); ctx.strokeStyle = INK; ctx.beginPath();
+    for (const w of M.walls) { ctx.moveTo(w.x0, w.y0); ctx.lineTo(w.x1, w.y1); }
+    ctx.stroke();
+    ctx.beginPath(); for (const [x, y, s] of M.boxes) { const h = Math.max(s * 0.45, px * 0.8); ctx.rect(x - h, y - h, 2 * h, 2 * h); } ctx.fillStyle = INK; ctx.fill();
+  } else {
+    // soft offset shadows, the under layer, then the over layer with a paper-coloured halo
+    ctx.save(); ctx.translate(0.07, -0.07); ctx.filter = `blur(${Math.max(0.5, 0.06 * view.s)}px)`;
+    fillWalls(M.walls.filter(wv), "rgba(0,0,0,0.16)"); fillBoxes("rgba(0,0,0,0.16)");
+    ctx.restore(); ctx.filter = "none";
+    fillWalls(M.walls.filter((w) => w.layer === 0 && wv(w)), INK);
+    fillBoxes(INK);
+    const over = M.walls.filter((w) => w.layer === 1 && wv(w));
+    ctx.save(); ctx.lineJoin = "round"; ctx.lineWidth = 0.16; ctx.strokeStyle = BG;
+    ctx.beginPath(); for (const w of over) lens(ctx, w.x0, w.y0, w.x1, w.y1, bul(w)); ctx.stroke(); ctx.restore();
+    fillWalls(over, INK);
+  }
+  cacheView = { ...view }; dirty = false;
+}
+let t0 = performance.now(), intro = null;
+function frame(now) {
+  const dt = Math.min(0.05, (now - t0) / 1000); t0 = now;
+  if (!W || !H) { if (innerWidth) resize(); requestAnimationFrame(frame); return; }
+  if (intro) { intro.t += dt; const u = Math.min(1, intro.t / 6), e = 1 - Math.pow(1 - u, 3); view.s = intro.s0 * Math.pow(intro.s1 / intro.s0, e); dirty = true; if (u >= 1) intro = null; }
+  step(dt);
+  settle -= dt;
+  if (dirty && (settle <= 0 || !cache)) renderStatic();
+  g.setTransform(1, 0, 0, 1, 0, 0); g.fillStyle = BG; g.fillRect(0, 0, cv.width, cv.height);
+  if (cache && cache.width > 1) {
+    const k = view.s / cacheView.s;
+    g.setTransform(dpr * k, 0, 0, dpr * k, dpr * (W / 2 - (view.x - cacheView.x) * view.s - (W / 2) * k), dpr * (H / 2 + (view.y - cacheView.y) * view.s - (H / 2) * k));
+    g.drawImage(cache, 0, 0, cache.width / dpr, cache.height / dpr);
+  }
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.translate(W / 2 - view.x * view.s, H / 2 + view.y * view.s);
+  g.scale(view.s, -view.s);
+  const px = 1 / view.s;
+  for (const r of M.routes) for (let i = 0; i < r.pts.length; i++) { const v = r.pher[i]; if (v < 0.05) continue; g.fillStyle = `rgba(255,32,32,${0.14 * v})`; g.fillRect(r.pts[i][0] - 0.12, r.pts[i][1] - 0.12, 0.24, 0.24); }
+  for (const al of alarms) { g.fillStyle = `rgba(255,32,32,${0.05 * al.t})`; g.beginPath(); g.arc(al.x, al.y, 1.2, 0, TAU); g.fill(); }
+  g.lineWidth = Math.max(px, 0.02);
+  for (const b of births) { const u = b.t / 0.8; g.strokeStyle = `rgba(255,32,32,${0.35 * (1 - u)})`; g.beginPath(); g.arc(0, 0, 0.4 + u * 1.6, 0, TAU); g.stroke(); }
+  const r = Math.max(0.09, 1.3 * px);
+  g.fillStyle = "rgb(255,32,32)"; g.beginPath();
+  for (const a of ants) { g.moveTo(a.x + r, a.y); g.arc(a.x, a.y, r, 0, TAU); }
+  g.fill();
+  if (view.s > 12) { g.fillStyle = INK; g.beginPath(); for (const a of ants) if (a.carry) g.rect(a.x - r * 0.7, a.y + r * 0.9, r * 1.4, r * 1.4); g.fill(); }
+  for (const z of intruders) { const al = z.alive ? 1 : Math.max(0, 1 - z.t2); g.fillStyle = `rgba(64,128,255,${al})`; g.beginPath(); g.arc(z.x, z.y, Math.max(0.16, 2 * px), 0, TAU); g.fill(); }
+  for (const f of flashes) { f.t += dt; const u = f.t / 0.6; if (u < 1) { g.strokeStyle = f.red ? `rgba(255,32,32,${(1 - u) * 0.8})` : `rgba(64,128,255,${1 - u})`; g.lineWidth = Math.max(px, 0.04); g.beginPath(); g.arc(f.x, f.y, 0.2 + u * 1.6, 0, TAU); g.stroke(); } }
+  flashes = flashes.filter((f) => f.t < 0.6);
+  const raiders = intruders.filter((z) => z.raid && z.alive).length;
+  document.getElementById("stat").textContent = `${M.NR} rings × ${M.k}-fold · ${M.walls.length} walls · ${M.boxes.length} boxes · ${M.patches.length} hilbert patches · ${ants.length} ants · food ${stock} · born ${born} · lost ${lost}` + (intruders.some((z) => z.raid) ? ` · ${raiders} raiders left` : "");
+  requestAnimationFrame(frame);
+}
+
+// ================================================================ input
+function fitScale() { return Math.min(W, H) / (M.radius * 2.15); }
+function resize() {
+  const was = W;
+  dpr = Math.min(devicePixelRatio || 1, 2); W = innerWidth; H = innerHeight; cv.width = Math.max(1, W * dpr); cv.height = Math.max(1, H * dpr); dirty = true;
+  if (!was && W && M) { if (intro) { intro.s1 = fitScale(); intro.s0 = intro.s1 * 7; } else view.s = fitScale(); }
+}
+addEventListener("resize", resize);
+const toWorld = (e) => [view.x + (e.clientX - W / 2) / view.s, view.y - (e.clientY - H / 2) / view.s];
+cv.addEventListener("wheel", (e) => { e.preventDefault(); intro = null; const [wx, wy] = toWorld(e); view.s = Math.max(0.5, Math.min(140, view.s * Math.exp(-e.deltaY * 0.0015))); view.x = wx - (e.clientX - W / 2) / view.s; view.y = wy + (e.clientY - H / 2) / view.s; dirty = true; settle = 0.12; }, { passive: false });
+let drag = null;
+cv.addEventListener("pointerdown", (e) => { drag = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y, moved: false }; cv.setPointerCapture(e.pointerId); });
+cv.addEventListener("pointermove", (e) => { if (!drag) return; const dx = e.clientX - drag.x, dy = e.clientY - drag.y; if (Math.hypot(dx, dy) > 4) drag.moved = true; if (drag.moved) { intro = null; view.x = drag.vx - dx / view.s; view.y = drag.vy + dy / view.s; dirty = true; settle = 0.12; } });
+cv.addEventListener("pointerup", (e) => { if (drag && !drag.moved) { const [x, y] = toWorld(e); intruders.push({ x, y, alive: true, hp: 1, t2: 0 }); } drag = null; });
+const $ = (id) => document.getElementById(id);
+function regen(opts = {}) {
+  M = build(+$("rings").value, +$("fold").value, +$("hil").value);
+  stock = 20; born = 0; lost = 0; intruders = []; alarms = [];
+  spawnAnts(+$("ants").value);
+  view.x = 0; view.y = 0;
+  if (opts.intro && W) intro = { t: 0, s0: fitScale() * 7, s1: fitScale() }; else if (W) view.s = fitScale();
+  dirty = true;
+}
+const presets = {
+  lotus: { rings: 8, fold: 6, hil: 20, ants: 1200 },
+  wheel: { rings: 11, fold: 8, hil: 20, ants: 2014 },
+  cathedral: { rings: 17, fold: 12, hil: 22, ants: 4000 },
+  raid: { rings: 11, fold: 8, hil: 20, ants: 2014, raid: 35 },
+};
+document.querySelectorAll("[data-p]").forEach((b) => b.addEventListener("click", () => {
+  const p = presets[b.dataset.p];
+  for (const k of ["rings", "fold", "hil", "ants"]) $(k).value = p[k];
+  regen({ intro: true });
+  if (p.raid) raid(p.raid);
+}));
+["rings", "fold", "hil"].forEach((id) => $(id).addEventListener("change", () => regen()));
+$("ants").addEventListener("change", () => spawnAnts(+$("ants").value));
+$("reseed").addEventListener("click", () => { seed = (seed * 48271 + 11) % 997; regen(); });
+resize();
+regen({ intro: true });
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

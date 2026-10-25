@@ -316,6 +316,7 @@ impl Game {
             self.motion.arc(false, p, bp, 0.025, 0.25, 0.16, INK);
         }
         self.motion.ring(false, bp, 0.15, 0.55, 0.035, 0.3, col);
+        self.body_land(k, 0.5);
         if reset {
             // the dash comes back: lightning cracks from the box into the soul
             let mut hot = col;
@@ -334,6 +335,7 @@ impl Game {
         let col = self.soul_color(self.players[k].node);
         let f = (power / 100.0).clamp(0.2, 1.0);
         self.motion.ring(false, p, 0.25, 0.7 + 0.8 * f, 0.05, 0.35, col);
+        self.body_throw(k, dir, power);
         let d = v3(dir.x, dir.y, 0.0);
         for j in 0..(4 + (8.0 * f) as usize) {
             let s = crate::motion::hash(j as u32 ^ self.frame as u32);
@@ -351,6 +353,7 @@ impl Game {
         let mut c = col;
         c[3] = 0.55;
         self.motion.ring(false, p, 0.2, 0.9, 0.03, 0.3, c);
+        self.body_dash(k, dir);
         let d = v3(dir.x, dir.y, 0.0);
         let side = v3(-d.y, d.x, 0.0);
         for s in [-1.0f32, 1.0] {
@@ -374,6 +377,10 @@ impl Game {
             return;
         }
         let col = self.soul_color(player);
+        // the soul takes the hit first: flattened along it, then it bursts
+        let hit = self.kill_impulse;
+        let a = if hit.length() > 1e-3 { hit.y.atan2(hit.x) } else { 0.0 };
+        self.motion.push(crate::motion::Kind::Blob { c: p, a, r: 0.22 }, false, 0.0, 0.14, col);
         self.motion.hitstop = 2;
         self.motion.flash(false, p, 1.3, 0.3, col);
         self.motion.ring(false, p, 0.3, 2.4, 0.06, 0.45, col);
@@ -388,15 +395,39 @@ impl Game {
         self.motion.forms.insert(player, self.motion.now + 0.45);
         self.motion.push(Kind::Flash { c: p, r: 1.1 }, false, 0.45, 0.4, col);
         self.motion.ring_at(false, 0.45, p, 0.2, 1.2, 0.05, 0.4, col);
+        if let Some(&k) = self.player_of.get(&player) {
+            self.body_land(k, 1.0);
+        }
     }
 
     /// A thrown box hit something that isn't a soul: the shards carry the
     /// moment; this is only the broken impact ring and a small shake.
-    pub(super) fn fx_impact(&mut self, pos: V3, _normal: V3) {
+    pub(super) fn fx_impact(&mut self, pos: V3, normal: V3) {
         let mut col = INK;
         col[3] = 0.55 / 0.6; // Ring already draws at 60%
         self.motion.ring(false, pos, 0.15, 0.55, 0.035 / 0.65, 0.3, col);
         self.motion.add_shake(0.05);
+        // nearby boxes jostle away from the blow
+        for b in 0..self.boxes.len() {
+            let n = self.boxes[b].node;
+            if !self.w.active_in_hierarchy(n) || self.w.nodes[n].sprite.as_ref().map(|s| !s.enabled).unwrap_or(true) {
+                continue;
+            }
+            let d = self.w.position(n) - pos;
+            let l = (d.x * d.x + d.y * d.y).sqrt();
+            if l < 2.2 && l > 1e-3 {
+                let kick = v3(d.x / l, d.y / l, 0.0) * (1.6 * (1.0 - l / 2.2));
+                self.motion.jostle(n, kick);
+            }
+        }
+        let _ = normal;
+    }
+
+    /// A thrown box struck an obstacle: the obstacle flexes where it was hit.
+    pub(super) fn fx_flex(&mut self, node: usize, pos: V3, normal: V3) {
+        if self.w.nodes[node].sprite.as_ref().and_then(|s| s.sprite).and_then(|k| self.w.sprites[k].vector.as_ref()).is_some() {
+            self.motion.flex.push(crate::motion::Flex { node, p: pos, dir: -normal, t0: self.motion.now, amp: 0.09 });
+        }
     }
 
     #[doc(hidden)]
