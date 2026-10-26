@@ -3,7 +3,7 @@
 //! zone (some roomy, some tight). Hit one and it shatters into darts that
 //! fly home to you; it condenses back in its zone a moment later.
 
-use std::collections::HashMap;
+use crate::det::HashMap;
 
 use crate::motion::{hash, hf, Kind};
 use crate::shared::math::{v3, Quat, V3};
@@ -56,8 +56,8 @@ impl Game {
             return true;
         }
         let Some(map) = ["Map1", "Map2", "Map3", "Map4"].iter().filter_map(|n| self.w.find(n)).find(|&m| self.w.active_in_hierarchy(m)) else { return false };
-        let p1 = self.players.iter().find(|p| self.w.nodes[p.node].tag == "PlayerOneScreen1").map(|p| p.node);
-        let p2 = self.players.iter().position(|p| self.w.nodes[p.node].tag == "PlayerOneScreen2");
+        let p1 = self.players.iter().find(|p| &*self.w.nodes[p.node].tag == "PlayerOneScreen1").map(|p| p.node);
+        let p2 = self.players.iter().position(|p| &*self.w.nodes[p.node].tag == "PlayerOneScreen2");
         let (Some(p1), Some(k2)) = (p1, p2) else { return false };
         let p2 = self.players[k2].node;
         // the arena's bounds from its big outer walls
@@ -81,7 +81,7 @@ impl Game {
         }
         for c in self.w.nodes[map].children.clone() {
             let n = &self.w.nodes[c].name;
-            if n.starts_with("Wall Big") || n == "SpawnPoints" || box_nodes.contains(&c) {
+            if n.starts_with("Wall Big") || &**n == "SpawnPoints" || box_nodes.contains(&c) {
                 continue;
             }
             self.w.set_active(c, false);
@@ -127,7 +127,7 @@ impl Game {
             let d = (half + r + 1.6).min(room).max(0.0);
             let zone = c0 + dir * d;
             let node = self.w.clone_subtree(p2, &skip);
-            self.w.nodes[node].name = format!("PracticeTarget{k}");
+            self.w.nodes[node].name = format!("PracticeTarget{k}").into();
             self.w.nodes[node].tag = "Untagged".into();
             self.w.set_active(node, true);
             self.w.set_position(node, zone);
@@ -150,7 +150,7 @@ impl Game {
             return;
         }
         let t = self.frame;
-        let me = self.players.iter().find(|p| self.w.nodes[p.node].tag == "PlayerOneScreen1").map(|p| (p.node, p.touch[1], p.charge_timer));
+        let me = self.players.iter().find(|p| &*self.w.nodes[p.node].tag == "PlayerOneScreen1").map(|p| (p.node, p.touch[1], p.charge_timer));
         let mut targets = std::mem::take(&mut self.practice.targets);
         for (k, g) in targets.iter_mut().enumerate() {
             let seed = (t as u32).wrapping_mul(2654435761) ^ (k as u32 * 977 + 3);
@@ -276,7 +276,7 @@ impl Game {
         let t = self.frame;
         let p = self.w.position(node);
         let col = self.soul_color(node);
-        let shooter = self.players.iter().find(|p| self.w.nodes[p.node].tag == "PlayerOneScreen1").map(|p| p.node);
+        let shooter = self.players.iter().find(|p| &*self.w.nodes[p.node].tag == "PlayerOneScreen1").map(|p| p.node);
         // the same beats as a kill, lighter: squash, ring, darts home to you
         let a = if hit.length() > 1e-3 { hit.y.atan2(hit.x) } else { 0.0 };
         self.motion.push(Kind::Blob { c: p, a, r: 0.22 }, false, 0.0, 0.14, col);

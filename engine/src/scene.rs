@@ -2,7 +2,7 @@
 //! (Rect)Transforms, and the Unity components the game uses, loaded from the
 //! JSON written by tools/unity4/extract5.py.
 
-use std::collections::HashMap;
+use crate::det::HashMap;
 
 use serde_json::Value;
 use crate::shared::math::{v3, Mat4, Quat, V3};
@@ -129,8 +129,8 @@ pub struct CameraC {
 
 #[derive(Clone, Debug)]
 pub struct Node {
-    pub name: String,
-    pub tag: String,
+    pub name: std::sync::Arc<str>,
+    pub tag: std::sync::Arc<str>,
     pub layer: u32,
     pub active: bool,
     pub parent: Option<usize>,
@@ -150,9 +150,10 @@ pub struct Node {
     pub scaler: Option<([f32; 2], f32, i32)>,
     pub image: Option<ImageC>,
     pub text: Option<TextC>,
-    pub button: Vec<Click>,
+    // static data, shared between snapshots (rollback clones the world)
+    pub button: std::sync::Arc<Vec<Click>>,
     pub audio: Option<String>,
-    pub scripts: HashMap<String, Value>,
+    pub scripts: std::sync::Arc<HashMap<String, Value>>,
 }
 
 #[derive(Clone, Debug)]
@@ -169,16 +170,18 @@ pub struct SpriteAsset {
     pub vector: Option<std::sync::Arc<VShape>>,
 }
 
+#[derive(Clone)]
 pub struct World {
     pub nodes: Vec<Node>,
-    by_name: HashMap<String, Vec<usize>>,
-    pub objects: HashMap<String, usize>,
-    pub textures: Vec<(String, String)>,
-    pub sprites: Vec<SpriteAsset>,
-    pub sprite_keys: HashMap<String, usize>,
-    pub meshes: Vec<String>,
-    pub materials: Vec<(String, Color, Option<usize>)>,
-    pub audio: HashMap<String, String>,
+    // lookup tables and assets: static, shared between snapshots
+    by_name: std::sync::Arc<HashMap<String, Vec<usize>>>,
+    pub objects: std::sync::Arc<HashMap<String, usize>>,
+    pub textures: std::sync::Arc<Vec<(String, String)>>,
+    pub sprites: std::sync::Arc<Vec<SpriteAsset>>,
+    pub sprite_keys: std::sync::Arc<HashMap<String, usize>>,
+    pub meshes: std::sync::Arc<Vec<String>>,
+    pub materials: std::sync::Arc<Vec<(String, Color, Option<usize>)>>,
+    pub audio: std::sync::Arc<HashMap<String, String>>,
     pub font: Option<String>,
 }
 
@@ -218,7 +221,7 @@ impl World {
         let mut sprite_keys_sorted: Vec<String> = assets["sprites"].as_object().unwrap().keys().cloned().collect();
         sprite_keys_sorted.sort();
         let mut sprites = Vec::new();
-        let mut sprite_keys = HashMap::new();
+        let mut sprite_keys = HashMap::default();
         for k in &sprite_keys_sorted {
             let s = &assets["sprites"][k];
             let tk = s["tex"].as_str().unwrap_or("");
@@ -290,7 +293,7 @@ impl World {
             .iter()
             .map(|n| {
                 let parent = n["parent"].as_i64().unwrap();
-                let mut scripts: HashMap<String, Value> = HashMap::new();
+                let mut scripts: HashMap<String, Value> = HashMap::default();
                 let mut image = None;
                 let mut text = None;
                 let mut button = Vec::new();
@@ -361,8 +364,8 @@ impl World {
                     })
                 };
                 Node {
-                    name: n["name"].as_str().unwrap().to_string(),
-                    tag: n["tag"].as_str().unwrap_or("").to_string(),
+                    name: n["name"].as_str().unwrap().into(),
+                    tag: n["tag"].as_str().unwrap_or("").into(),
                     layer: n["layer"].as_u64().unwrap_or(0) as u32,
                     active: n["active"].as_bool().unwrap(),
                     parent: if parent < 0 { None } else { Some(parent as usize) },
@@ -435,9 +438,9 @@ impl World {
                     scaler,
                     image,
                     text,
-                    button,
+                    button: button.into(),
                     audio: n.get("audioSource").and_then(|a| a["clip"].as_str()).and_then(|k| assets["audio"].get(k)).map(|a| a["name"].as_str().unwrap().to_string()),
-                    scripts,
+                    scripts: scripts.into(),
                 }
             })
             .collect();
@@ -484,11 +487,12 @@ impl World {
                 }
             }
         }
-        let mut by_name: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut by_name: HashMap<String, Vec<usize>> = HashMap::default();
         for (i, n) in nodes.iter().enumerate() {
-            by_name.entry(n.name.clone()).or_default().push(i);
+            by_name.entry(n.name.to_string()).or_default().push(i);
         }
-        World { nodes, by_name, objects, textures, sprites, sprite_keys, meshes: mesh_keys, materials, audio, font }
+        use std::sync::Arc;
+        World { nodes, by_name: Arc::new(by_name), objects: Arc::new(objects), textures: Arc::new(textures), sprites: Arc::new(sprites), sprite_keys: Arc::new(sprite_keys), meshes: Arc::new(mesh_keys), materials: Arc::new(materials), audio: Arc::new(audio), font }
     }
 
     pub fn obj(&self, key: &Value) -> Option<usize> {
@@ -518,11 +522,11 @@ impl World {
         fn go(w: &mut World, i: usize, parent: Option<usize>, skip: &[usize]) -> usize {
             let mut n = w.nodes[i].clone();
             n.parent = parent;
-            n.scripts.clear();
-            n.button.clear();
+            n.scripts = Default::default();
+            n.button = Default::default();
             let kids = std::mem::take(&mut n.children);
             let id = w.nodes.len();
-            w.by_name.entry(n.name.clone()).or_default().push(id);
+            std::sync::Arc::make_mut(&mut w.by_name).entry(n.name.to_string()).or_default().push(id);
             w.nodes.push(n);
             for c in kids {
                 if skip.contains(&c) {
@@ -563,7 +567,7 @@ impl World {
     }
 
     pub fn with_tag(&self, tag: &str) -> Option<usize> {
-        (0..self.nodes.len()).find(|&i| self.nodes[i].tag == tag && self.active_in_hierarchy(i))
+        (0..self.nodes.len()).find(|&i| &*self.nodes[i].tag == tag && self.active_in_hierarchy(i))
     }
 
     pub fn child(&self, i: usize, k: usize) -> usize {
@@ -571,7 +575,7 @@ impl World {
     }
 
     pub fn child_named(&self, i: usize, name: &str) -> Option<usize> {
-        self.nodes[i].children.iter().copied().find(|&c| self.nodes[c].name == name)
+        self.nodes[i].children.iter().copied().find(|&c| &*self.nodes[c].name == name)
     }
 
     pub fn descendants(&self, i: usize, out: &mut Vec<usize>) {

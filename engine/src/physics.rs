@@ -4,7 +4,7 @@
 //! layer-collision matrix, Physics.IgnoreCollision, collision/trigger
 //! enter/exit events and raycasts.
 
-use std::collections::HashSet;
+use crate::det::HashSet;
 
 use crate::shared::math::{v3, V3};
 
@@ -157,7 +157,7 @@ pub struct CollisionEvent {
     pub trigger: bool,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Physics {
     pub ignore: HashSet<(usize, usize)>,
     touching: HashSet<(usize, usize)>,
@@ -463,7 +463,7 @@ impl Physics {
             .copied()
             .filter(|&i| w.nodes[i].body.as_ref().map(|b| b.constraints != FREEZE_ALL).unwrap_or(false))
             .collect();
-        let mut touching: HashSet<(usize, usize)> = HashSet::new();
+        let mut touching: HashSet<(usize, usize)> = HashSet::default();
         let mut contacts: Vec<(usize, usize, Contact)> = Vec::new();
 
         for &i in &dynamic {
@@ -613,7 +613,7 @@ impl Physics {
 
         // Triggers: OnTriggerEnter between triggers and dynamic bodies
         let triggers: Vec<usize> = cols.iter().copied().filter(|&i| w.nodes[i].collider.as_ref().unwrap().trigger).collect();
-        let mut now = HashSet::new();
+        let mut now = HashSet::default();
         let dyn_geo: Vec<(usize, Geo, (f32, f32, f32))> = if triggers.is_empty() {
             Vec::new()
         } else {

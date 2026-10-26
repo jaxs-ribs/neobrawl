@@ -12,7 +12,8 @@ mod players;
 pub mod practice;
 mod tasks;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
+use crate::det::HashMap;
 
 use serde_json::Value;
 use crate::shared::math::{v3, V3};
@@ -141,6 +142,7 @@ pub struct MusicSource {
     pub volume: f32,
 }
 
+#[derive(Clone)]
 pub struct Game {
     pub w: World,
     pub phys: Physics,
@@ -172,7 +174,7 @@ pub struct Game {
     /// pointer id -> button node pressed on pointer down
     pub pressed: HashMap<i32, usize>,
     /// script components whose Start() already ran
-    pub started: std::collections::HashSet<(usize, &'static str)>,
+    pub started: crate::det::HashSet<(usize, &'static str)>,
     pub was_active: HashMap<usize, bool>,
     pub motion: crate::motion::Motion,
     /// velocity of the box that made the last kill (the orbs fly with it)
@@ -234,8 +236,8 @@ impl Game {
             frame: 0,
             players: Vec::new(),
             boxes: Vec::new(),
-            box_of: HashMap::new(),
-            player_of: HashMap::new(),
+            box_of: HashMap::default(),
+            player_of: HashMap::default(),
             deaths: Vec::new(),
             scores: Vec::new(),
             cam_follow: Vec::new(),
@@ -247,18 +249,18 @@ impl Game {
             menu: menu::Menu::default(),
             tutorial: None,
             misc: menu::Misc::default(),
-            pressed: HashMap::new(),
+            pressed: HashMap::default(),
             started: Default::default(),
-            was_active: HashMap::new(),
+            was_active: HashMap::default(),
             motion: Default::default(),
             kill_impulse: V3::ZERO,
-            prev_pos: HashMap::new(),
+            prev_pos: HashMap::default(),
             shards: crate::shards::ShardSim::new(0x5eed),
             bodies: Vec::new(),
             ai: Default::default(),
             cues: Vec::new(),
-            throw_ends: HashMap::new(),
-            last_killer: HashMap::new(),
+            throw_ends: HashMap::default(),
+            last_killer: HashMap::default(),
             paused: false,
             practice: Default::default(),
             prof: Default::default(),
@@ -440,7 +442,7 @@ impl Game {
     /// Render-time offset for a node: where it was a fraction of a tick ago.
     pub fn interp_offsets(&self) -> HashMap<usize, V3> {
         let a = ((self.motion.render_now - self.motion.now) / DT).clamp(0.0, 1.0);
-        let mut out = HashMap::new();
+        let mut out = HashMap::default();
         if self.motion.hitstop > 0 || self.paused {
             return out;
         }
@@ -493,7 +495,7 @@ impl Game {
     }
 
     pub fn camera_main(&self) -> Option<usize> {
-        (0..self.w.nodes.len()).find(|&i| self.w.nodes[i].camera.is_some() && self.w.nodes[i].tag == "MainCamera" && self.w.active_in_hierarchy(i))
+        (0..self.w.nodes.len()).find(|&i| self.w.nodes[i].camera.is_some() && &*self.w.nodes[i].tag == "MainCamera" && self.w.active_in_hierarchy(i))
     }
 
     pub fn sprite_alpha(&mut self, node: usize, a: f32) {
@@ -694,7 +696,7 @@ impl Game {
                         continue;
                     }
                     self.fx_button(b);
-                    for c in self.w.nodes[b].button.clone() {
+                    for c in self.w.nodes[b].button.iter().cloned().collect::<Vec<_>>() {
                         let name = c.arg.map(|a| self.w.nodes[a].name.clone()).unwrap_or_default();
                         let Some(target) = c.target else { continue };
                         if c.method == "buttonPressed" && has_script(&self.w, target, "PauseMenuBehaviour") {
@@ -720,7 +722,7 @@ impl Game {
             .filter(|p| self.w.active_in_hierarchy(p.node) && !p.playback)
             .map(|p| {
                 let pos = self.w.position(p.node);
-                serde_json::json!({"name": self.w.nodes[p.node].name, "pos": [pos.x, pos.y], "carrying": p.picked_box.is_some(), "charge": p.charge_timer, "aim": [p.touch[1].x, p.touch[1].y]})
+                serde_json::json!({"name": &*self.w.nodes[p.node].name, "pos": [pos.x, pos.y], "carrying": p.picked_box.is_some(), "charge": p.charge_timer, "aim": [p.touch[1].x, p.touch[1].y]})
             })
             .collect();
         let score = self.scores.iter().find(|s| self.w.active_in_hierarchy(s.node)).map(|s| {

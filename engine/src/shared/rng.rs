@@ -2,7 +2,7 @@
 
 /// Unity's Random.Range semantics on top of a small deterministic PRNG.
 #[derive(Clone)]
-pub struct Rng(u64);
+pub struct Rng(pub u64);
 
 impl Rng {
     pub fn new(seed: u64) -> Rng {

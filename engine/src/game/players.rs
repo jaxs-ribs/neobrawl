@@ -896,7 +896,7 @@ impl Game {
     /// OnCollisionEnter / Exit for BoxPickupBehaviour.
     pub(super) fn player_collision(&mut self, k: usize, other: usize, enter: bool) {
         if enter {
-            if self.w.nodes[other].tag == "Box" {
+            if &*self.w.nodes[other].tag == "Box" {
                 self.players[k].collided_box = Some(other);
             }
         } else if self.players[k].collided_box == Some(other) {
@@ -912,7 +912,7 @@ impl Game {
         let target = sprite_target(&self.w, hit.node);
         let br = self.burners[b].clone();
         let tag = self.w.nodes[target].tag.clone();
-        let (glow, _normal) = match tag.as_str() {
+        let (glow, _normal) = match &*tag {
             "Wall" => (br.wall_glow, br.wall),
             "Box" => (br.box_glow, br.box_),
             _ => return,
@@ -922,7 +922,7 @@ impl Game {
         }
         set_sprite(&mut self.w, target, glow);
         if let Some(prev) = br.previous {
-            let restore = match self.w.nodes[prev].tag.as_str() {
+            let restore = match &*self.w.nodes[prev].tag {
                 "Wall" => br.wall,
                 "Box" => br.box_,
                 _ => None,

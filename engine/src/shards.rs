@@ -7,7 +7,7 @@
 //! fade. Electricity is critical branching cascades with dropout, drawn as
 //! tapered "katana" blades. Stepped at 50 Hz; drawing is in render.rs.
 
-use std::collections::{HashMap, HashSet};
+use crate::det::{HashMap, HashSet};
 
 use crate::shared::rng::Rng;
 
@@ -134,6 +134,7 @@ pub fn unkey(k: u32) -> (usize, usize) {
     ((k / 4096) as usize, (k % 4096) as usize)
 }
 
+#[derive(Clone)]
 pub struct ShardSim {
     pub shards: Vec<Shard>,
     pub links: HashMap<u32, f32>,
@@ -157,11 +158,11 @@ impl ShardSim {
     pub fn new(seed: u64) -> ShardSim {
         ShardSim {
             shards: Vec::new(),
-            links: HashMap::new(),
-            age: HashMap::new(),
-            cool: HashMap::new(),
-            active: HashSet::new(),
-            vis: HashMap::new(),
+            links: HashMap::default(),
+            age: HashMap::default(),
+            cool: HashMap::default(),
+            active: HashSet::default(),
+            vis: HashMap::default(),
             bolts: Vec::new(),
             imps: Vec::new(),
             t: 0,
@@ -576,7 +577,7 @@ impl ShardSim {
             }
             r
         }
-        let mut nlinks: HashMap<usize, usize> = HashMap::new();
+        let mut nlinks: HashMap<usize, usize> = HashMap::default();
         for (&k, &s) in &self.links {
             if s > 0.05 {
                 let (i, j) = unkey(k);
@@ -584,7 +585,7 @@ impl ShardSim {
                 par[ri] = rj;
             }
         }
-        let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
+        let mut groups: HashMap<usize, Vec<usize>> = HashMap::default();
         for i in 0..n {
             if !self.shards[i].dead {
                 let r = find(&mut par, i);

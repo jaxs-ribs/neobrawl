@@ -2,8 +2,10 @@
 //! physics engine, uGUI layout, and the game's scripts. The host
 //! (web/main.js) feeds input, calls `frame()` at 50 Hz and draws `render()`.
 
+pub mod det;
 pub mod game;
 pub mod motion;
+pub mod net;
 pub mod physics;
 pub mod prof;
 pub mod render;
@@ -12,7 +14,7 @@ pub mod shards;
 pub mod shared;
 pub mod ui;
 
-use std::collections::HashMap;
+use crate::det::HashMap;
 
 use wasm_bindgen::prelude::*;
 
@@ -286,7 +288,7 @@ impl Engine {
         let w = &self.game.w;
         serde_json::json!({
             "textures": w.textures.iter().map(|t| &t.1).collect::<Vec<_>>(),
-            "meshes": w.meshes,
+            "meshes": &*w.meshes,
             "materials": w.materials.iter().map(|m| serde_json::json!([m.0, m.1])).collect::<Vec<_>>(),
             "font": w.font,
         })

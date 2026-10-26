@@ -20,7 +20,7 @@ fn target_practice_arena_targets_and_respawns() {
     // the boxes stand in a grid around the centre
     let near = g.boxes.iter().filter(|b| g.w.active_in_hierarchy(b.node) && (g.w.position(b.node) - c).length() < 4.5).count();
     assert!(near >= 30, "box field in the middle: {near}");
-    let p1 = g.players.iter().find(|p| g.w.nodes[p.node].tag == "PlayerOneScreen1").unwrap().node;
+    let p1 = g.players.iter().find(|p| &*g.w.nodes[p.node].tag == "PlayerOneScreen1").unwrap().node;
     let k1 = g.player_of[&p1];
     // a simple shooter: walk into the field for a box, aim at the nearest live target, throw
     let mut charge_ticks = 0;

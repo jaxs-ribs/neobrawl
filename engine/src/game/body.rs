@@ -155,8 +155,8 @@ impl Game {
     /// Render-time transforms: node -> matrix to premultiply. Souls deform
     /// (stretch/squash about their centre, offset, tremble); carried boxes
     /// lag and swing.
-    pub fn body_deforms(&self) -> std::collections::HashMap<usize, Mat4> {
-        let mut out = std::collections::HashMap::new();
+    pub fn body_deforms(&self) -> crate::det::HashMap<usize, Mat4> {
+        let mut out = crate::det::HashMap::default();
         let flick = (self.motion.render_now * 60.0) as u32;
         for (k, b) in self.bodies.iter().enumerate() {
             let Some(p) = self.players.get(k) else { continue };

@@ -2,7 +2,7 @@
 //! (every element forms, re-forms when its text changes, shatters when it
 //! leaves), the cursor, and the match's beats.
 
-use std::collections::HashSet;
+use crate::det::HashSet;
 
 use crate::motion::{hf, Kind};
 use crate::shared::math::{v3, V3};
@@ -59,7 +59,7 @@ impl Game {
     fn fx_ui(&mut self) {
         let now = self.motion.now;
         let (sw, sh) = (self.screen.w, self.screen.h);
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         for i in self.ui_draw_order() {
             let n = &self.w.nodes[i];
             let img = n.image.as_ref().filter(|g| g.enabled).map(|g| [g.color[0] * g.tint[0], g.color[1] * g.tint[1], g.color[2] * g.tint[2], g.color[3] * g.tint[3]]);

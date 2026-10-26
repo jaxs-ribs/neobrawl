@@ -51,7 +51,7 @@ struct Fight {
     spot: Option<V3>,
     /// human reaction to danger: each thrown box is only "seen" once its
     /// own reaction time has passed (box node -> tick it becomes visible)
-    noticed: std::collections::HashMap<usize, u64>,
+    noticed: crate::det::HashMap<usize, u64>,
     /// since when their loaded aim has been on us
     lined_since: Option<u64>,
     /// a dash broke its tracking: no shots until then, aim held on the old line
@@ -185,6 +185,13 @@ impl Game {
             out.push((g, cx, cy, r));
         }
         Solids(out)
+    }
+
+    /// Netcode tests: run only the AI's decision for both slots on the
+    /// current state and return what it would press (nothing is simulated).
+    pub fn ai_decide(&mut self) -> [Direct; 2] {
+        self.ai_step();
+        self.input.direct
     }
 
     /// Run the wanderers before the tick consumes input.

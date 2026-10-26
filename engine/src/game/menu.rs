@@ -712,7 +712,7 @@ impl Game {
 
     pub(super) fn ground_cross_trigger(&mut self, gc: usize, other: usize) {
         let Some(k) = self.misc.ground_cross.iter().position(|x| x.0 == gc) else { return };
-        if self.w.nodes[other].tag == "Box" && !self.misc.ground_cross[k].1 {
+        if &*self.w.nodes[other].tag == "Box" && !self.misc.ground_cross[k].1 {
             self.tasks.push(Task::ScaleDownVelocity { node: other, i: 0 });
             if let Some(t) = self.tutorial.as_mut() {
                 t.phase = 7;

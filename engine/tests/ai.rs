@@ -67,7 +67,7 @@ fn hard_beats_easy() {
 #[test]
 fn respawn_is_instant_and_far_from_the_killer() {
     let mut e = match_with_ai(2, 3);
-    let p1 = e.game().players.iter().find(|p| e.game().w.nodes[p.node].tag == "PlayerOneScreen1").map(|p| p.node).unwrap();
+    let p1 = e.game().players.iter().find(|p| &*e.game().w.nodes[p.node].tag == "PlayerOneScreen1").map(|p| p.node).unwrap();
     // let the fighter kill player 1
     let mut died_at = None;
     for f in 0..(50 * 20) {
@@ -102,8 +102,8 @@ fn flank(seeds: std::ops::Range<u64>) -> (u32, u32) {
     let (mut caught, mut deaths) = (0u32, 0u32);
     for seed in seeds {
         let mut e = match_with_ai(seed, 3);
-        let p1 = e.game().players.iter().find(|p| e.game().w.nodes[p.node].tag == "PlayerOneScreen1").map(|p| p.node).unwrap();
-        let bot = e.game().players.iter().find(|p| e.game().w.nodes[p.node].tag == "PlayerOneScreen2").map(|p| p.node).unwrap();
+        let p1 = e.game().players.iter().find(|p| &*e.game().w.nodes[p.node].tag == "PlayerOneScreen1").map(|p| p.node).unwrap();
+        let bot = e.game().players.iter().find(|p| &*e.game().w.nodes[p.node].tag == "PlayerOneScreen2").map(|p| p.node).unwrap();
         let mut h = seed.wrapping_mul(0x9e3779b97f4a7c15) | 1;
         let mut rnd = move || {
             h ^= h << 13;

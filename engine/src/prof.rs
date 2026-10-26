@@ -31,7 +31,7 @@ pub const PHASES: [&str; 16] = [
 ];
 pub const N: usize = PHASES.len();
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Prof {
     mark: f64,
     /// this tick / this frame, per phase

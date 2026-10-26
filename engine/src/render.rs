@@ -51,7 +51,7 @@ impl Game {
         let w = &self.w;
         let cams: Vec<usize> = (0..w.nodes.len()).filter(|&i| w.nodes[i].camera.is_some() && w.active_in_hierarchy(i)).collect();
         let ui_order = self.ui_draw_order();
-        let ui_seq: std::collections::HashMap<usize, usize> = ui_order.iter().enumerate().map(|(k, &n)| (n, k)).collect();
+        let ui_seq: crate::det::HashMap<usize, usize> = ui_order.iter().enumerate().map(|(k, &n)| (n, k)).collect();
         let (wm, wact) = w.world_cache();
         let lerp = self.interp_offsets();
         let deform = self.body_deforms();
@@ -66,7 +66,7 @@ impl Game {
         for &cam in &cams {
             let c = w.nodes[cam].camera.as_ref().unwrap();
             let mut cm = shift(cam, w.matrix(cam));
-            if w.nodes[cam].tag == "MainCamera" {
+            if &*w.nodes[cam].tag == "MainCamera" {
                 let o = self.motion.shake_offset();
                 cm.0[12] += o.x;
                 cm.0[13] += o.y;
@@ -84,7 +84,7 @@ impl Game {
             let soft = w.textures.iter().position(|t| t.1.ends_with("BlobBWShadow.png")).map(|t| t as f32).unwrap_or(-1.0);
             let dist = |p: V3| view.point(p).z;
             // the original aim line is replaced by the charger's blade on desktop
-            let aimers: std::collections::HashSet<usize> = if self.input.desktop { self.players.iter().filter_map(|p| p.aimer).collect() } else { Default::default() };
+            let aimers: crate::det::HashSet<usize> = if self.input.desktop { self.players.iter().filter_map(|p| p.aimer).collect() } else { Default::default() };
             for i in 0..w.nodes.len() {
                 let n = &w.nodes[i];
                 if aimers.contains(&i) {
@@ -399,7 +399,7 @@ impl Game {
             lap(11);
             self.shard_items(|p| dist(p), |rec, d| items.push(Item { order: 4, dist: d, seq: 0, rec }));
             lap(14);
-            if w.nodes[cam].tag == "MainCamera" {
+            if &*w.nodes[cam].tag == "MainCamera" {
                 self.arena_hum(|p| dist(p), |rec, d| items.push(Item { order: 1, dist: d, seq: 0, rec }));
                 // practice zones: faint broken ink circles, slowly turning
                 for (k, g) in self.practice.targets.iter().enumerate() {

@@ -132,7 +132,7 @@ impl Game {
         }
         let other_tag = self.w.nodes[other].tag.clone();
         let other_layer = self.w.nodes[other].layer;
-        if other_tag == "Wall" {
+        if &*other_tag == "Wall" {
             self.boxes[b].reflected = reflect(prev, normal);
         } else if other_layer == crate::physics::LAYER_BOX {
             self.boxes[b].reflected = reflect(prev, normal);

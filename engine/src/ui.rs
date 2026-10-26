@@ -1,7 +1,7 @@
 //! uGUI layout: CanvasScaler + RectTransform anchoring, canvas placement for
 //! Overlay / ScreenSpace-Camera / World modes, and pointer hit-testing.
 
-use std::collections::HashMap;
+use crate::det::HashMap;
 
 use crate::shared::math::{v3, Mat4, Quat, V3};
 
@@ -13,7 +13,7 @@ pub struct Screen {
     pub h: f32,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Layout {
     /// root canvas -> world matrix (overlay canvases live in screen-pixel space)
     pub canvas_root: HashMap<usize, Mat4>,

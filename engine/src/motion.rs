@@ -7,7 +7,8 @@
 //! render time (extrapolated to `render_now`, so they stay smooth at 120 Hz).
 //! Screen-space effects are in overlay pixels; world-space ones in world units.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
+use crate::det::HashMap;
 
 use crate::render::{arc_points, blade, quad, ribbon, ribbon_tapered, RECORD};
 use crate::shared::math::{v3, V3};
@@ -88,7 +89,7 @@ pub struct Flex {
     pub amp: f32,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Motion {
     pub flex: Vec<Flex>,
     /// boxes nudged by nearby blows: node -> (offset, velocity)
