@@ -520,7 +520,7 @@ class Online {
     this.entry = document.createElement("button"); this.entry.id = "friend"; this.entry.textContent = "play a friend";
     this.entry.onclick = (e) => { e.stopPropagation(); this.host(); };
     this.entry.onpointerdown = (e) => e.stopPropagation();
-    document.body.appendChild(this.entry);
+    $("menuextra").prepend(this.entry);
     this.hud = document.createElement("div"); this.hud.id = "nethud"; document.body.appendChild(this.hud);
     addEventListener("keydown", (e) => this.key(e));
     const m = location.hash.match(/^#vs-([a-z0-9]{4,12})$/);
@@ -535,7 +535,7 @@ class Online {
   show(html, sticky = true) { this.el.innerHTML = html; this.el.classList.toggle("on", !!html); this.el.classList.toggle("sticky", sticky); }
   async host() {
     if (this.active) return;
-    this.role = "host"; this.state = "waiting"; this.entry.hidden = true;
+    this.role = "host"; this.state = "waiting"; $("menuextra").hidden = true;
     const code = Array.from(crypto.getRandomValues(new Uint8Array(6)), (b) => "abcdefghjkmnpqrstuvwxyz23456789"[b % 31]).join("");
     const link = `${location.origin}${location.pathname}#vs-${code}`;
     this.show(`<p>opening a room…</p>`);
@@ -642,8 +642,6 @@ class Online {
     const msg = e?.type === "peer-unavailable" ? "that room is gone (or the link was mistyped)" : e?.type === "unavailable-id" ? "room clash, try again" : "couldn't connect";
     this.show(`<p>${msg}</p><p class="dim"><kbd>Esc</kbd> back to the menu</p>`);
   }
-  // the entry shows on the start and map screens only
-  menu(screens) { this.entry.hidden = this.active || !(screens.includes("start") || screens.includes("maps")); }
 }
 
 // ------------------------------------------------------------- renderer ---
@@ -955,7 +953,14 @@ let mouseHeld = false;
 // never makes you chase it - a stick, on a trackpad. ?abs aims at the
 // absolute cursor point instead (League-style).
 let locked = false;
-const ride = !params.has("abs");
+// how you aim with the pointer, remembered: "mouse" rides a locked reticle;
+// "trackpad" aims at the visible cursor and, the moment you charge, pins
+// that spot in the arena (walk freely, it stays put; the finger nudges it)
+const AIM_KEY = "neobrawl.aim";
+let aimMode = (() => { try { return localStorage.getItem(AIM_KEY); } catch { return null; } })() || (/Mac/.test(navigator.platform) ? "trackpad" : "mouse");
+const rideOn = () => aimMode === "mouse" && !params.has("abs");
+let cursorPx = null; // last pointer position, screen px (origin bottom-left)
+let anchor = null; // trackpad: { wx, wy, sx, sy } pinned when the charge began
 const reticle = { x: 2.5, y: 0 }; // world units from your soul
 const RIDE = {
   gain: 0.0105, // world units per raw count, slow finger
@@ -1014,7 +1019,20 @@ function pollControls() {
     // charge by holding Space (or the button): the aiming hand only points
     const charging = mouseHeld || keys.has("Space");
     if (locked) engine.direct(0, mx, my, reticle.x, reticle.y, charging, false, true);
-    else engine.direct(0, mx, my, 0, 0, charging, true, true);
+    else if (aimMode === "trackpad" && charging && cursorPx) {
+      // pin the spot under the cursor when the charge begins; after that the
+      // finger's travel since the press nudges it (both read through today's
+      // camera, so walking or the camera moving changes nothing)
+      if (!anchor) { const w = engine.world_at(cursorPx[0], cursorPx[1]); if (w.length) anchor = { wx: w[0], wy: w[1], sx: cursorPx[0], sy: cursorPx[1] }; }
+      const me = engine.my_soul(), w0 = anchor && engine.world_at(anchor.sx, anchor.sy), w1 = anchor && engine.world_at(cursorPx[0], cursorPx[1]);
+      if (anchor && me.length && w0.length && w1.length) {
+        const tx = anchor.wx + (w1[0] - w0[0]), ty = anchor.wy + (w1[1] - w0[1]);
+        engine.direct(0, mx, my, tx - me[0], ty - me[1], true, false, true);
+      } else engine.direct(0, mx, my, 0, 0, charging, true, true);
+    } else {
+      anchor = null;
+      engine.direct(0, mx, my, 0, 0, charging, true, true);
+    }
     engine.dash(0, keys.has("ShiftLeft") || keys.has("Shift0") || dashLatch[0]);
   }
   // player 2: last pad, else arrows + IJKL (hold IJKL to charge in that direction)
@@ -1035,7 +1053,7 @@ function pollControls() {
   const p2Keys = ["ArrowUp", "ArrowLeft", "ArrowDown", "ArrowRight", "KeyI", "KeyJ", "KeyK", "KeyL", "ShiftRight", "Shift1"];
   const p2Pad = pad2 && (() => { const p = padSticks(pad2); return Math.hypot(p.mx, p.my) > 0 || p.aiming || p.dash; })();
   if (p2Keys.some((c) => keys.has(c)) || dashLatch[1] || p2Pad) p2Human = performance.now();
-  const ai = params.has("lag") || (!params.has("noai") && !params.has("practice") && performance.now() - p2Human > 5000);
+  const ai = params.has("lag") || (!params.has("noai") && !params.has("practice") && !nb.practicing && performance.now() - p2Human > 5000);
   if (ai !== p2Ai) { p2Ai = ai; engine.set_ai(1, ai); }
 }
 let p2Human = -1e9, p2Ai = false;
@@ -1073,7 +1091,7 @@ async function main() {
   });
   // the lock needs a gesture: the first click or key once a match is up
   const lockIfPlaying = () => {
-    if (!ride || locked || !inPlay() || !canvas.requestPointerLock) return;
+    if (!rideOn() || locked || !inPlay() || !canvas.requestPointerLock) return;
     const p = canvas.requestPointerLock({ unadjustedMovement: true });
     p?.catch?.(() => canvas.requestPointerLock()?.catch?.(() => {})); // no raw input here: plain lock
   };
@@ -1088,7 +1106,7 @@ async function main() {
   });
   canvas.addEventListener("pointermove", (e) => {
     if (locked) return;
-    const [x, y] = toGame(e); engine.cursor(x, y);
+    const [x, y] = toGame(e); engine.cursor(x, y); cursorPx = [x, y];
     if (e.buttons || e.pointerType === "touch") ptr(1)(e);
   });
   document.addEventListener("pointerlockchange", () => {
@@ -1177,7 +1195,10 @@ async function main() {
       perf.draw(nb.perf); perfT = now;
       if (lab) { nb.lag = engine.lag_stats(); lab.update(nb.lag); }
       if (locked && !inPlay()) document.exitPointerLock?.(); // menus get the cursor back
-      if (online) { nb.net = engine.net_stats(); online.stats(nb.net); online.menu(JSON.parse(engine.state()).screens); }
+      if (online) { nb.net = engine.net_stats(); online.stats(nb.net); }
+      // the menu row (friend, practice, aim) only on the title and map screens
+      const sc = JSON.parse(engine.state()).screens;
+      $("menuextra").hidden = !!online?.active || !!nb.practicing || !(sc.includes("start") || sc.includes("maps"));
     }
     frames++;
     if (now - fpsT >= 500) { nb.fps = Math.round((frames * 1000) / (now - fpsT)); frames = 0; fpsT = now; }
@@ -1235,9 +1256,11 @@ async function main() {
     await fetch("/audio", { method: "POST", body: out.buffer });
     return { frames: log.length, buffers: A.buffers.size + "/" + A.files.length, peak: +peak.toFixed(3), errors: nb.errors.join(";") };
   };
-  // ?practice: straight into target practice on Map 2
-  if (params.has("practice")) {
-    document.documentElement.style.setProperty("--font", family);
+  // target practice (menu entry, or ?practice): straight in, on Map 2
+  const startPractice = async () => {
+    if (nb.practicing) return;
+    nb.practicing = true;
+    $("menuextra").hidden = true;
     const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     const tap = async (name) => {
       for (let i = 0; i < 200; i++) {
@@ -1253,22 +1276,34 @@ async function main() {
     const until = async (name, screen) => {
       for (let i = 0; i < 60 && !screens().includes(screen); i++) { await tap(name); await wait(400); }
     };
-    (async () => {
-      await until("StartingScreenButton", "maps");
-      await wait(500);
-      await tap("MapMenuArrowRight"); await wait(700);
-      await until("MapMenuGameStart", "game");
-      for (let i = 0; i < 200 && !engine.start_practice(); i++) await wait(50);
-      $("practice").hidden = false;
-      let shown = -1;
-      setInterval(() => {
-        const [on, hits, streak] = engine.practice_stats();
-        if (!on || hits === shown) return;
-        shown = hits;
-        const h = $("hits"); h.textContent = hits; h.classList.add("tick"); requestAnimationFrame(() => requestAnimationFrame(() => h.classList.remove("tick")));
-        $("streak").textContent = streak > 1 ? `x${streak}` : "";
-      }, 100);
-    })();
-  }
+    await until("StartingScreenButton", "maps");
+    await wait(500);
+    await tap("MapMenuArrowRight"); await wait(700);
+    await until("MapMenuGameStart", "game");
+    for (let i = 0; i < 200 && !engine.start_practice(); i++) await wait(50);
+    $("practice").hidden = false;
+    let shown = -1;
+    setInterval(() => {
+      const [on, hits, streak] = engine.practice_stats();
+      if (!on || hits === shown) return;
+      shown = hits;
+      const h = $("hits"); h.textContent = hits; h.classList.add("tick"); requestAnimationFrame(() => requestAnimationFrame(() => h.classList.remove("tick")));
+      $("streak").textContent = streak > 1 ? `x${streak}` : "";
+    }, 100);
+  };
+  const aimBtn = $("aimbtn");
+  const showAim = () => { aimBtn.textContent = `aim: ${aimMode}`; };
+  showAim();
+  aimBtn.onclick = (e) => {
+    e.stopPropagation();
+    aimMode = aimMode === "trackpad" ? "mouse" : "trackpad";
+    try { localStorage.setItem(AIM_KEY, aimMode); } catch {}
+    if (aimMode === "trackpad" && locked) document.exitPointerLock?.();
+    showAim();
+  };
+  aimBtn.onpointerdown = (e) => e.stopPropagation();
+  $("practicebtn").onclick = (e) => { e.stopPropagation(); startPractice(); };
+  $("practicebtn").onpointerdown = (e) => e.stopPropagation();
+  if (params.has("practice")) startPractice();
 }
 main().catch((e) => { console.error(e); nb.errors.push(String(e)); $("status").textContent = String(e.message || e); });

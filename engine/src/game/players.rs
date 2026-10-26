@@ -479,7 +479,11 @@ impl Game {
     /// The same, seen through the camera displaced by `cam_off` (the camera
     /// as drawn this frame, between ticks).
     pub(crate) fn cursor_world_through(&self, k: usize, cam_off: V3) -> Option<V3> {
-        let [sx, sy] = self.input.cursor?;
+        self.cursor_world_at(k, self.input.cursor?, cam_off)
+    }
+
+    /// Any screen pixel to the arena, on player k's plane.
+    pub fn cursor_world_at(&self, k: usize, [sx, sy]: [f32; 2], cam_off: V3) -> Option<V3> {
         let p = &self.players[k];
         let cam = if p.single { self.w.with_tag("CameraMenu") } else { self.camera_main() }?;
         let c = self.w.nodes[cam].camera.as_ref()?;

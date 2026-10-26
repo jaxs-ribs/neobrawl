@@ -31,11 +31,12 @@
     font: 13px/1.4 ui-monospace, monospace; color: #111; opacity: 0; transform: translateY(6px);
     transition: opacity .35s, transform .35s cubic-bezier(.2,1.4,.4,1); padding: 0 16px; }
   #lagbanner.on { opacity: 1; transform: none; }
-  #friend { position: fixed; left: 50%; top: 87%; transform: translateX(-50%); border: 0; background: none;
-    font: 300 13px/1 var(--font, system-ui), sans-serif; letter-spacing: .32em; color: #777; cursor: pointer; padding: 8px 12px;
-    transition: color .2s, letter-spacing .35s cubic-bezier(.2,1.4,.4,1); }
-  #friend:hover { color: #111; letter-spacing: .4em; }
-  #friend[hidden] { display: none; }
+  #menuextra { position: fixed; left: 0; right: 0; top: 87%; display: flex; justify-content: center; gap: 4px; flex-wrap: wrap; padding: 0 16px; }
+  #menuextra[hidden] { display: none; }
+  #menuextra button { border: 0; background: none; font: 300 13px/1 var(--font, system-ui), sans-serif; letter-spacing: .32em; color: #777;
+    cursor: pointer; padding: 8px 12px; transition: color .2s, letter-spacing .35s cubic-bezier(.2,1.4,.4,1); }
+  #menuextra button:hover { color: #111; letter-spacing: .4em; }
+  #menuextra #aimbtn { color: #aaa; font-size: 11px; }
   #online { position: fixed; left: 0; right: 0; top: 38%; text-align: center; pointer-events: none; padding: 0 16px;
     font: 300 15px/1.6 var(--font, system-ui), sans-serif; letter-spacing: .08em; color: #111;
     opacity: 0; transform: translateY(8px); transition: opacity .3s, transform .4s cubic-bezier(.2,1.4,.4,1); }
@@ -54,8 +55,9 @@
 <div id="overlay"><div><h1>NEOBRAWL</h1><p id="status">loading…</p></div></div>
 <div id="help">P1 <kbd>WASD</kbd> move · slide a finger to aim · hold <kbd>Space</kbd> to charge, let go to throw · <kbd>Shift</kbd> dash<br>
 P2 controller (sticks, <kbd>A</kbd> dash) or <kbd>←↑↓→</kbd> + <kbd>I</kbd><kbd>J</kbd><kbd>K</kbd><kbd>L</kbd> aim + right <kbd>Shift</kbd> dash · <kbd>Esc</kbd> pause</div>
+<div id="menuextra"><button id="practicebtn">target practice</button><button id="aimbtn">aim: mouse</button></div>
 <div id="debug" hidden></div>
 <div id="practice" hidden><span id="hits">0</span><span id="streak"></span></div>
-<script type="module" src="./main.js?v=e993a4a9ca"></script>
+<script type="module" src="./main.js?v=aaf7aed2f3"></script>
 </body>
 </html>

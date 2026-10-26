@@ -348,6 +348,29 @@ export class Engine {
         wasm.engine_frame(this.__wbg_ptr);
     }
     /**
+     * The arena point under screen pixel (sx, sy) on your soul's plane,
+     * through the camera as drawn: [x, y], or empty off the arena.
+     * @param {number} sx
+     * @param {number} sy
+     * @returns {Float32Array}
+     */
+    world_at(sx, sy) {
+        const ret = wasm.engine_world_at(this.__wbg_ptr, sx, sy);
+        var v1 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * Where your soul is drawn this frame: [x, y], or empty.
+     * @returns {Float32Array}
+     */
+    my_soul() {
+        const ret = wasm.engine_my_soul(this.__wbg_ptr);
+        var v1 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
      * Aim friction for your riding reticle at (ax, ay) from your soul: 1
      * normally, dipping to ~0.7 as the line lies right over the enemy - the
      * reticle gets a little heavier there, it is never pulled.

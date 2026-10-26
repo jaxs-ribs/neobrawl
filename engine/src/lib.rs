@@ -210,13 +210,39 @@ impl Engine {
         self.pointers = next;
     }
 
+    /// The arena point under screen pixel (sx, sy) on your soul's plane,
+    /// through the camera as drawn: [x, y], or empty off the arena.
+    pub fn world_at(&self, sx: f32, sy: f32) -> Vec<f32> {
+        let g = &self.game;
+        let Some(k) = self.my_player() else { return Vec::new() };
+        let lerp = g.interp_offsets();
+        let cam_off = g.camera_main().and_then(|c| lerp.get(&c).copied()).unwrap_or_default();
+        g.cursor_world_at(k, [sx, sy], cam_off).map(|p| vec![p.x, p.y]).unwrap_or_default()
+    }
+
+    /// Where your soul is drawn this frame: [x, y], or empty.
+    pub fn my_soul(&self) -> Vec<f32> {
+        let g = &self.game;
+        let Some(k) = self.my_player() else { return Vec::new() };
+        if g.w.position(g.players[k].node).x == -666.0 {
+            return Vec::new();
+        }
+        let p = g.shown_soul(&g.interp_offsets(), k);
+        vec![p.x, p.y]
+    }
+
+    fn my_player(&self) -> Option<usize> {
+        let g = &self.game;
+        let me = self.net.as_ref().filter(|_| self.online).map(|n| n.me).unwrap_or(0);
+        (0..g.players.len()).find(|&k| g.direct_slot_pub(&g.players[k]) == Some(me))
+    }
+
     /// Aim friction for your riding reticle at (ax, ay) from your soul: 1
     /// normally, dipping to ~0.7 as the line lies right over the enemy - the
     /// reticle gets a little heavier there, it is never pulled.
     pub fn aim_friction(&self, ax: f32, ay: f32) -> f32 {
         let g = &self.game;
-        let me = self.net.as_ref().filter(|_| self.online).map(|n| n.me).unwrap_or(0);
-        let Some(k) = (0..g.players.len()).find(|&k| g.direct_slot_pub(&g.players[k]) == Some(me)) else { return 1.0 };
+        let Some(k) = self.my_player() else { return 1.0 };
         let lerp = g.interp_offsets();
         let mine = g.shown_soul(&lerp, k);
         let mut best = 1.0f32;
