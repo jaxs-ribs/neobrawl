@@ -44,6 +44,79 @@ fn ortho_screen(w: f32, h: f32) -> Mat4 {
 }
 
 impl Game {
+    /// Is soul `pk` aimed by this machine's own mouse right now (so its blade
+    /// follows the live cursor, not the simulated, delayed aim)?
+    fn aims_live(&self, pk: usize) -> bool {
+        let p = &self.players[pk];
+        match self.direct_slot_pub(p) {
+            Some(s) => {
+                let c = self.input.direct[s];
+                c.active && c.use_cursor && !self.input.remote[s] && !self.ai[s].on && self.input.cursor.is_some()
+            }
+            None => false,
+        }
+    }
+
+    /// Where soul `pk` is drawn: its interpolated / predicted / eased spot
+    /// plus its body's follow-through.
+    pub fn shown_soul(&self, lerp: &crate::det::HashMap<usize, V3>, pk: usize) -> V3 {
+        let n = self.players[pk].node;
+        self.w.position(n) + lerp.get(&n).copied().unwrap_or(V3::ZERO) + self.bodies.get(pk).map(|b| b.off).unwrap_or(V3::ZERO)
+    }
+
+    /// The charger blade for soul `pk` drawn from `c`: its direction and the
+    /// distance to the first thing along it. Your own blade follows your
+    /// cursor live; others turn smoothly toward their simulated aim. The
+    /// reach is cast from where the soul is drawn, so the line and the soul
+    /// never disagree.
+    pub fn blade_shown(&self, pk: usize, c: V3, lerp: &crate::det::HashMap<usize, V3>) -> Option<(V3, f32)> {
+        let p = &self.players[pk];
+        if p.picked_box.is_none() || p.touch[1].is_zero() {
+            return None;
+        }
+        let mut dir = v3(p.touch[1].x, p.touch[1].y, 0.0);
+        if self.aims_live(pk) {
+            // through the camera as drawn, so cursor and soul move as one
+            let cam_off = self.camera_main().and_then(|c| lerp.get(&c).copied()).unwrap_or(V3::ZERO);
+            if let Some(cw) = self.cursor_world_through(pk, cam_off) {
+                let d = v3(cw.x - c.x, cw.y - c.y, 0.0);
+                if d.length() > 0.2 {
+                    dir = d;
+                }
+            }
+        } else {
+            // like positions: between last tick's aim and this one's, plus
+            // any rollback correction still being eased out
+            let a = ((self.motion.render_now - self.motion.now) / crate::game::DT).clamp(0.0, 1.0);
+            let a1 = p.touch[1].y.atan2(p.touch[1].x);
+            let a0 = if p.prev[1].is_zero() { a1 } else { p.prev[1].y.atan2(p.prev[1].x) };
+            let mut d = a1 - a0;
+            d = d.sin().atan2(d.cos());
+            let off = self.net_aim_off.get(pk).copied().unwrap_or(0.0) * crate::lagsim::SMOOTH_KEEP.powf(a);
+            let ang = a0 + d * a + off;
+            dir = v3(ang.cos(), ang.sin(), 0.0);
+        }
+        let l = dir.length().max(1e-4);
+        let dir = dir * (1.0 / l);
+        let hit = self.phys.raycast(&self.w, c, dir, 50.0, p.aim_mask).map(|h| h.distance).unwrap_or(50.0);
+        Some((dir, hit))
+    }
+
+    /// What a frame shows, for tests that measure smoothness: per soul its
+    /// drawn spot, blade (direction, reach) and trail head; and the camera.
+    pub fn shown(&self) -> (Vec<(V3, Option<(V3, f32)>, Option<V3>)>, Option<V3>) {
+        let lerp = self.interp_offsets();
+        let souls = (0..self.players.len())
+            .map(|pk| {
+                let c = self.shown_soul(&lerp, pk);
+                let head = self.players[pk].node;
+                (c, self.blade_shown(pk, c, &lerp), Some(self.w.position(head) + lerp.get(&head).copied().unwrap_or(V3::ZERO)))
+            })
+            .collect();
+        let cam = self.camera_main().map(|c| self.w.position(c) + lerp.get(&c).copied().unwrap_or(V3::ZERO) + self.motion.shake_offset());
+        (souls, cam)
+    }
+
     pub fn render(&self, out: &mut Vec<f32>) {
         let lap = |i: usize| self.prof.borrow_mut().lap(i);
         self.prof.borrow_mut().begin();
@@ -196,8 +269,9 @@ impl Game {
                     let g = (color[0] + color[1] + color[2]) / 3.0 * 0.5 + 0.3;
                     color = [color[0] * 0.25 + g * 0.75, color[1] * 0.25 + g * 0.75, color[2] * 0.25 + g * 0.75, color[3] * 0.5];
                 }
-                let mut pts: Vec<V3> = p.trail.iter().map(|(q, _)| *q).collect();
-                pts.push(w.position(p.node));
+                let ease = self.net_smooth.get(&p.node).copied().unwrap_or(V3::ZERO) * crate::lagsim::SMOOTH_KEEP.powf(((self.motion.render_now - self.motion.now) / crate::game::DT).clamp(0.0, 1.0));
+                let mut pts: Vec<V3> = p.trail.iter().map(|(q, _)| *q + ease).collect();
+                pts.push(w.position(p.node) + lerp.get(&p.node).copied().unwrap_or(V3::ZERO));
                 let smooth = catmull_rom(&pts, 4);
                 if smooth.len() < 2 {
                     continue;
@@ -227,10 +301,11 @@ impl Game {
                 if p.playback || !w.active_in_hierarchy(p.node) {
                     continue;
                 }
-                let pos = w.position(p.node);
-                if pos.x == -666.0 {
+                if w.position(p.node).x == -666.0 {
                     continue;
                 }
+                // everything around a soul hangs off where the soul is drawn
+                let pos = w.position(p.node) + lerp.get(&p.node).copied().unwrap_or(V3::ZERO);
                 let color = w.nodes[p.node]
                     .children
                     .first()
@@ -253,7 +328,8 @@ impl Game {
                     // cursor aim (League-style): a mark on the exact point under the
                     // cursor; the black aim line carries the direction
                     if ctl.active && ctl.use_cursor && ring >= 0.0 {
-                        if let Some(cw) = self.cursor_world(pk) {
+                        let cam_off = self.camera_main().and_then(|c| lerp.get(&c).copied()).unwrap_or(V3::ZERO);
+                        if let Some(cw) = self.cursor_world_through(pk, cam_off) {
                             let to = v3(cw.x - pos.x, cw.y - pos.y, 0.0);
                             let len = (to.x * to.x + to.y * to.y).sqrt();
                             if len > 0.35 {
@@ -297,8 +373,7 @@ impl Game {
                 // the dash recharging: a thin ink arc winds round the soul with a
                 // bright head; when it closes, the dash is back
                 if self.input.desktop && p.dash_cd > 0 {
-                    let off = lerp.get(&p.node).copied().unwrap_or(V3::ZERO) + self.bodies.get(pk).map(|b| b.off).unwrap_or(V3::ZERO);
-                    let c = pos + off;
+                    let c = self.shown_soul(&lerp, pk);
                     let f = 1.0 - p.dash_cd as f32 / crate::game::DASH_COOLDOWN as f32;
                     let r = 0.47;
                     let n = (48.0 * f).ceil().max(1.0) as usize;
@@ -325,15 +400,12 @@ impl Game {
                 // this throw would still kill (stopping where the line meets
                 // something), and a tapered arc winding round the soul as the
                 // charge fills - closing, breathing and crackling when full
-                if let (Some(_), false) = (p.picked_box, p.touch[1].is_zero()) {
-                    let off = lerp.get(&p.node).copied().unwrap_or(V3::ZERO) + self.bodies.get(pk).map(|b| b.off).unwrap_or(V3::ZERO);
-                    let c = pos + off;
+                if let Some((a, hit)) = self.blade_shown(pk, self.shown_soul(&lerp, pk), &lerp) {
+                    let c = self.shown_soul(&lerp, pk);
                     let f = (p.charge_timer / 90.0).clamp(0.0, 1.0);
                     let t = self.motion.render_now;
-                    let a = v3(p.touch[1].x, p.touch[1].y, 0.0);
                     let power = (p.charge_timer * 1.11).max(20.0).min(100.0);
                     let reach = power / 5.0 * 0.94;
-                    let hit = (p.last_hit - c).length();
                     let len = reach.min(if hit > 0.3 { hit } else { reach });
                     let on_soul = p.aim_form[0];
                     let root = c + a * 0.32;

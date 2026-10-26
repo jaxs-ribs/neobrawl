@@ -147,15 +147,15 @@ pub struct LagSim {
     pub events: Vec<&'static str>,
     skip: u32,
     win: Window,
-    /// rollback corrections being eased in on screen (node -> offset), and
-    /// where each mover was last tick (to tell motion from correction)
+    /// rollback corrections being eased in on screen (node -> offset)
     smooth: crate::det::HashMap<usize, V3>,
-    last_pos: crate::det::HashMap<usize, V3>,
+    /// aim corrections being eased in, per player
+    aim_off: Vec<f32>,
 }
 
 /// How much of a correction is still drawn after each tick (~100 ms to
 /// settle), and how big a jump counts as a teleport (snapped, not eased).
-const SMOOTH_KEEP: f32 = 0.55;
+pub const SMOOTH_KEEP: f32 = 0.55;
 const SMOOTH_SNAP: f32 = 4.0;
 
 fn builder(delay: usize, me: usize, desync: bool) -> SessionBuilder<Cfg> {
@@ -195,7 +195,7 @@ impl LagSim {
     }
 
     fn bare(sess: P2PSession<Cfg>, me: usize, delay: usize, online: bool) -> LagSim {
-        LagSim { sess, me, bot: None, js: None, delay, online, heard: BTreeMap::new(), cues: Vec::new(), sounds: Vec::new(), events: Vec::new(), skip: 0, win: Window::default(), smooth: Default::default(), last_pos: Default::default() }
+        LagSim { sess, me, bot: None, js: None, delay, online, heard: BTreeMap::new(), cues: Vec::new(), sounds: Vec::new(), events: Vec::new(), skip: 0, win: Window::default(), smooth: Default::default(), aim_off: Vec::new() }
     }
 
     pub fn set_chaos(&mut self, chaos: Chaos) {
@@ -273,7 +273,12 @@ impl LagSim {
             return;
         }
         self.sess.add_local_input(self.me, local).ok();
+        // the frame on screen now; if a rollback replays it, the difference
+        // is exactly what the correction moved
         let before = movers(g);
+        let aims_before = aims(g);
+        let shown_frame = self.sess.current_frame();
+        let mut corrected: Option<(Vec<(usize, V3)>, Vec<f32>)> = None;
         let mut rolled = false;
         match self.sess.advance_frame() {
             Ok(reqs) => {
@@ -288,7 +293,8 @@ impl LagSim {
                         }
                         GgrsRequest::LoadGameState { cell, frame } => {
                             if let Some(s) = cell.load() {
-                                *g = s;
+                                let mut old = std::mem::replace(g, s);
+                                g.carry_over(&mut old);
                             }
                             let depth = (now - frame).max(0) as u32;
                             rolled = true;
@@ -304,6 +310,9 @@ impl LagSim {
                             g.frame();
                             g.resim = false;
                             at += 1;
+                            if rolled && at == shown_frame {
+                                corrected = Some((movers(g), aims(g)));
+                            }
                             if at <= now {
                                 self.win.resim += 1;
                             }
@@ -316,7 +325,7 @@ impl LagSim {
             }
             Err(_) => self.win.stalls += 1, // too far ahead of the remote's inputs
         }
-        self.ease(g, &before, rolled);
+        self.ease(g, &before, &aims_before, corrected.as_ref());
         let ms = t0.elapsed().as_secs_f32() * 1000.0;
         self.win.cost_ms += ms;
         self.win.worst_ms = self.win.worst_ms.max(ms);
@@ -325,30 +334,43 @@ impl LagSim {
     /// A rollback moved things to where they really are: draw them from
     /// where they were shown (a remote throw leaves the thrower's hand, a
     /// remote soul glides back on course) and let them catch up.
-    fn ease(&mut self, g: &mut Game, before: &[(usize, V3)], rolled: bool) {
+    fn ease(&mut self, g: &mut Game, before: &[(usize, V3)], aims_before: &[f32], replayed: Option<&(Vec<(usize, V3)>, Vec<f32>)>) {
         for v in self.smooth.values_mut() {
             *v = *v * SMOOTH_KEEP;
         }
-        self.smooth.retain(|_, v| v.length() > 0.01);
-        if rolled {
-            let now: crate::det::HashMap<usize, V3> = movers(g).into_iter().collect();
+        self.smooth.retain(|_, v| v.length() > 0.005);
+        self.aim_off.resize(g.players.len(), 0.0);
+        for a in self.aim_off.iter_mut() {
+            *a *= SMOOTH_KEEP;
+        }
+        if let Some((_, aims_after)) = replayed {
+            for (k, (&a0, &a1)) in aims_before.iter().zip(aims_after.iter()).enumerate() {
+                if a0.is_finite() && a1.is_finite() {
+                    let mut d = a1 - a0;
+                    d = d.sin().atan2(d.cos());
+                    self.aim_off[k] -= d;
+                } else {
+                    self.aim_off[k] = 0.0; // the blade came or went: no easing
+                }
+            }
+        }
+        g.net_aim_off = self.aim_off.clone();
+        if let Some((after, _)) = replayed {
+            let now: crate::det::HashMap<usize, V3> = after.iter().copied().collect();
             for &(n, p0) in before {
-                let (Some(&p1), Some(&prev)) = (now.get(&n), self.last_pos.get(&n)) else { continue };
-                if p0.x == -666.0 || p1.x == -666.0 || prev.x == -666.0 {
+                let Some(&p1) = now.get(&n) else { continue };
+                if p0.x == -666.0 || p1.x == -666.0 {
                     continue;
                 }
-                // where it would have gone at the pace it was going
-                let expected = p0 + (p0 - prev);
-                let c = p1 - expected;
+                let c = p1 - p0;
                 if c.length() > SMOOTH_SNAP {
                     self.smooth.remove(&n);
-                } else if c.length() > 0.03 {
+                } else if c.length() > 0.002 {
                     let s = self.smooth.entry(n).or_insert(V3::ZERO);
                     *s = *s - c;
                 }
             }
         }
-        self.last_pos = movers(g).into_iter().collect();
         g.net_smooth = self.smooth.clone();
     }
 
@@ -413,9 +435,14 @@ impl LagSim {
     }
 }
 
-/// Souls and boxes in play, with their positions.
+/// Each player's simulated aim angle (NaN while not aiming).
+fn aims(g: &Game) -> Vec<f32> {
+    g.players.iter().map(|p| if p.touch[1].is_zero() || p.picked_box.is_none() { f32::NAN } else { p.touch[1].y.atan2(p.touch[1].x) }).collect()
+}
+
+/// Souls, boxes and following cameras in play, with their positions.
 fn movers(g: &Game) -> Vec<(usize, V3)> {
-    let mut out: Vec<(usize, V3)> = g.players.iter().map(|p| p.node).chain(g.boxes.iter().map(|b| b.node)).filter(|&n| g.w.active_in_hierarchy(n)).map(|n| (n, g.w.position(n))).collect();
+    let mut out: Vec<(usize, V3)> = g.players.iter().map(|p| p.node).chain(g.boxes.iter().map(|b| b.node)).chain(g.cam_follow.iter().map(|c| c.node)).filter(|&n| g.w.active_in_hierarchy(n)).map(|n| (n, g.w.position(n))).collect();
     out.sort_by_key(|x| x.0);
     out
 }

@@ -11,8 +11,9 @@ use crate::game::{Direct, Game, V2};
 #[derive(Copy, Clone, PartialEq, Eq, Default, Debug, Serialize, Deserialize)]
 pub struct NetInput {
     pub mv: [i8; 2],
-    pub aim: [i8; 2],
-    /// bit 0 charging, bit 1 dash held, bit 2 present
+    /// aim as an angle, 65536 steps a turn (~0.0055 degrees)
+    pub aim: u16,
+    /// bit 0 charging, bit 1 dash held, bit 2 present, bit 3 aiming somewhere
     pub buttons: u8,
 }
 
@@ -26,14 +27,22 @@ fn dq(v: i8) -> f32 {
 
 impl NetInput {
     pub fn new(mv: V2, aim: V2, charging: bool, dash: bool) -> NetInput {
-        NetInput { mv: [q(mv.x), q(mv.y)], aim: [q(aim.x), q(aim.y)], buttons: charging as u8 | (dash as u8) << 1 | 1 << 2 }
+        let has_aim = aim.x != 0.0 || aim.y != 0.0;
+        let turn = if has_aim { (aim.y.atan2(aim.x) / std::f32::consts::TAU).rem_euclid(1.0) } else { 0.0 };
+        let aim = (turn * 65536.0).round() as u32 as u16;
+        NetInput { mv: [q(mv.x), q(mv.y)], aim, buttons: charging as u8 | (dash as u8) << 1 | 1 << 2 | (has_aim as u8) << 3 }
     }
 
     pub fn to_direct(self) -> Direct {
         Direct {
             active: self.buttons & 4 != 0,
             mv: V2 { x: dq(self.mv[0]), y: dq(self.mv[1]) },
-            aim: V2 { x: dq(self.aim[0]), y: dq(self.aim[1]) },
+            aim: if self.buttons & 8 != 0 {
+                let a = self.aim as f32 / 65536.0 * std::f32::consts::TAU;
+                V2 { x: a.cos(), y: a.sin() }
+            } else {
+                V2::ZERO
+            },
             aiming: self.buttons & 1 != 0,
             use_cursor: false,
             dash: self.buttons & 2 != 0,

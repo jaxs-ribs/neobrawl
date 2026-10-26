@@ -117,8 +117,25 @@ impl Game {
         }
     }
 
+    /// Each impulse plays once per frame it belongs to, however often a
+    /// rollback replays that frame (a remote dash first seen in a replay
+    /// still plays, then).
+    fn body_once(&mut self, kind: u8, k: usize) -> bool {
+        let key = (self.frame, kind, k);
+        if self.body_heard.contains(&key) {
+            return false;
+        }
+        let keep = self.frame.saturating_sub(150);
+        self.body_heard.retain(|e| e.0 >= keep);
+        self.body_heard.push(key);
+        true
+    }
+
     /// A dash: squash back for an instant, then shoot long.
     pub(super) fn body_dash(&mut self, k: usize, dir: super::V2) {
+        if !self.body_once(0, k) {
+            return;
+        }
         if let Some(b) = self.bodies.get_mut(k) {
             b.axis = dir.y.atan2(dir.x);
             b.st = -0.25;
@@ -128,6 +145,9 @@ impl Game {
 
     /// A throw: the soul recoils from the release and squashes.
     pub(super) fn body_throw(&mut self, k: usize, dir: super::V2, power: f32) {
+        if !self.body_once(1, k) {
+            return;
+        }
         if let Some(b) = self.bodies.get_mut(k) {
             let f = (power / 100.0).clamp(0.2, 1.0);
             b.off_v = b.off_v - v3(dir.x, dir.y, 0.0) * (2.5 * f);
@@ -139,6 +159,9 @@ impl Game {
 
     /// Dash back: a quick outward bounce.
     pub(super) fn body_ready(&mut self, k: usize) {
+        if !self.body_once(2, k) {
+            return;
+        }
         if let Some(b) = self.bodies.get_mut(k) {
             b.sq_v += 6.5;
         }
@@ -146,6 +169,9 @@ impl Game {
 
     /// Landing (respawn, pickup): a squash that settles.
     pub(super) fn body_land(&mut self, k: usize, amount: f32) {
+        if !self.body_once(3, k) {
+            return;
+        }
         if let Some(b) = self.bodies.get_mut(k) {
             b.sq_v -= 5.0 * amount;
             b.st_v -= 4.0 * amount;

@@ -467,6 +467,12 @@ impl Game {
 
     /// The point under the mouse cursor on the player's plane (z of the player).
     pub(crate) fn cursor_world(&self, k: usize) -> Option<V3> {
+        self.cursor_world_through(k, V3::ZERO)
+    }
+
+    /// The same, seen through the camera displaced by `cam_off` (the camera
+    /// as drawn this frame, between ticks).
+    pub(crate) fn cursor_world_through(&self, k: usize, cam_off: V3) -> Option<V3> {
         let [sx, sy] = self.input.cursor?;
         let p = &self.players[k];
         let cam = if p.single { self.w.with_tag("CameraMenu") } else { self.camera_main() }?;
@@ -475,7 +481,10 @@ impl Game {
         let aspect = self.screen.w / self.screen.h;
         let nx = sx / self.screen.w * 2.0 - 1.0;
         let ny = sy / self.screen.h * 2.0 - 1.0;
-        let m = self.w.matrix(cam);
+        let mut m = self.w.matrix(cam);
+        m.0[12] += cam_off.x;
+        m.0[13] += cam_off.y;
+        m.0[14] += cam_off.z;
         let origin = m.point(V3::ZERO);
         let dir = m.point(v3(nx * t * aspect, ny * t, 1.0)) - origin;
         let plane = self.w.position(p.node).z;

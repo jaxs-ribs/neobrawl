@@ -195,6 +195,10 @@ pub struct Game {
     pub cues: Vec<(&'static str, f32, f32)>,
     /// where thrown boxes end, per thrower node: [soul, box, other] (tuning)
     pub throw_ends: HashMap<usize, [u32; 3]>,
+    /// body impulses already played: (frame, kind, player)
+    pub body_heard: Vec<(u64, u8, usize)>,
+    /// online: aim corrections being eased in, per player (radians)
+    pub net_aim_off: Vec<f32>,
     /// online: render offsets that ease rollback corrections in (node ->
     /// offset), set from outside the rolled-back state every tick
     pub net_smooth: HashMap<usize, V3>,
@@ -276,6 +280,8 @@ impl Game {
             last_killer: HashMap::default(),
             kill_log: Vec::new(),
             net_smooth: HashMap::default(),
+            net_aim_off: Vec::new(),
+            body_heard: Vec::new(),
             throw_log: Vec::new(),
             resim: false,
             paused: false,
@@ -297,6 +303,20 @@ impl Game {
     pub fn relayout(&mut self) {
         let cam = |w: &World, c: usize| w.nodes[c].camera.as_ref().map(|k| (w.matrix(c), k.fov));
         self.layout = Layout::compute(&mut self.w, self.screen, cam);
+    }
+
+    /// After a rollback loads an old snapshot: keep what belongs to this
+    /// machine and this moment, not to the simulation - the live mouse,
+    /// window and controls (re-applied by the netcode each frame anyway),
+    /// the body springs on screen.
+    pub fn carry_over(&mut self, now: &mut Game) {
+        let direct = self.input.direct;
+        self.input = std::mem::take(&mut now.input);
+        self.input.direct = direct;
+        self.screen = now.screen;
+        self.bodies = std::mem::take(&mut now.bodies);
+        self.body_heard = std::mem::take(&mut now.body_heard);
+
     }
 
     /// One Unity frame at the fixed 50 Hz step.
@@ -475,6 +495,8 @@ impl Game {
             .filter(|p| self.input.desktop && self.direct_slot_pub(p).map(|s| !self.ai[s].on && !self.input.remote[s]).unwrap_or(false))
             .map(|p| p.node)
             .collect();
+        // corrections decay continuously between ticks, not in steps
+        let ease_left = crate::lagsim::SMOOTH_KEEP.powf(a);
         for (&n, &prev) in &self.prev_pos {
             let cur = self.w.position(n);
             let d = cur - prev;
@@ -483,7 +505,7 @@ impl Game {
             }
             let mut off = if human.contains(&n) { self.predict(n, d) * (a * DT) } else { d * (a - 1.0) };
             if let Some(s) = self.net_smooth.get(&n) {
-                off = off + *s;
+                off = off + *s * ease_left;
             }
             let mut sub = Vec::new();
             self.w.descendants(n, &mut sub);
