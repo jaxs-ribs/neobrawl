@@ -6,6 +6,8 @@
 <title>NeoBrawl</title>
 <style>
   :root { --bg: #fbfbfb; --fg: #111; --dim: #777; }
+  /* no rubber-band bounce and no two-finger swipe back/forward (Chrome) */
+  html, body { overscroll-behavior: none; }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); overflow: hidden;
     font: 14px/1.4 system-ui, sans-serif; touch-action: none; user-select: none; -webkit-user-select: none; }
   canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
@@ -58,6 +60,6 @@ P2 controller (sticks, <kbd>A</kbd> dash) or <kbd>←↑↓→</kbd> + <kbd>I</k
 <div id="menuextra"><button id="practicebtn">target practice</button><button id="aimbtn">aim: mouse</button></div>
 <div id="debug" hidden></div>
 <div id="practice" hidden><span id="hits">0</span><span id="streak"></span></div>
-<script type="module" src="./main.js?v=fab04b3e26"></script>
+<script type="module" src="./main.js?v=23fd131e67"></script>
 </body>
 </html>

@@ -636,7 +636,7 @@ class Online {
     setTimeout(() => this.home(), 2500);
   }
   leave() { this.conn?.close(); this.engine.net_end(); this.home(); }
-  home() { this.peer?.destroy(); location.href = location.pathname + location.search; }
+  home() { this.peer?.destroy(); nb.leaving = true; location.href = location.pathname + location.search; }
   fail(e) {
     nb.errors.push("online: " + (e?.type || e?.message || e));
     const msg = e?.type === "peer-unavailable" ? "that room is gone (or the link was mistyped)" : e?.type === "unavailable-id" ? "room clash, try again" : "couldn't connect";
@@ -1140,6 +1140,15 @@ async function main() {
     if (dp >= 0 && !e.repeat) { dashLatch[dp] = true; if (!e.code) keys.add("Shift" + dp); }
     keys.add(e.code);
     if (e.code.startsWith("Arrow") || e.code === "Space") e.preventDefault();
+  });
+  // a trackpad played hard: swipes, pinches and scrolls must never move,
+  // zoom or navigate the page (wheel covers two-finger swipes and pinch,
+  // which arrives as ctrl+wheel; gesture* is Safari's pinch)
+  addEventListener("wheel", (e) => e.preventDefault(), { passive: false });
+  for (const g of ["gesturestart", "gesturechange", "gestureend"]) addEventListener(g, (e) => e.preventDefault(), { passive: false });
+  // and if the browser still tries to leave mid-match, ask first
+  addEventListener("beforeunload", (e) => {
+    if (nb.online?.state === "playing" || (inPlay() && !nb.leaving)) { e.preventDefault(); e.returnValue = ""; }
   });
   addEventListener("keyup", (e) => { keys.delete(e.code); const dp = dashPlayer(e); if (dp >= 0) keys.delete("Shift" + dp); });
   addEventListener("blur", () => { keys.clear(); mouseHeld = false; });
