@@ -954,13 +954,15 @@ let mouseHeld = false;
 // absolute cursor point instead (League-style).
 let locked = false;
 // how you aim with the pointer, remembered: "mouse" rides a locked reticle;
-// "trackpad" aims at the visible cursor and, the moment you charge, pins
-// that spot in the arena (walk freely, it stays put; the finger nudges it)
+// "trackpad" aims at the visible cursor, and the moment you charge the
+// reticle starts where you pointed, the cursor hides, and from there the
+// finger turns it - riding with your soul, like the mouse mode
+// (one thing on screen to aim with, never a cursor and a target apart)
 const AIM_KEY = "neobrawl.aim";
 let aimMode = (() => { try { return localStorage.getItem(AIM_KEY); } catch { return null; } })() || (/Mac/.test(navigator.platform) ? "trackpad" : "mouse");
 const rideOn = () => aimMode === "mouse" && !params.has("abs");
 let cursorPx = null; // last pointer position, screen px (origin bottom-left)
-let anchor = null; // trackpad: { wx, wy, sx, sy } pinned when the charge began
+let tpAim = null; // trackpad: the riding reticle while a charge is held
 const reticle = { x: 2.5, y: 0 }; // world units from your soul
 const RIDE = {
   gain: 0.0105, // world units per raw count, slow finger
@@ -971,14 +973,17 @@ const RIDE = {
 };
 let lastMove = 0;
 // the reticle steered by one raw movement; `friction` < 1 over the enemy
-function steer(dx, dy, t, friction) {
+function clampRide(r) {
+  const l = Math.hypot(r.x, r.y) || 1;
+  const want = Math.min(RIDE.rMax, Math.max(RIDE.rMin, l));
+  r.x *= want / l; r.y *= want / l;
+}
+function steer(r, dx, dy, t, friction) {
   const dt = Math.max(1, t - lastMove); lastMove = t;
   const speed = Math.min(RIDE.speedCap, Math.hypot(dx, dy) / dt);
   const g = RIDE.gain * (0.7 + RIDE.boost * speed) * friction;
-  reticle.x += dx * g; reticle.y -= dy * g;
-  const r = Math.hypot(reticle.x, reticle.y) || 1;
-  const want = Math.min(RIDE.rMax, Math.max(RIDE.rMin, r));
-  reticle.x *= want / r; reticle.y *= want / r;
+  r.x += dx * g; r.y -= dy * g;
+  clampRide(r);
 }
 // dash presses are latched so a quick tap between two game ticks still counts
 const dashLatch = [false, false];
@@ -1019,18 +1024,16 @@ function pollControls() {
     // charge by holding Space (or the button): the aiming hand only points
     const charging = mouseHeld || keys.has("Space");
     if (locked) engine.direct(0, mx, my, reticle.x, reticle.y, charging, false, true);
-    else if (aimMode === "trackpad" && charging && cursorPx) {
-      // pin the spot under the cursor when the charge begins; after that the
-      // finger's travel since the press nudges it (both read through today's
-      // camera, so walking or the camera moving changes nothing)
-      if (!anchor) { const w = engine.world_at(cursorPx[0], cursorPx[1]); if (w.length) anchor = { wx: w[0], wy: w[1], sx: cursorPx[0], sy: cursorPx[1] }; }
-      const me = engine.my_soul(), w0 = anchor && engine.world_at(anchor.sx, anchor.sy), w1 = anchor && engine.world_at(cursorPx[0], cursorPx[1]);
-      if (anchor && me.length && w0.length && w1.length) {
-        const tx = anchor.wx + (w1[0] - w0[0]), ty = anchor.wy + (w1[1] - w0[1]);
-        engine.direct(0, mx, my, tx - me[0], ty - me[1], true, false, true);
-      } else engine.direct(0, mx, my, 0, 0, charging, true, true);
+    else if (aimMode === "trackpad" && charging && (tpAim || cursorPx)) {
+      if (!tpAim) {
+        // the charge begins: the reticle starts exactly where you pointed
+        const w = engine.world_at(cursorPx[0], cursorPx[1]), me = engine.my_soul();
+        if (w.length && me.length) { tpAim = { x: w[0] - me[0], y: w[1] - me[1] }; clampRide(tpAim); engine.cursor(-1, -1); }
+      }
+      if (tpAim) engine.direct(0, mx, my, tpAim.x, tpAim.y, true, false, true);
+      else engine.direct(0, mx, my, 0, 0, true, true, true);
     } else {
-      anchor = null;
+      if (tpAim) { tpAim = null; if (cursorPx) engine.cursor(cursorPx[0], cursorPx[1]); } // let go: the cursor is back
       engine.direct(0, mx, my, 0, 0, charging, true, true);
     }
     engine.dash(0, keys.has("ShiftLeft") || keys.has("Shift0") || dashLatch[0]);
@@ -1099,14 +1102,13 @@ async function main() {
   // raw updates arrive as soon as the hardware reports (not once a frame)
   const moveEvent = "onpointerrawupdate" in window ? "pointerrawupdate" : "pointermove";
   canvas.addEventListener(moveEvent, (e) => {
-    if (locked) {
-      steer(e.movementX, e.movementY, e.timeStamp, engine.aim_friction(reticle.x, reticle.y));
-      return;
-    }
+    if (locked) steer(reticle, e.movementX, e.movementY, e.timeStamp, engine.aim_friction(reticle.x, reticle.y));
+    else if (tpAim) steer(tpAim, e.movementX, e.movementY, e.timeStamp, engine.aim_friction(tpAim.x, tpAim.y));
   });
   canvas.addEventListener("pointermove", (e) => {
     if (locked) return;
-    const [x, y] = toGame(e); engine.cursor(x, y); cursorPx = [x, y];
+    const [x, y] = toGame(e); cursorPx = [x, y];
+    if (!tpAim) engine.cursor(x, y); // hidden while a charge steers the reticle
     if (e.buttons || e.pointerType === "touch") ptr(1)(e);
   });
   document.addEventListener("pointerlockchange", () => {
