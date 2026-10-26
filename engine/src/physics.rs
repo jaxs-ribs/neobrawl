@@ -163,6 +163,10 @@ pub struct Physics {
     touching: HashSet<(usize, usize)>,
     triggers: HashSet<(usize, usize)>,
     pub events: Vec<CollisionEvent>,
+    /// the enabled, active colliders as of the last step, for the node
+    /// count it was taken at: raycasts and debris check only these (and
+    /// re-check `enabled`, which gameplay flips mid-tick)
+    live: (usize, std::rc::Rc<Vec<usize>>),
 }
 
 fn key(a: usize, b: usize) -> (usize, usize) {
@@ -415,10 +419,13 @@ pub struct RayHit {
 }
 
 impl Physics {
-    fn colliders(w: &World) -> Vec<usize> {
-        (0..w.nodes.len())
-            .filter(|&i| w.nodes[i].collider.as_ref().map(|c| c.enabled).unwrap_or(false) && w.active_in_hierarchy(i))
-            .collect()
+    pub fn colliders(&self, w: &World) -> Vec<usize> {
+        let ok = |i: usize| w.nodes[i].collider.as_ref().map(|c| c.enabled).unwrap_or(false) && w.active_in_hierarchy(i);
+        if self.live.0 == w.nodes.len() {
+            self.live.1.iter().copied().filter(|&i| w.nodes[i].collider.as_ref().map(|c| c.enabled).unwrap_or(false)).collect()
+        } else {
+            (0..w.nodes.len()).filter(|&i| ok(i)).collect()
+        }
     }
 
     /// Physics.Raycast in the XY plane against non-trigger colliders on `mask` layers.
@@ -429,7 +436,7 @@ impl Physics {
         }
         let d = [dir.x / l, dir.y / l];
         let mut best: Option<RayHit> = None;
-        for i in Self::colliders(w) {
+        for i in self.colliders(w) {
             if mask & (1 << w.nodes[i].layer) == 0 {
                 continue;
             }
@@ -457,6 +464,7 @@ impl Physics {
         // one pass for every world matrix and active flag
         let (wm, act) = w.world_cache();
         let cols: Vec<usize> = (0..w.nodes.len()).filter(|&i| act[i] && w.nodes[i].collider.as_ref().map(|c| c.enabled).unwrap_or(false)).collect();
+        self.live = (w.nodes.len(), std::rc::Rc::new(cols.clone()));
         let solid: Vec<usize> = cols.iter().copied().filter(|&i| !w.nodes[i].collider.as_ref().unwrap().trigger).collect();
         let dynamic: Vec<usize> = solid
             .iter()

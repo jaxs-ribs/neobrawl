@@ -2,7 +2,7 @@
 //! one-screen match. Each MonoBehaviour is ported as a state struct plus
 //! methods on `Game`; coroutines become `Task`s stepped once per FixedUpdate.
 
-mod ai;
+pub mod ai;
 mod body;
 mod boxes;
 mod fx;
@@ -109,6 +109,9 @@ pub struct Input {
     pub cursor: Option<[f32; 2]>,
     /// snake movement: always moving, keys turn you
     pub snake: bool,
+    /// slots whose input arrives over the network (drawn interpolated,
+    /// never extrapolated from local keys)
+    pub remote: [bool; 2],
 }
 
 #[derive(Clone, Debug, Default)]
@@ -194,6 +197,9 @@ pub struct Game {
     pub throw_ends: HashMap<usize, [u32; 3]>,
     /// who ended each soul last (for choosing its respawn)
     pub last_killer: HashMap<usize, usize>,
+    /// re-simulating frames after a rollback: skip what only the newest
+    /// frame needs (UI layout, render-only springs)
+    pub resim: bool,
     /// the match is frozen under the pause menu (the original only froze
     /// time in the single-player tutorial; versus kept running under it)
     pub paused: bool,
@@ -261,6 +267,7 @@ impl Game {
             cues: Vec::new(),
             throw_ends: HashMap::default(),
             last_killer: HashMap::default(),
+            resim: false,
             paused: false,
             practice: Default::default(),
             prof: Default::default(),
@@ -320,10 +327,14 @@ impl Game {
         lap(self, 5);
         self.update();
         lap(self, 6);
-        self.relayout();
-        self.ui_events();
+        if !self.resim {
+            self.relayout();
+            self.ui_events();
+        }
         lap(self, 7);
-        self.bodies_step();
+        if !self.resim {
+            self.bodies_step();
+        }
         lap(self, 8);
         self.fx_step();
         lap(self, 9);
@@ -345,7 +356,7 @@ impl Game {
             hi = [hi[0].max(s.x), hi[1].max(s.y)];
         }
         let mut geos = Vec::new();
-        for i in 0..w.nodes.len() {
+        for i in self.phys.colliders(w) {
             let Some(c) = w.nodes[i].collider.as_ref() else { continue };
             if !c.enabled || c.trigger || mask & (1 << w.nodes[i].layer) == 0 || !w.active_in_hierarchy(i) {
                 continue;
@@ -451,7 +462,7 @@ impl Game {
         let human: Vec<usize> = self
             .players
             .iter()
-            .filter(|p| self.input.desktop && self.direct_slot_pub(p).map(|s| !self.ai[s].on).unwrap_or(false))
+            .filter(|p| self.input.desktop && self.direct_slot_pub(p).map(|s| !self.ai[s].on && !self.input.remote[s]).unwrap_or(false))
             .map(|p| p.node)
             .collect();
         for (&n, &prev) in &self.prev_pos {

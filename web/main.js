@@ -381,6 +381,119 @@ class Perf {
   push(dt) { this.hist ||= new Float32Array(240); this.histI = ((this.histI || 0) + 1) % 240; this.hist[this.histI] = dt; this.lastN = Math.min(240, (this.lastN || 0) + 1); }
 }
 
+// ------------------------------------------------------------- lag lab ---
+// ?lag: the match runs through the real rollback netcode, with the bot as
+// the remote player behind a simulated link. 1-7 pick the link, 8 cycles
+// your input delay, B starts a blind round (guess the ping with 1-7),
+// N hides the readout. ?lag=110 starts at that round trip.
+const LINKS = [
+  { name: "off", rtt: 0 }, // no netcode at all: the plain local game
+  { name: "LAN", rtt: 4, jitter: 1, loss: 0 },
+  { name: "same city", rtt: 30, jitter: 3, loss: 0 },
+  { name: "good", rtt: 70, jitter: 6, loss: 0.005 },
+  { name: "typical", rtt: 110, jitter: 10, loss: 0.01 },
+  { name: "far", rtt: 160, jitter: 15, loss: 0.02 },
+  { name: "bad", rtt: 220, jitter: 30, loss: 0.04 },
+];
+const DELAYS = ["auto", 0, 1, 2, 3, 4];
+const BLIND_KEY = "neobrawl.blind";
+class LagLab {
+  constructor(engine, start) {
+    this.engine = engine;
+    const want = +start;
+    this.link = start && !isNaN(want) ? LINKS.reduce((b, l, i) => (Math.abs(l.rtt - want) < Math.abs(LINKS[b].rtt - want) ? i : b), 0) : 4;
+    this.delay = 0; // index into DELAYS
+    this.blind = null; // { round } while guessing
+    this.shown = true;
+    this.hist = []; // per-second [rollbacks, deepest]
+    try { this.rounds = JSON.parse(localStorage.getItem(BLIND_KEY) || "[]"); } catch { this.rounds = []; }
+    this.el = document.createElement("div"); this.el.id = "lag";
+    this.el.innerHTML = `<div class="l1"></div><div class="l2"></div><canvas width="180" height="22"></canvas><div class="l3"></div>`;
+    document.body.appendChild(this.el);
+    $("help").hidden = true; // the readout lists the keys that matter here
+    this.banner = document.createElement("div"); this.banner.id = "lagbanner"; document.body.appendChild(this.banner);
+    this.apply();
+    addEventListener("keydown", (e) => this.key(e));
+    this.last = null;
+  }
+  // input delay in ticks: auto hides about half the one-way trip (GGPO's
+  // rule of thumb), so corrections stay around 2-3 frames
+  delayTicks(l) {
+    const d = DELAYS[this.delay];
+    return d === "auto" ? Math.min(3, Math.round(l.rtt / 2 / 20 / 2)) : d;
+  }
+  apply() {
+    const l = LINKS[this.link];
+    if (!l.rtt) this.engine.lag_off();
+    else this.engine.set_lag(l.rtt / 2, l.jitter, l.loss, this.delayTicks(l));
+    this.draw();
+  }
+  key(e) {
+    if (e.repeat || e.metaKey || e.ctrlKey) return;
+    const n = +e.key;
+    if (e.code === "KeyB") return this.startBlind();
+    if (e.code === "KeyN") { this.shown = !this.shown; return this.draw(); }
+    if (e.key === "8") { this.delay = (this.delay + 1) % DELAYS.length; return this.apply(); }
+    if (n >= 1 && n <= LINKS.length) {
+      if (this.blind) return this.guess(n - 1);
+      this.link = n - 1; this.apply();
+    }
+  }
+  startBlind() {
+    // a different link from the one you're on, so a round is never free
+    let k; do k = Math.floor(Math.random() * LINKS.length); while (k === this.link && LINKS.length > 1);
+    this.link = k; this.blind = { round: this.rounds.length + 1, t: performance.now() };
+    this.apply();
+    this.say(`blind round ${this.blind.round} — play a bit, then guess the link: ${LINKS.map((l, i) => `${i + 1} ${l.rtt ? l.rtt + " ms" : "off"}`).join(" · ")}`, 0);
+  }
+  guess(k) {
+    const actual = this.link, secs = Math.round((performance.now() - this.blind.t) / 1000);
+    this.rounds.push({ guess: k, actual, secs, delay: DELAYS[this.delay], at: Date.now() });
+    try { localStorage.setItem(BLIND_KEY, JSON.stringify(this.rounds)); } catch {}
+    this.blind = null;
+    const off = k - actual, word = off === 0 ? "exactly right" : `${Math.abs(off)} step${Math.abs(off) > 1 ? "s" : ""} ${off > 0 ? "high" : "low"}`;
+    const name = (i) => (LINKS[i].rtt ? `${LINKS[i].rtt} ms` : "off");
+    this.say(`you said ${name(k)} · it was ${LINKS[actual].rtt ? `${name(actual)} (${LINKS[actual].name})` : "off (no netcode)"} — ${word}`, 6000);
+    this.draw();
+  }
+  say(text, ms) {
+    this.banner.textContent = text; this.banner.classList.add("on");
+    clearTimeout(this.sayT);
+    if (ms) this.sayT = setTimeout(() => this.banner.classList.remove("on"), ms);
+  }
+  tally() {
+    const r = this.rounds; if (!r.length) return "";
+    const exact = r.filter((x) => x.guess === x.actual).length, near = r.filter((x) => Math.abs(x.guess - x.actual) <= 1).length;
+    return `blind: ${r.length} round${r.length > 1 ? "s" : ""} · ${exact} exact · ${near} within one step`;
+  }
+  update(s) {
+    this.last = s;
+    if (s[0] === 2) { this.hist.push([s[5], s[7]]); if (this.hist.length > 180) this.hist.shift(); }
+    this.draw();
+  }
+  draw() {
+    const l = LINKS[this.link], s = this.last, hide = !!this.blind;
+    const [l1, l2, cv, l3] = this.el.children;
+    this.el.hidden = !this.shown;
+    const d = DELAYS[this.delay];
+    l1.textContent = hide ? "net · blind round — link hidden" :
+      l.rtt ? `net · ${l.name} · ${l.rtt} ms rtt ±${l.jitter} · ${(l.loss * 100).toFixed(1)}% loss · delay ${this.delayTicks(l)}${d === "auto" ? " (auto)" : ""}` : "net · off (local game)";
+    let t = "";
+    if (!hide && s && l.rtt) {
+      if (s[0] === 1) t = "connecting…";
+      else if (s[0] === 0) t = "waits for a match";
+      else if (s.length > 4) t = `ping ${s[4] < 0 ? "-" : Math.round(s[4])} · rollbacks ${s[5].toFixed(0)}/s · depth ${s[6].toFixed(1)} (max ${s[7]}) · resim ${s[8].toFixed(0)}/s · stalls ${s[9].toFixed(1)}/s · net cost ${s[11].toFixed(2)} ms/tick (worst ${s[12].toFixed(1)})`;
+    }
+    l2.textContent = t;
+    // rollback depth, one bar a second (the last three minutes)
+    const g = cv.getContext("2d"); g.clearRect(0, 0, 180, 22);
+    cv.style.display = hide || !l.rtt ? "none" : "block";
+    g.fillStyle = "#111";
+    this.hist.forEach(([, deep], i) => { const h = Math.min(22, deep * 2.2); g.fillRect(i, 22 - h, 1, h); });
+    l3.textContent = (hide ? "" : "1-7 link · 8 delay · B blind · N hide   ") + this.tally();
+  }
+}
+
 // ------------------------------------------------------------- renderer ---
 const WGSL = /* wgsl */ `
 struct Pass { vp: mat4x4f };
@@ -750,7 +863,7 @@ function pollControls() {
   const p2Keys = ["ArrowUp", "ArrowLeft", "ArrowDown", "ArrowRight", "KeyI", "KeyJ", "KeyK", "KeyL", "ShiftRight", "Shift1"];
   const p2Pad = pad2 && (() => { const p = padSticks(pad2); return Math.hypot(p.mx, p.my) > 0 || p.aiming || p.dash; })();
   if (p2Keys.some((c) => keys.has(c)) || dashLatch[1] || p2Pad) p2Human = performance.now();
-  const ai = !params.has("noai") && !params.has("practice") && performance.now() - p2Human > 5000;
+  const ai = params.has("lag") || (!params.has("noai") && !params.has("practice") && performance.now() - p2Human > 5000);
   if (ai !== p2Ai) { p2Ai = ai; engine.set_ai(1, ai); }
 }
 let p2Human = -1e9, p2Ai = false;
@@ -836,6 +949,7 @@ async function main() {
   let texts = {}, textsAt = -1, textsVer = -1;
   let last = performance.now(), acc = 0, frames = 0, fpsT = last;
   const perf = new Perf(); nb.perfObj = perf; let perfT = performance.now();
+  const lab = params.has("lag") ? new LagLab(engine, params.get("lag")) : null; nb.lab = lab;
   perf.show(params.has("perf"));
   addEventListener("keydown", (e) => { if (e.code === "F3") { e.preventDefault(); perf.show(!perf.shown); } });
   const loop = (now) => {
@@ -847,6 +961,7 @@ async function main() {
     // input is read every frame (the prediction draws from it right away),
     // and again before each tick
     pollControls();
+    if (lab) engine.net_poll();
     while (acc >= TICK && steps < 8) {
       if (steps) pollControls();
       engine.frame(); acc -= TICK; steps++; nb.ticks++;
@@ -876,6 +991,7 @@ async function main() {
       nb.perf = perf.report(engine, r.gpuMs);
       if (nb.perf) { r.adapt(1000 / nb.perf.hz); nb.perf.res = r.res; }
       perf.draw(nb.perf); perfT = now;
+      if (lab) { nb.lag = engine.lag_stats(); lab.update(nb.lag); }
     }
     frames++;
     if (now - fpsT >= 500) { nb.fps = Math.round((frames * 1000) / (now - fpsT)); frames = 0; fpsT = now; }

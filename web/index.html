@@ -22,6 +22,15 @@
   #practice #streak { margin-left: .4em; font-size: 13px; color: #888; letter-spacing: .1em; vertical-align: top; }
   #debug { position: fixed; left: 8px; top: 8px; font: 11px/1.35 ui-monospace, monospace; color: #070;
     background: #fffd; padding: 6px 8px; white-space: pre; pointer-events: none; }
+  #lag { position: fixed; right: 12px; top: 10px; text-align: right; pointer-events: none;
+    font: 11px/1.5 ui-monospace, monospace; color: #333; }
+  #lag[hidden] { display: none; }
+  #lag .l3 { color: var(--dim); }
+  #lag canvas { display: block; margin: 3px 0 2px auto; opacity: .7; }
+  #lagbanner { position: fixed; left: 0; right: 0; bottom: 64px; text-align: center; pointer-events: none;
+    font: 13px/1.4 ui-monospace, monospace; color: #111; opacity: 0; transform: translateY(6px);
+    transition: opacity .35s, transform .35s cubic-bezier(.2,1.4,.4,1); padding: 0 16px; }
+  #lagbanner.on { opacity: 1; transform: none; }
 </style>
 </head>
 <body>
@@ -31,6 +40,6 @@
 P2 controller (sticks, <kbd>A</kbd> dash) or <kbd>←↑↓→</kbd> + <kbd>I</kbd><kbd>J</kbd><kbd>K</kbd><kbd>L</kbd> aim + right <kbd>Shift</kbd> dash · <kbd>Esc</kbd> pause</div>
 <div id="debug" hidden></div>
 <div id="practice" hidden><span id="hits">0</span><span id="streak"></span></div>
-<script type="module" src="./main.js?v=910b8f35cd"></script>
+<script type="module" src="./main.js?v=93018646d5"></script>
 </body>
 </html>

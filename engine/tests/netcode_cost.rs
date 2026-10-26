@@ -19,8 +19,19 @@ fn cost() {
     for _ in 0..50 { let c = g.layout.clone(); std::hint::black_box(&c); }
     eprintln!("  layout clone: {:.3} ms", t.elapsed().as_secs_f64() * 1000.0 / 50.0);
     let mut g2 = g.clone();
+    for _ in 0..5 { g2.frame(); }
+    let snap = g2.clone();
+    g2.frame();
+    eprintln!("nodes copied by one tick after a snapshot: {} of {}", g2.w.nodes.len() - g2.w.nodes.shared(), g2.w.nodes.len());
+    let t = std::time::Instant::now();
+    for _ in 0..50 { let s = g2.clone(); g2.frame(); std::hint::black_box(&s); }
+    eprintln!("snapshot + tick: {:.3} ms", t.elapsed().as_secs_f64() * 1000.0 / 50.0);
+    drop(snap);
     let t = std::time::Instant::now();
     for _ in 0..200 { g2.frame(); }
+    let pr = g2.prof.borrow_mut().take();
+    let names = neobrawl::prof::PHASES;
+    for (k, n) in names.iter().enumerate() { if 2 + k * 2 < pr.len() { eprintln!("  {n:10} {:.3}", pr[2 + k * 2]); } }
     eprintln!("tick: {:.3} ms", t.elapsed().as_secs_f64() * 1000.0 / 200.0);
     let t = std::time::Instant::now();
     for _ in 0..200 { std::hint::black_box(g2.checksum()); }

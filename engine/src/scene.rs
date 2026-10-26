@@ -170,9 +170,52 @@ pub struct SpriteAsset {
     pub vector: Option<std::sync::Arc<VShape>>,
 }
 
+/// The scene's nodes, copy-on-write: a rollback snapshot shares every node
+/// with the live world, and a node is copied only when written after it.
+#[derive(Clone, Default)]
+pub struct Nodes(Vec<std::rc::Rc<Node>>);
+
+impl std::ops::Index<usize> for Nodes {
+    type Output = Node;
+    #[inline]
+    fn index(&self, i: usize) -> &Node {
+        &self.0[i]
+    }
+}
+
+impl std::ops::IndexMut<usize> for Nodes {
+    #[inline]
+    fn index_mut(&mut self, i: usize) -> &mut Node {
+        std::rc::Rc::make_mut(&mut self.0[i])
+    }
+}
+
+impl Nodes {
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+    pub fn push(&mut self, n: Node) {
+        self.0.push(std::rc::Rc::new(n));
+    }
+    pub fn iter(&self) -> impl Iterator<Item = &Node> + '_ {
+        self.0.iter().map(|n| &**n)
+    }
+    pub fn get(&self, i: usize) -> Option<&Node> {
+        self.0.get(i).map(|n| &**n)
+    }
+    /// How many nodes this world shares with others (diagnostics).
+    pub fn shared(&self) -> usize {
+        self.0.iter().filter(|n| std::rc::Rc::strong_count(n) > 1).count()
+    }
+}
+
 #[derive(Clone)]
 pub struct World {
-    pub nodes: Vec<Node>,
+    pub nodes: Nodes,
     // lookup tables and assets: static, shared between snapshots
     by_name: std::sync::Arc<HashMap<String, Vec<usize>>>,
     pub objects: std::sync::Arc<HashMap<String, usize>>,
@@ -492,7 +535,7 @@ impl World {
             by_name.entry(n.name.to_string()).or_default().push(i);
         }
         use std::sync::Arc;
-        World { nodes, by_name: Arc::new(by_name), objects: Arc::new(objects), textures: Arc::new(textures), sprites: Arc::new(sprites), sprite_keys: Arc::new(sprite_keys), meshes: Arc::new(mesh_keys), materials: Arc::new(materials), audio: Arc::new(audio), font }
+        World { nodes: Nodes(nodes.into_iter().map(std::rc::Rc::new).collect()), by_name: Arc::new(by_name), objects: Arc::new(objects), textures: Arc::new(textures), sprites: Arc::new(sprites), sprite_keys: Arc::new(sprite_keys), meshes: Arc::new(mesh_keys), materials: Arc::new(materials), audio: Arc::new(audio), font }
     }
 
     pub fn obj(&self, key: &Value) -> Option<usize> {
