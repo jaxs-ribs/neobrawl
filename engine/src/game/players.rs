@@ -347,6 +347,9 @@ impl Game {
             // dashing out of a wind-up keeps the box but bleeds a third of
             // the charge (the dash itself goes the full distance)
             p.charge_timer *= 2.0 / 3.0;
+            // and it's play, not sitting: the 3 s clock starts over
+            p.charge_held = 0;
+            p.pace = 1.0;
             p.dash_t = DASH_TICKS;
             p.dash_cd = DASH_COOLDOWN;
             dashed = true;

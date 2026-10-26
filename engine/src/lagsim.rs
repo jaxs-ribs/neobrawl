@@ -153,9 +153,9 @@ pub struct LagSim {
     aim_off: Vec<f32>,
 }
 
-/// How much of a correction is still drawn after each tick (~100 ms to
+/// How much of a correction is still drawn after each tick (~150 ms to
 /// settle), and how big a jump counts as a teleport (snapped, not eased).
-pub const SMOOTH_KEEP: f32 = 0.55;
+pub const SMOOTH_KEEP: f32 = 0.7;
 const SMOOTH_SNAP: f32 = 4.0;
 
 fn builder(delay: usize, me: usize, desync: bool) -> SessionBuilder<Cfg> {

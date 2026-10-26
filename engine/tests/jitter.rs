@@ -112,6 +112,9 @@ fn every_element_stays_smooth_through_rollback() {
         // a blade's reach jumps by nature as it slides off an edge, and the
         // edges it meets depend on the bot's path: judge it more loosely
         let r = if name.ends_with("reach") { r * 0.64 } else { r };
+        // the other player's things carry real rollback corrections, and one
+        // real-time run swings them by +-0.15 (1.46-1.75x seen): gate at 2x
+        let r = if name.starts_with("their") && !name.ends_with("reach") { r * 0.8 } else { r };
         if r > worst.0 {
             worst = (r, name);
         }
