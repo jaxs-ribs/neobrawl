@@ -370,25 +370,26 @@ fn snake_keeps_moving_turns_on_a_press_and_slows_with_the_charge() {
         g.boxes.iter().find(|b| g.w.active_in_hierarchy(b.node)).unwrap().node
     };
     e.game_mut().pick_box_up_pub(k, bx);
-    // the slowdown follows the charge: barely at first, ~55% when full
+    // the slowdown follows the threat: a jab is free, 45% pace when full
     for _ in 0..10 {
         e.direct(0, 0.0, 0.0, 0.0, 1.0, true, false, true);
         e.frame();
     }
     let early = e.game().players[k].pace;
-    assert!(early > 0.9, "a quick charge keeps you mobile: {early}");
+    assert_eq!(early, 1.0, "a jab-sized charge keeps you at full speed");
     for _ in 0..90 {
         e.direct(0, 0.0, 0.0, 0.0, 1.0, true, false, true);
         e.frame();
     }
     let full = e.game().players[k].pace;
-    assert!((full - 0.55).abs() < 0.03, "a full charge costs speed: {full}");
-    // a dash bails out: the charge is gone
+    assert!((full - 0.45).abs() < 0.01, "a full charge costs speed: {full}");
+    // a dash out of the wind-up bleeds a third of it
     e.dash(0, true);
     e.direct(0, 0.0, 0.0, 0.0, 1.0, true, false, true);
     e.frame();
     e.dash(0, false);
-    assert!(e.game().players[k].charge_timer <= 1.0, "dash drops the charge");
+    let c = e.game().players[k].charge_timer;
+    assert!((c - 60.0).abs() <= 1.5, "dash keeps two thirds: {c}");
     // and letting go gives the speed back at once
     for _ in 0..60 {
         e.frame();

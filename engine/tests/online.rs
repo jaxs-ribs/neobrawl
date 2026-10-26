@@ -76,3 +76,72 @@ fn two_browsers_play_an_online_match_in_sync() {
     assert!(!events[0].contains("desync") && !events[1].contains("desync"), "desync!");
     assert!(!events[0].contains("disconnected") && !events[1].contains("disconnected"));
 }
+
+/// A match plays to its end on both machines (one kill here), both see it
+/// end, then a rematch on a new seed syncs and plays in step again.
+#[test]
+fn a_match_ends_on_both_sides_and_a_rematch_syncs() {
+    let read = |f: &str| std::fs::read_to_string(format!("{}/../web/assets/{f}", env!("CARGO_MANIFEST_DIR"))).unwrap();
+    let (scene, assets) = (read("scene.json"), read("assets.json"));
+    let mut a = neobrawl::Engine::new(&scene, &assets, "{}", 1, 1280.0, 720.0);
+    let mut b = neobrawl::Engine::new(&scene, &assets, "{}", 2, 1440.0, 900.0);
+    let mut events = [String::new(), String::new()];
+    for round in 0..2u64 {
+        a.net_begin(100 + round, round as u32, 0, 1);
+        b.net_begin(100 + round, round as u32, 1, 1);
+        for e in [&mut a, &mut b] {
+            for s in e.game_mut().scores.iter_mut() {
+                s.max_score = 8;
+            }
+        }
+        let mut minds = [a.game().ai[0].clone(), b.game().ai[1].clone()];
+        for m in minds.iter_mut() {
+            m.on = true;
+            m.level = 4;
+        }
+        let mut wire: [VecDeque<(Instant, Vec<u8>)>; 2] = [VecDeque::new(), VecDeque::new()];
+        let mut next = Instant::now();
+        let mut ended = [false; 2];
+        for _ in 0..3000u32 {
+            for (k, e) in [&mut a, &mut b].into_iter().enumerate() {
+                if !ended[k] {
+                    let mut brain = e.game().clone();
+                    brain.ai = Default::default();
+                    brain.ai[k] = minds[k].clone();
+                    let d = brain.ai_decide()[k];
+                    minds[k] = brain.ai[k].clone();
+                    e.direct(0, d.mv.x, d.mv.y, d.aim.x, d.aim.y, d.aiming, false, true);
+                    e.dash(0, d.dash);
+                }
+                e.frame();
+                for p in std::iter::from_fn(|| Some(e.net_pop()).filter(|p| !p.is_empty())) {
+                    wire[k].push_back((Instant::now() + Duration::from_millis(30), p));
+                }
+                let ev = e.net_events();
+                if ev.contains("ended") {
+                    ended[k] = true;
+                }
+                events[k] += &ev;
+            }
+            let now = Instant::now();
+            for (k, e) in [&mut b, &mut a].into_iter().enumerate() {
+                while wire[k].front().map(|(at, _)| *at <= now).unwrap_or(false) {
+                    e.net_recv(&wire[k].pop_front().unwrap().1);
+                }
+            }
+            if ended == [true; 2] {
+                break;
+            }
+            next += Duration::from_millis(20);
+            if let Some(d) = next.checked_duration_since(Instant::now()) {
+                std::thread::sleep(d);
+            }
+        }
+        let sa: serde_json::Value = serde_json::from_str(&a.state()).unwrap();
+        let sb: serde_json::Value = serde_json::from_str(&b.state()).unwrap();
+        eprintln!("round {round}: ended {ended:?}; A {} B {}", sa["score"], sb["score"]);
+        assert_eq!(ended, [true; 2], "both machines saw the match end");
+        assert_eq!(sa["score"], sb["score"], "same final score");
+    }
+    assert!(!events[0].contains("desync") && !events[1].contains("desync"), "{events:?}");
+}

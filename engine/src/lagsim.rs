@@ -14,6 +14,7 @@ use ggrs::{Config, DesyncDetection, GgrsEvent, GgrsRequest, Message, NonBlocking
 use instant::{Duration, Instant};
 
 use crate::game::{ai::Wanderer, Direct, Game};
+use crate::shared::math::V3;
 use crate::net::NetInput;
 
 pub struct Cfg;
@@ -146,7 +147,16 @@ pub struct LagSim {
     pub events: Vec<&'static str>,
     skip: u32,
     win: Window,
+    /// rollback corrections being eased in on screen (node -> offset), and
+    /// where each mover was last tick (to tell motion from correction)
+    smooth: crate::det::HashMap<usize, V3>,
+    last_pos: crate::det::HashMap<usize, V3>,
 }
+
+/// How much of a correction is still drawn after each tick (~100 ms to
+/// settle), and how big a jump counts as a teleport (snapped, not eased).
+const SMOOTH_KEEP: f32 = 0.55;
+const SMOOTH_SNAP: f32 = 4.0;
 
 fn builder(delay: usize, me: usize, desync: bool) -> SessionBuilder<Cfg> {
     let other = 1 - me;
@@ -185,7 +195,7 @@ impl LagSim {
     }
 
     fn bare(sess: P2PSession<Cfg>, me: usize, delay: usize, online: bool) -> LagSim {
-        LagSim { sess, me, bot: None, js: None, delay, online, heard: BTreeMap::new(), cues: Vec::new(), sounds: Vec::new(), events: Vec::new(), skip: 0, win: Window::default() }
+        LagSim { sess, me, bot: None, js: None, delay, online, heard: BTreeMap::new(), cues: Vec::new(), sounds: Vec::new(), events: Vec::new(), skip: 0, win: Window::default(), smooth: Default::default(), last_pos: Default::default() }
     }
 
     pub fn set_chaos(&mut self, chaos: Chaos) {
@@ -263,6 +273,8 @@ impl LagSim {
             return;
         }
         self.sess.add_local_input(self.me, local).ok();
+        let before = movers(g);
+        let mut rolled = false;
         match self.sess.advance_frame() {
             Ok(reqs) => {
                 let now = self.sess.current_frame();
@@ -279,6 +291,7 @@ impl LagSim {
                                 *g = s;
                             }
                             let depth = (now - frame).max(0) as u32;
+                            rolled = true;
                             self.win.rollbacks += 1;
                             self.win.depth_sum += depth;
                             self.win.deepest = self.win.deepest.max(depth);
@@ -303,9 +316,40 @@ impl LagSim {
             }
             Err(_) => self.win.stalls += 1, // too far ahead of the remote's inputs
         }
+        self.ease(g, &before, rolled);
         let ms = t0.elapsed().as_secs_f32() * 1000.0;
         self.win.cost_ms += ms;
         self.win.worst_ms = self.win.worst_ms.max(ms);
+    }
+
+    /// A rollback moved things to where they really are: draw them from
+    /// where they were shown (a remote throw leaves the thrower's hand, a
+    /// remote soul glides back on course) and let them catch up.
+    fn ease(&mut self, g: &mut Game, before: &[(usize, V3)], rolled: bool) {
+        for v in self.smooth.values_mut() {
+            *v = *v * SMOOTH_KEEP;
+        }
+        self.smooth.retain(|_, v| v.length() > 0.01);
+        if rolled {
+            let now: crate::det::HashMap<usize, V3> = movers(g).into_iter().collect();
+            for &(n, p0) in before {
+                let (Some(&p1), Some(&prev)) = (now.get(&n), self.last_pos.get(&n)) else { continue };
+                if p0.x == -666.0 || p1.x == -666.0 || prev.x == -666.0 {
+                    continue;
+                }
+                // where it would have gone at the pace it was going
+                let expected = p0 + (p0 - prev);
+                let c = p1 - expected;
+                if c.length() > SMOOTH_SNAP {
+                    self.smooth.remove(&n);
+                } else if c.length() > 0.03 {
+                    let s = self.smooth.entry(n).or_insert(V3::ZERO);
+                    *s = *s - c;
+                }
+            }
+        }
+        self.last_pos = movers(g).into_iter().collect();
+        g.net_smooth = self.smooth.clone();
     }
 
     fn decide(&mut self, g: &mut Game) -> NetInput {
@@ -367,6 +411,13 @@ impl LagSim {
             self.delay as f32,
         ]
     }
+}
+
+/// Souls and boxes in play, with their positions.
+fn movers(g: &Game) -> Vec<(usize, V3)> {
+    let mut out: Vec<(usize, V3)> = g.players.iter().map(|p| p.node).chain(g.boxes.iter().map(|b| b.node)).filter(|&n| g.w.active_in_hierarchy(n)).map(|n| (n, g.w.position(n))).collect();
+    out.sort_by_key(|x| x.0);
+    out
 }
 
 /// Your controls as one tick of wire input: cursor aim becomes a world

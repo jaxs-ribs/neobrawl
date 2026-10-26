@@ -23,7 +23,7 @@ use crate::physics::Physics;
 use crate::scene::World;
 use crate::ui::{Layout, Screen};
 
-pub use players::{Player, DASH_COOLDOWN, DASH_SPEED, DASH_TICKS};
+pub use players::{charge_pace, jab_charge, throw_speed, Player, CHARGE_FLOOR, DASH_COOLDOWN, DASH_SPEED, DASH_TICKS, FULL_CHARGE};
 pub use tasks::Task;
 
 pub const DT: f32 = 0.02;
@@ -195,6 +195,13 @@ pub struct Game {
     pub cues: Vec<(&'static str, f32, f32)>,
     /// where thrown boxes end, per thrower node: [soul, box, other] (tuning)
     pub throw_ends: HashMap<usize, [u32; 3]>,
+    /// online: render offsets that ease rollback corrections in (node ->
+    /// offset), set from outside the rolled-back state every tick
+    pub net_smooth: HashMap<usize, V3>,
+    /// (thrown charge, wall bounces) of every killing throw (tuning)
+    pub kill_log: Vec<(f32, u8)>,
+    /// charge of every throw (tuning)
+    pub throw_log: Vec<f32>,
     /// who ended each soul last (for choosing its respawn)
     pub last_killer: HashMap<usize, usize>,
     /// re-simulating frames after a rollback: skip what only the newest
@@ -267,6 +274,9 @@ impl Game {
             cues: Vec::new(),
             throw_ends: HashMap::default(),
             last_killer: HashMap::default(),
+            kill_log: Vec::new(),
+            net_smooth: HashMap::default(),
+            throw_log: Vec::new(),
             resim: false,
             paused: false,
             practice: Default::default(),
@@ -471,7 +481,10 @@ impl Game {
             if d.length() > 3.0 || prev.x == -666.0 || cur.x == -666.0 {
                 continue; // teleports snap
             }
-            let off = if human.contains(&n) { self.predict(n, d) * (a * DT) } else { d * (a - 1.0) };
+            let mut off = if human.contains(&n) { self.predict(n, d) * (a * DT) } else { d * (a - 1.0) };
+            if let Some(s) = self.net_smooth.get(&n) {
+                off = off + *s;
+            }
             let mut sub = Vec::new();
             self.w.descendants(n, &mut sub);
             for s in sub {

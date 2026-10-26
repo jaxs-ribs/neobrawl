@@ -386,6 +386,34 @@ impl Game {
         self.cue("ready", p, 1.0);
     }
 
+    /// The charge crosses from jab to loaded: the soul tightens, a small
+    /// ring closes in on it, one rising tick. From here on, it costs speed.
+    pub(super) fn fx_loaded(&mut self, k: usize) {
+        let Some(p) = self.soul_pos(k) else { return };
+        let mut col = self.soul_color(self.players[k].node);
+        col[3] = 0.9;
+        self.motion.ring(false, p, 0.8, 0.36, 0.04, 0.16, col);
+        if let Some(b) = self.bodies.get_mut(k) {
+            b.sq -= 0.08;
+        }
+        self.cue("loaded", p, 1.0);
+    }
+
+    /// A box glances off a wall: a spray of sparks along the new heading.
+    pub(super) fn fx_bounce(&mut self, pos: V3, out: V3, f: f32) {
+        let l = out.length().max(1e-3);
+        let d = out * (1.0 / l);
+        for j in 0..(3 + (5.0 * f) as usize) {
+            let s = crate::motion::hash(j as u32 ^ (self.frame as u32).wrapping_mul(31));
+            let side = v3(-d.y, d.x, 0.0) * hf(s) * 3.0;
+            self.motion.push(Kind::Spark { p: pos, v: d * (5.0 + 9.0 * f) + side, size: 0.03, seek: None, home: None }, false, 0.0, 0.22, INK);
+        }
+        self.motion.ring(false, pos, 0.1, 0.4, 0.025, 0.2, INK);
+        self.motion.add_shake(0.02 + 0.02 * f);
+        self.cue("bounce", pos, f);
+        self.motion.last_action = self.motion.now;
+    }
+
     /// A soul is ended. The original's orbs carry it to the killer; this
     /// only gives the moment weight: a short catch, a bloom, a ring, a shake.
     pub(super) fn fx_kill(&mut self, player: usize, _killer: usize) {

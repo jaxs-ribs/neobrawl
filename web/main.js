@@ -162,6 +162,15 @@ class Audio {
         this.tone(t, this.note(9), this.note(14), "triangle", 0.001, 0.07, 0.07, pan);
         this.tone(t + 0.035, this.note(17), this.note(17), "sine", 0.001, 0.09, 0.04, pan);
         break;
+      case "loaded": // the charge passes jab range: a tight two-step tick upward, quieter than the dash's snap
+        this.tone(t, this.note(5), this.note(5), "sine", 0.001, 0.035, 0.05, pan);
+        this.tone(t + 0.045, this.note(10), this.note(10), "sine", 0.001, 0.06, 0.045, pan);
+        break;
+      case "bounce": // a box glances off a wall: a dry tick with a short ring, harder with speed
+        if (this.limited(name, 10)) return;
+        this.hiss(t, "bandpass", 3200, 2400, 4, 0.0005, 0.025, 0.1 * amt, pan);
+        this.tone(t, 1150 + 300 * amt, 800, "triangle", 0.001, 0.06, 0.05 * amt, pan);
+        break;
       case "thud": // an obstacle flexes: a low wobbling knock
         this.tone(t, 92, 58, "sine", 0.002, 0.2, 0.3 * amt, pan);
         this.hiss(t, "lowpass", 600, 200, 0.7, 0.001, 0.06, 0.08 * amt, pan);
@@ -305,7 +314,7 @@ nb.Audio = Audio; // for offline level checks
 // per-voice trims (x the synth bus) aiming at: fling ~-26 dB RMS, home /
 // refill / thud ~-30, gather ~-32, soul / assemble ~-36, bolt / shatter /
 // tick / turn ~-38, ready ~-40, spark ~-42, hover ~-44
-const CUE_LEVEL = { break: 0.6, fling: 1.2, home: 2.1, refill: 2.7, thud: 0.95, gather: 1, soul: 1.45, assemble: 0.72, bolt: 2.8, shatter: 1.45, tick: 2.8, turn: 2.24, ready: 3.85, spark: 9, hover: 10 };
+const CUE_LEVEL = { loaded: 2.6, bounce: 1.4, break: 0.6, fling: 1.2, home: 2.1, refill: 2.7, thud: 0.95, gather: 1, soul: 1.45, assemble: 0.72, bolt: 2.8, shatter: 1.45, tick: 2.8, turn: 2.24, ready: 3.85, spark: 9, hover: 10 };
 
 // ----------------------------------------------------------------- perf ---
 // The observables: every rAF frame's interval and CPU split, the engine's

@@ -3,17 +3,6 @@
 Collected from design talks in the side session, 2026-10-26.
 
 ## Feel and mechanics
-- **Charge curve by threat.** Replace the linear slowdown (`937ccde`) with a curve over range gained, not time held.
-  - Free jab zone up to the charge that reaches ~4 units in under ~0.25 s, the human reaction time: about 25 ticks, ~28% of a full charge. Derive it from drag and power, not a fixed percentage.
-  - Beyond that: speed = 1 − (1 − floor)·smoothstep(e), where e is the extra range past jab range, normalised to 0..1. Floor ≈ 0.45.
-  - Sound and motion tell when crossing the jab threshold.
-  - Charge fills fast early.
-  - Tune with AI-vs-AI sweeps, aiming for kills split ~evenly between jabs and loaded throws.
-- **Dash while charging:** full distance, but bleeds about a third of the charge.
-- **Bouncing boxes:** a glancing wall hit bounces; only a near-perpendicular hit (high speed into the wall) shatters.
-  - Speed loss per bounce; harmless after 2–3 bounces.
-  - A spark on each bounce.
-  - Box-on-box and box-on-player still explode.
 - **Single-player camera:**
   - Anchored on the player, leaning toward the cursor (Gungeon-style).
   - Weighted points of interest, zoom limits with delay in both directions, a dead zone, critically damped springs.
@@ -21,9 +10,11 @@ Collected from design talks in the side session, 2026-10-26.
 - **Bot pathfinding:** the heuristic bot only steers locally and gets stuck behind maze walls.
 
 ## Multiplayer
-- Shareable room links, WebRTC peer-to-peer, a tiny signalling server.
-- Rollback netcode with 2–3 ticks of input delay.
-- Late remote throws drawn from the thrower's hand and caught up visually.
+- Shipped: invite links, WebRTC via PeerJS, rollback, correction easing, rematch.
+- Own signalling/TURN server if PeerJS's free cloud proves flaky.
+
+## Bots
+- Teach the bot to jab: it never throws inside jab range (0-2% of throws), though jabs land as often as loaded throws. Tried stepping in and winding up late; it made the bot catch dodgers too often, so it was reverted.
 
 ## Learning bots
 - **Headless match runner and recorder.** A deterministic match is just its seed plus the inputs. Bot-vs-bot at scale, plus recorded human games.

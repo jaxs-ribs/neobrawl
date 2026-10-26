@@ -68,8 +68,40 @@ pub struct Player {
 pub const DASH_TICKS: u32 = 6;
 pub const DASH_SPEED: f32 = 24.0;
 pub const DASH_COOLDOWN: u32 = 50;
-/// Speed given up at full charge (0.45 = 55% pace).
-pub const CHARGE_SLOW: f32 = 0.45;
+/// Charging costs speed by threat, not by time held. A jab - enough charge
+/// to cover JAB_REACH units within a human reaction time - is free; past
+/// it, pace eases down to CHARGE_FLOOR at full charge, in step with the
+/// extra lethal range bought (which grows linearly with charge).
+pub const CHARGE_FLOOR: f32 = 0.45;
+pub const JAB_REACH: f32 = 4.0;
+pub const REACTION_SECS: f32 = 0.25;
+/// Charge fills this much faster until the jab is ready.
+pub const JAB_FILL: f32 = 1.5;
+pub const FULL_CHARGE: f32 = 90.0;
+
+/// Throw speed for a charge (units/s), as `throw_fixed` gives it.
+pub fn throw_speed(charge: f32) -> f32 {
+    (charge * 1.11).max(20.0)
+}
+
+/// The charge at which a throw covers JAB_REACH within REACTION_SECS,
+/// from the box's drag (velocity scales by 1 - drag*dt each tick).
+pub fn jab_charge(drag: f32) -> f32 {
+    let k = (1.0 - drag * DT).clamp(0.0, 0.999);
+    let n = REACTION_SECS / DT;
+    let per_speed = DT * k * (1.0 - k.powf(n)) / (1.0 - k);
+    (JAB_REACH / per_speed / 1.11).clamp(0.0, FULL_CHARGE)
+}
+
+/// Movement pace while holding `charge` (1 = full speed).
+pub fn charge_pace(charge: f32, jab: f32) -> f32 {
+    if charge <= jab {
+        return 1.0;
+    }
+    let e = ((charge - jab) / (FULL_CHARGE - jab).max(1.0)).clamp(0.0, 1.0);
+    let s = e * e * (3.0 - 2.0 * e);
+    1.0 - (1.0 - CHARGE_FLOOR) * s
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct Burner {
@@ -255,16 +287,16 @@ impl Game {
             self.snake_glance(k);
         }
         let ctl = self.input.direct[slot];
+        let jab = self.jab();
         let p = &mut self.players[k];
         p.prev2 = p.prev;
         p.prev = p.touch;
         // a short ramp keeps it smooth but never floaty: quicker to brake
         // and to reverse than to get going
         let target = if ctl.active { ctl.mv } else { V2::ZERO };
-        // holding a charge costs speed in proportion to it: full speed at the
-        // start, ~55% at full charge; letting go gives it all back at once
-        let charge = if ctl.aiming && p.picked_box.is_some() { (p.charge_timer / 90.0).clamp(0.0, 1.0) } else { 0.0 };
-        p.pace = 1.0 - CHARGE_SLOW * charge;
+        // holding a charge costs speed by threat: a jab is free, a loaded
+        // throw slows you to 45%; letting go gives it all back at once
+        p.pace = if ctl.aiming && p.picked_box.is_some() { charge_pace(p.charge_timer, jab) } else { 1.0 };
         let mut uturn = false;
         if self.input.snake {
             uturn = Self::snake_steer(p, target);
@@ -306,8 +338,9 @@ impl Game {
             };
             p.dash_dir = dir;
             p.dash_speed = DASH_SPEED;
-            // bailing out with a dash costs the shot you were winding up
-            p.charge_timer = 0.0;
+            // dashing out of a wind-up keeps the box but bleeds a third of
+            // the charge (the dash itself goes the full distance)
+            p.charge_timer *= 2.0 / 3.0;
             p.dash_t = DASH_TICKS;
             p.dash_cd = DASH_COOLDOWN;
             dashed = true;
@@ -653,18 +686,35 @@ impl Game {
         }
     }
 
+    /// The jab threshold for this arena's boxes.
+    pub fn jab_threshold(&self) -> f32 {
+        self.jab()
+    }
+
+    pub(crate) fn jab(&self) -> f32 {
+        let drag = self.boxes.first().and_then(|b| self.w.nodes[b.node].body.as_ref()).map(|b| b.drag).unwrap_or(5.0);
+        jab_charge(drag)
+    }
+
     fn charge(&mut self, k: usize) {
+        let jab = self.jab();
         let p = &mut self.players[k];
         if !p.touch[1].is_zero() {
-            if p.picked_box.is_some() && p.charge_timer < 90.0 {
-                p.charge_timer += 1.0;
-                let fill = p.charge_timer / 90.0;
+            if p.picked_box.is_some() && p.charge_timer < FULL_CHARGE {
+                // quick to a jab, then the long pull to a loaded throw
+                let before = p.charge_timer;
+                p.charge_timer = (p.charge_timer + if before < jab { JAB_FILL } else { 1.0 }).min(FULL_CHARGE);
+                let fill = p.charge_timer / FULL_CHARGE;
+                let crossed = before < jab && p.charge_timer >= jab && !p.single;
                 if !p.playback {
                     if let Some(bar) = p.charge_bar {
                         if let Some(img) = self.w.nodes[bar].image.as_mut() {
                             img.fill = fill;
                         }
                     }
+                }
+                if crossed {
+                    self.fx_loaded(k);
                 }
             }
         } else if p.charge_timer != 0.0 {
@@ -878,6 +928,12 @@ impl Game {
             // counted it from the third tick, so point-blank hits just shoved)
             self.boxes[bi].being_thrown = true;
             self.boxes[bi].being_thrown_pickup = true;
+            self.boxes[bi].bounces = 0;
+            self.boxes[bi].spent = false;
+            self.boxes[bi].thrown_charge = self.players[k].charge_timer;
+            if !single {
+                self.throw_log.push(self.players[k].charge_timer);
+            }
             self.tasks.push(Task::ResetBeingThrown { b: bi, stage: 0, wait: 3 });
         }
         if !single {

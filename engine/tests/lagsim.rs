@@ -53,3 +53,57 @@ fn lag_sim_runs_a_match_through_rollback() {
     let deepest = stats.iter().filter(|s| s[0] == 2.0).map(|s| s[7]).fold(0.0, f32::max);
     assert!(deepest <= 9.0, "rollbacks too deep: {deepest}");
 }
+
+/// Rollback corrections are eased in: the worst on-screen jump of a box or
+/// soul in one tick (a remote throw found late, a remote soul corrected)
+/// is far smaller drawn with the easing than drawn raw.
+#[test]
+fn corrections_are_eased_in_on_screen() {
+    let mut e = engine(r#"{"FirstLaunch":1}"#, 8);
+    run(&mut e, 40);
+    tap(&mut e, "StartingScreenButton");
+    run(&mut e, 70);
+    tap(&mut e, "MapMenuGameStart");
+    run(&mut e, 100);
+    e.set_desktop(true);
+    e.set_ai(1, true);
+    e.set_ai_level(1, 4);
+    e.set_lag(80.0, 10.0, 0.01, 1);
+    let mut next = Instant::now();
+    let mut last: std::collections::HashMap<usize, (neobrawl::shared::math::V3, neobrawl::shared::math::V3)> = Default::default();
+    let (mut worst_raw, mut worst_eased) = (0f32, 0f32);
+    let (mut sum_raw, mut sum_eased, mut n) = (0f32, 0f32, 0);
+    for t in 0..1500u32 {
+        let a = t as f32 * 0.05;
+        e.direct(0, a.cos(), a.sin(), (a * 0.7).cos(), (a * 0.7).sin(), t % 70 < 40, false, true);
+        e.frame();
+        let g = e.game();
+        for node in g.players.iter().map(|p| p.node).chain(g.boxes.iter().map(|b| b.node)) {
+            if !g.w.active_in_hierarchy(node) {
+                continue;
+            }
+            let raw = g.w.position(node);
+            let eased = raw + g.net_smooth.get(&node).copied().unwrap_or_default();
+            if let Some((r0, e0)) = last.get(&node) {
+                let (jr, je) = ((raw - *r0).length(), (eased - *e0).length());
+                if jr < 4.0 && raw.x != -666.0 && r0.x != -666.0 {
+                    worst_raw = worst_raw.max(jr);
+                    worst_eased = worst_eased.max(je);
+                    if jr > 1.5 {
+                        sum_raw += jr;
+                        sum_eased += je;
+                        n += 1;
+                    }
+                }
+            }
+            last.insert(node, (raw, eased));
+        }
+        next += Duration::from_millis(20);
+        if let Some(d) = next.checked_duration_since(Instant::now()) {
+            std::thread::sleep(d);
+        }
+    }
+    eprintln!("worst jump per tick: raw {worst_raw:.2}, eased {worst_eased:.2}; over {n} big jumps, mean raw {:.2} eased {:.2}", sum_raw / n.max(1) as f32, sum_eased / n.max(1) as f32);
+    assert!(n > 0, "no corrections big enough to judge");
+    assert!(sum_eased < sum_raw * 0.7, "easing should soften the big jumps");
+}

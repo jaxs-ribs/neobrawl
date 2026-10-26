@@ -27,7 +27,20 @@ pub struct BoxS {
     pub intro: bool,
     pub reflected: V3,
     pub started: bool,
+    /// wall bounces since the throw; after BOUNCES_LIVE it's harmless
+    pub bounces: u8,
+    pub spent: bool,
+    /// charge it was thrown with (tuning: jab vs loaded kills)
+    pub thrown_charge: f32,
 }
+
+/// A wall hit shatters the box only if it comes in nearly square
+/// (|cos| to the wall normal above this) and fast into the wall.
+pub const SHATTER_SQUARE: f32 = 0.85;
+pub const SHATTER_NORMAL_SPEED: f32 = 24.0;
+/// Speed kept per bounce, and bounces before a box goes harmless.
+pub const BOUNCE_KEEP: f32 = 0.7;
+pub const BOUNCES_LIVE: u8 = 3;
 
 impl Game {
     pub(super) fn collect_boxes(&mut self) {
@@ -94,6 +107,9 @@ impl Game {
 
     pub(super) fn is_being_thrown(&self, b: usize) -> bool {
         let x = &self.boxes[b];
+        if x.spent {
+            return false;
+        }
         x.prev_vel.x.abs() > 10.0 || x.prev_vel.y.abs() > 10.0 || x.being_thrown
     }
 
@@ -107,6 +123,10 @@ impl Game {
         }
         let n = self.boxes[b].node;
         let pos = self.w.position(n);
+        let other_layer = self.w.nodes[other].layer;
+        if other_layer != crate::physics::LAYER_BOX && other_layer != crate::physics::LAYER_PLAYER && !self.boxes[b].intro && self.box_bounce(b, other, pos, normal) {
+            return;
+        }
         // the break: a synthesised glass shatter (the original was one long
         // explosion sample, the same every time); how hard and what it hit
         // shape it - amount = speed 0..1 + 10 x material (0 wall, 1 box, 2 soul)
@@ -131,7 +151,6 @@ impl Game {
             }
         }
         let other_tag = self.w.nodes[other].tag.clone();
-        let other_layer = self.w.nodes[other].layer;
         if &*other_tag == "Wall" {
             self.boxes[b].reflected = reflect(prev, normal);
         } else if other_layer == crate::physics::LAYER_BOX {
@@ -148,10 +167,43 @@ impl Game {
                 self.drop_box(k);
             }
             let killer = self.boxes[b].carried_by;
+            self.kill_log.push((self.boxes[b].thrown_charge, self.boxes[b].bounces));
             self.kill_impulse = prev;
             self.death(other, killer);
         }
         self.box_single_explode(b);
+    }
+
+    /// A thrown box meets a wall: glancing (or soft) hits bounce off with a
+    /// spark and lose speed, and a few bounces leave it harmless; only a
+    /// square, fast hit shatters. True if it bounced.
+    fn box_bounce(&mut self, b: usize, other: usize, pos: V3, normal: V3) -> bool {
+        let v = self.boxes[b].prev_vel;
+        let sp = (v.x * v.x + v.y * v.y).sqrt();
+        let nl = (normal.x * normal.x + normal.y * normal.y).sqrt();
+        if sp < 1e-3 || nl < 1e-3 {
+            return false;
+        }
+        let nn = v3(normal.x / nl, normal.y / nl, 0.0);
+        let into = (v.x * nn.x + v.y * nn.y).abs();
+        if into / sp > SHATTER_SQUARE && into > SHATTER_NORMAL_SPEED {
+            return false;
+        }
+        let out = reflect(v3(v.x, v.y, 0.0), nn) * BOUNCE_KEEP;
+        let n = self.boxes[b].node;
+        if let Some(body) = self.w.nodes[n].body.as_mut() {
+            body.velocity = out;
+        }
+        let x = &mut self.boxes[b];
+        x.bounces += 1;
+        x.prev_vel = out;
+        if x.bounces >= BOUNCES_LIVE || out.length() < 12.0 {
+            x.spent = true;
+            x.being_thrown = false;
+        }
+        self.fx_bounce(pos, out, (sp / 80.0).clamp(0.2, 1.0));
+        self.fx_flex(other, pos, normal);
+        true
     }
 
     pub(super) fn box_single_explode(&mut self, b: usize) {

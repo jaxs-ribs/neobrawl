@@ -141,7 +141,10 @@ fn flank(seeds: std::ops::Range<u64>) -> (u32, u32) {
             e.dash(0, false);
             since_dash = if dash { 0 } else { since_dash + 1 };
             let now_alive = e.game().w.position(p1).x != -666.0;
-            if alive && !now_alive {
+            // ricochets off walls are physics, not the bot's tracking: only
+            // direct hits count here
+            let direct = e.game().kill_log.last().map(|k| k.1 == 0).unwrap_or(true);
+            if alive && !now_alive && direct {
                 deaths += 1;
                 if since_dash < 13 {
                     caught += 1;
