@@ -157,8 +157,10 @@ class Audio {
         this.hiss(t, "highpass", 3500, 3500, 0.7, 0.001, 0.03, 0.12, pan);
         this.tone(t + 0.01, this.note(7), this.note(12), "sine", 0.003, 0.09, 0.09, pan);
         break;
-      case "ready": // dash back: the click's sine, tiny and high
-        this.tone(t, this.note(14), this.note(14), "sine", 0.001, 0.05, 0.03, pan);
+      case "ready": // dash back: one crisp, unmistakable snap-up (the same for a refill)
+        this.hiss(t, "highpass", 5200, 5200, 0.7, 0.0005, 0.006, 0.12, pan);
+        this.tone(t, this.note(9), this.note(14), "triangle", 0.001, 0.07, 0.07, pan);
+        this.tone(t + 0.035, this.note(17), this.note(17), "sine", 0.001, 0.09, 0.04, pan);
         break;
       case "thud": // an obstacle flexes: a low wobbling knock
         this.tone(t, 92, 58, "sine", 0.002, 0.2, 0.3 * amt, pan);

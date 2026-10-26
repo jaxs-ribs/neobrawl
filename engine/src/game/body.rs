@@ -137,6 +137,13 @@ impl Game {
         }
     }
 
+    /// Dash back: a quick outward bounce.
+    pub(super) fn body_ready(&mut self, k: usize) {
+        if let Some(b) = self.bodies.get_mut(k) {
+            b.sq_v += 6.5;
+        }
+    }
+
     /// Landing (respawn, pickup): a squash that settles.
     pub(super) fn body_land(&mut self, k: usize, amount: f32) {
         if let Some(b) = self.bodies.get_mut(k) {

@@ -334,6 +334,7 @@ impl Game {
             self.motion.trace_circle(false, 0.0, p, 0.34, std::f32::consts::FRAC_PI_2, 0.035, 0.3, hot);
             self.motion.burst(false, p, 10, 7.0, 0.05, 0.35, hot, None);
             self.cue("refill", p, 1.0);
+            self.fx_dash_ready(k);
         }
         self.motion.last_action = self.motion.now;
     }
@@ -371,10 +372,17 @@ impl Game {
     }
 
     /// Cooldown over: a spark runs once around the soul.
+    /// The dash is back: the arc snaps shut, a ring pops out in the soul's
+    /// colour, the soul bounces, and one clear sound - the same signal for a
+    /// cooldown running out and for a pickup refilling it.
     pub(super) fn fx_dash_ready(&mut self, k: usize) {
         let Some(p) = self.soul_pos(k) else { return };
-        let col = self.soul_color(self.players[k].node);
-        self.motion.trace_circle(false, 0.0, p, 0.3, std::f32::consts::FRAC_PI_2, 0.022, 0.32, col);
+        let mut col = self.soul_color(self.players[k].node);
+        col[3] = 1.0;
+        self.motion.trace_circle(false, 0.0, p, 0.47, std::f32::consts::FRAC_PI_2, 0.035, 0.16, col);
+        self.motion.ring(false, p, 0.42, 1.05, 0.07, 0.32, col);
+        self.motion.flash(false, p, 0.8, 0.22, col);
+        self.body_ready(k);
         self.cue("ready", p, 1.0);
     }
 

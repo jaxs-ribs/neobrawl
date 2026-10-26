@@ -184,12 +184,18 @@ impl Game {
                 if !tr.enabled || p.trail.len() < 2 || !w.active_in_hierarchy(p.node) {
                     continue;
                 }
-                let color = w.nodes[p.node]
+                let mut color = w.nodes[p.node]
                     .children
                     .first()
                     .and_then(|&c| w.nodes[c].sprite.as_ref())
                     .map(|s| s.color)
                     .unwrap_or(tr.color);
+                // a spent dash: the trail goes thin and grey until it is back
+                let spent = self.input.desktop && p.dash_cd > 0;
+                if spent {
+                    let g = (color[0] + color[1] + color[2]) / 3.0 * 0.5 + 0.3;
+                    color = [color[0] * 0.25 + g * 0.75, color[1] * 0.25 + g * 0.75, color[2] * 0.25 + g * 0.75, color[3] * 0.5];
+                }
                 let mut pts: Vec<V3> = p.trail.iter().map(|(q, _)| *q).collect();
                 pts.push(w.position(p.node));
                 let smooth = catmull_rom(&pts, 4);
@@ -203,7 +209,7 @@ impl Game {
                     let f1 = (k + 1) as f32 / (n - 1) as f32;
                     let seg = [smooth[k], smooth[k + 1]];
                     // taper from the blob's own width (~0.4) to nothing
-                    let head = 0.4f32.min(tr.width[0]);
+                    let head = 0.4f32.min(tr.width[0]) * if spent { 0.55 } else { 1.0 };
                     let w0 = head * f0 * f0;
                     let w1 = head * f1 * f1;
                     let mut glow = color;
@@ -286,6 +292,33 @@ impl Game {
                         c[3] = 0.35 - g as f32 * 0.07;
                         let q = [back + v3(-rad, -rad, 0.0), back + v3(rad, -rad, 0.0), back + v3(rad, rad, 0.0), back + v3(-rad, rad, 0.0)];
                         items.push(Item { order: -1, dist: d + 0.02, seq: p.node, rec: quad(disc, q, [0.0, 0.0, 1.0, 1.0], c) });
+                    }
+                }
+                // the dash recharging: a thin ink arc winds round the soul with a
+                // bright head; when it closes, the dash is back
+                if self.input.desktop && p.dash_cd > 0 {
+                    let off = lerp.get(&p.node).copied().unwrap_or(V3::ZERO) + self.bodies.get(pk).map(|b| b.off).unwrap_or(V3::ZERO);
+                    let c = pos + off;
+                    let f = 1.0 - p.dash_cd as f32 / crate::game::DASH_COOLDOWN as f32;
+                    let r = 0.47;
+                    let n = (48.0 * f).ceil().max(1.0) as usize;
+                    let start = std::f32::consts::FRAC_PI_2;
+                    let pts: Vec<V3> = (0..=n).map(|j| { let q = start - (j as f32 / 48.0) * std::f32::consts::TAU; c + v3(q.cos(), q.sin(), 0.0) * r }).collect();
+                    for j in 0..pts.len().saturating_sub(1) {
+                        let (u0, u1) = (j as f32 / n as f32, (j + 1) as f32 / n as f32);
+                        ribbon_tapered(&pts[j..=j + 1], [0.008 + 0.02 * u0, 0.008 + 0.02 * u1], [0.04, 0.04, 0.06, 0.25 + 0.35 * u1], -1.0, |rec| items.push(Item { order: 4, dist: d - 0.003, seq: p.node, rec }));
+                    }
+                    // the track it is closing round, faint
+                    let track: Vec<V3> = (n..=48).map(|j| { let q = start - (j as f32 / 48.0) * std::f32::consts::TAU; c + v3(q.cos(), q.sin(), 0.0) * r }).collect();
+                    if track.len() >= 2 {
+                        ribbon(&track, 0.006, [0.04, 0.04, 0.06, 0.08], -1.0, |rec| items.push(Item { order: 4, dist: d - 0.003, seq: p.node, rec }));
+                    }
+                    if disc >= 0.0 {
+                        let hp = *pts.last().unwrap();
+                        let hs = 0.045 + 0.02 * f;
+                        let mut hc = color;
+                        hc[3] = 0.9;
+                        items.push(Item { order: 4, dist: d - 0.004, seq: p.node, rec: quad(disc, [hp + v3(-hs, -hs, 0.0), hp + v3(hs, -hs, 0.0), hp + v3(hs, hs, 0.0), hp + v3(-hs, hs, 0.0)], [0.0, 0.0, 1.0, 1.0], hc) });
                     }
                 }
                 // the charger: an ink blade along the aim whose length is how far
