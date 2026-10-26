@@ -164,6 +164,15 @@ fn a_dash_breaks_the_bots_lock() {
     let (deaths, caught) = flank(7..15);
     eprintln!("flanking: {deaths} deaths, {caught} caught around a dash");
     assert!(deaths >= 5, "the bot still fights: {deaths} kills");
-    // measured: 11 of 78 (14%); the old dash-reading tracker: 19 of 84 (23%)
-    assert!(caught as f32 <= deaths as f32 * 0.18, "caught {caught} of {deaths} around dashes");
+    // measured over 24 seeds: 15% while charging slowed you; 19% since
+    // charging is free for 3 s (the bot keeps pace while lining up, as a
+    // person does). The old dash-reading tracker caught 23%+.
+    assert!(caught as f32 <= deaths as f32 * 0.22, "caught {caught} of {deaths} around dashes");
+}
+
+#[test]
+#[ignore]
+fn flank_wide() {
+    let (d, c) = flank(7..31);
+    eprintln!("24 seeds: {c} of {d} ({:.0}%)", c as f32 * 100.0 / d.max(1) as f32);
 }

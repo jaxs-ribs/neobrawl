@@ -387,7 +387,7 @@ impl Game {
     }
 
     /// The charge crosses from jab to loaded: the soul tightens, a small
-    /// ring closes in on it, one rising tick. From here on, it costs speed.
+    /// ring closes in on it, one rising tick.
     pub(super) fn fx_loaded(&mut self, k: usize) {
         let Some(p) = self.soul_pos(k) else { return };
         let mut col = self.soul_color(self.players[k].node);

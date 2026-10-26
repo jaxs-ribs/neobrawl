@@ -370,7 +370,7 @@ fn snake_keeps_moving_turns_on_a_press_and_slows_with_the_charge() {
         g.boxes.iter().find(|b| g.w.active_in_hierarchy(b.node)).unwrap().node
     };
     e.game_mut().pick_box_up_pub(k, bx);
-    // the slowdown follows the threat: a jab is free, 45% pace when full
+    // charging is free; only sitting on it past 3 s slows you to 45%
     for _ in 0..10 {
         e.direct(0, 0.0, 0.0, 0.0, 1.0, true, false, true);
         e.frame();
@@ -381,8 +381,13 @@ fn snake_keeps_moving_turns_on_a_press_and_slows_with_the_charge() {
         e.direct(0, 0.0, 0.0, 0.0, 1.0, true, false, true);
         e.frame();
     }
+    assert_eq!(e.game().players[k].pace, 1.0, "full charge at 2 s, still full speed");
+    for _ in 0..80 {
+        e.direct(0, 0.0, 0.0, 0.0, 1.0, true, false, true);
+        e.frame();
+    }
     let full = e.game().players[k].pace;
-    assert!((full - 0.45).abs() < 0.01, "a full charge costs speed: {full}");
+    assert!((full - 0.45).abs() < 0.01, "sitting on a charge costs speed: {full}");
     // a dash out of the wind-up bleeds a third of it
     e.dash(0, true);
     e.direct(0, 0.0, 0.0, 0.0, 1.0, true, false, true);
@@ -390,6 +395,7 @@ fn snake_keeps_moving_turns_on_a_press_and_slows_with_the_charge() {
     e.dash(0, false);
     let c = e.game().players[k].charge_timer;
     assert!((c - 60.0).abs() <= 1.5, "dash keeps two thirds: {c}");
+    assert_eq!(e.game().players[k].pace, 1.0, "the dash ends the sit");
     // and letting go gives the speed back at once
     for _ in 0..60 {
         e.frame();

@@ -2,7 +2,7 @@
 
 mod common;
 use common::*;
-use neobrawl::game::{charge_pace, jab_charge, CHARGE_FLOOR, FULL_CHARGE};
+use neobrawl::game::{charge_pace, jab_charge, CHARGE_EASE_TICKS, CHARGE_FLOOR, CHARGE_FREE_TICKS, FULL_CHARGE};
 use neobrawl::shared::math::{v3, V3};
 use neobrawl::Engine;
 
@@ -61,25 +61,23 @@ fn the_jab_threshold_comes_from_the_box_physics() {
 }
 
 #[test]
-fn pace_is_free_through_the_jab_then_eases_to_the_floor() {
-    let j = jab_charge(5.0);
-    for c in [0.0, 10.0, j * 0.99, j] {
-        assert_eq!(charge_pace(c, j), 1.0, "charge {c}");
+fn charging_is_free_for_three_seconds_then_eases_to_the_floor() {
+    for h in [0, 10, 90, CHARGE_FREE_TICKS] {
+        assert_eq!(charge_pace(h), 1.0, "held {h}");
     }
-    assert!((charge_pace(FULL_CHARGE, j) - CHARGE_FLOOR).abs() < 1e-4);
+    assert_eq!(CHARGE_FREE_TICKS, 150, "3 s at 50 Hz");
+    assert!((charge_pace(CHARGE_FREE_TICKS + CHARGE_EASE_TICKS) - CHARGE_FLOOR).abs() < 1e-4);
+    assert!((charge_pace(10_000) - CHARGE_FLOOR).abs() < 1e-4);
     let mut last = 1.0;
-    for i in 0..=60 {
-        let c = j + (FULL_CHARGE - j) * i as f32 / 60.0;
-        let p = charge_pace(c, j);
-        assert!(p <= last + 1e-6, "pace rose at {c}");
+    for h in CHARGE_FREE_TICKS..CHARGE_FREE_TICKS + CHARGE_EASE_TICKS + 5 {
+        let p = charge_pace(h);
+        assert!(p <= last + 1e-6, "pace rose at {h}");
         last = p;
     }
-    // eased: barely any cost just past the jab, most of it in the middle
-    assert!(charge_pace(j + 3.0, j) > 0.98);
 }
 
 #[test]
-fn charging_in_game_fills_fast_to_the_jab_says_so_once_then_slows_you() {
+fn charging_in_game_fills_fast_to_the_jab_says_so_once_and_only_slows_after_three_seconds() {
     let mut e = start_match(11);
     assert!(fetch_box(&mut e));
     let (_, k) = p1(&e);
@@ -88,7 +86,7 @@ fn charging_in_game_fills_fast_to_the_jab_says_so_once_then_slows_you() {
     let mut crossed_at = None;
     let mut loaded = 0;
     let mut paces = Vec::new();
-    for t in 0..120 {
+    for t in 0..200 {
         e.direct(0, 1.0, 0.0, 0.0, 1.0, true, false, true);
         e.frame();
         let c = e.game().players[k].charge_timer;
@@ -102,10 +100,10 @@ fn charging_in_game_fills_fast_to_the_jab_says_so_once_then_slows_you() {
     // 1.5 per tick until the jab: there in ~j/1.5 ticks, not j
     assert!((crossed_at as f32) < j / 1.5 + 3.0, "jab after {crossed_at} ticks (threshold {j})");
     assert_eq!(loaded, 1, "the loaded cue fires exactly once");
-    assert!(paces.iter().filter(|(c, _)| *c < j).all(|(_, p)| *p == 1.0), "a jab costs no speed");
+    assert!(paces[..150].iter().all(|(_, p)| *p == 1.0), "the first 3 s of charging cost no speed");
     let (c, p) = *paces.last().unwrap();
     assert_eq!(c, FULL_CHARGE);
-    assert!((p - CHARGE_FLOOR).abs() < 1e-3, "pace at full {p}");
+    assert!((p - CHARGE_FLOOR).abs() < 1e-3, "pace after sitting on it {p}");
 }
 
 #[test]

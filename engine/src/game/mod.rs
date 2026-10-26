@@ -23,7 +23,7 @@ use crate::physics::Physics;
 use crate::scene::World;
 use crate::ui::{Layout, Screen};
 
-pub use players::{charge_pace, jab_charge, throw_speed, Player, CHARGE_FLOOR, DASH_COOLDOWN, DASH_SPEED, DASH_TICKS, FULL_CHARGE};
+pub use players::{charge_pace, jab_charge, throw_speed, Player, CHARGE_EASE_TICKS, CHARGE_FLOOR, CHARGE_FREE_TICKS, DASH_COOLDOWN, DASH_SPEED, DASH_TICKS, FULL_CHARGE};
 pub use tasks::Task;
 
 pub const DT: f32 = 0.02;

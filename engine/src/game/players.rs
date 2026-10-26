@@ -62,17 +62,21 @@ pub struct Player {
     pub last_pos: V3,
     pub blocked: u8,
     pub glance_side: bool,
+    /// ticks the current charge has been held
+    pub charge_held: u32,
 }
 
 /// Dash tuning: ~2.9 units in 0.12 s, then a 1 s cooldown.
 pub const DASH_TICKS: u32 = 6;
 pub const DASH_SPEED: f32 = 24.0;
 pub const DASH_COOLDOWN: u32 = 50;
-/// Charging costs speed by threat, not by time held. A jab - enough charge
-/// to cover JAB_REACH units within a human reaction time - is free; past
-/// it, pace eases down to CHARGE_FLOOR at full charge, in step with the
-/// extra lethal range bought (which grows linearly with charge).
+/// Charging is free to move with; only sitting on it costs: after holding
+/// a charge for CHARGE_FREE_TICKS, pace eases down to CHARGE_FLOOR over
+/// CHARGE_EASE_TICKS. A jab - enough charge to cover JAB_REACH units within
+/// a human reaction time - is still the moment the throw turns "loaded".
 pub const CHARGE_FLOOR: f32 = 0.45;
+pub const CHARGE_FREE_TICKS: u32 = 150;
+pub const CHARGE_EASE_TICKS: u32 = 25;
 pub const JAB_REACH: f32 = 4.0;
 pub const REACTION_SECS: f32 = 0.25;
 /// Charge fills this much faster until the jab is ready.
@@ -93,12 +97,12 @@ pub fn jab_charge(drag: f32) -> f32 {
     (JAB_REACH / per_speed / 1.11).clamp(0.0, FULL_CHARGE)
 }
 
-/// Movement pace while holding `charge` (1 = full speed).
-pub fn charge_pace(charge: f32, jab: f32) -> f32 {
-    if charge <= jab {
+/// Movement pace after holding a charge for `held` ticks (1 = full speed).
+pub fn charge_pace(held: u32) -> f32 {
+    if held <= CHARGE_FREE_TICKS {
         return 1.0;
     }
-    let e = ((charge - jab) / (FULL_CHARGE - jab).max(1.0)).clamp(0.0, 1.0);
+    let e = ((held - CHARGE_FREE_TICKS) as f32 / CHARGE_EASE_TICKS as f32).clamp(0.0, 1.0);
     let s = e * e * (3.0 - 2.0 * e);
     1.0 - (1.0 - CHARGE_FLOOR) * s
 }
@@ -294,9 +298,11 @@ impl Game {
         // a short ramp keeps it smooth but never floaty: quicker to brake
         // and to reverse than to get going
         let target = if ctl.active { ctl.mv } else { V2::ZERO };
-        // holding a charge costs speed by threat: a jab is free, a loaded
-        // throw slows you to 45%; letting go gives it all back at once
-        p.pace = if ctl.aiming && p.picked_box.is_some() { charge_pace(p.charge_timer, jab) } else { 1.0 };
+        // charging is free; sitting on it for 3 s slows you to 45%, and
+        // letting go gives it all back at once
+        p.charge_held = if ctl.aiming && p.picked_box.is_some() { p.charge_held + 1 } else { 0 };
+        p.pace = charge_pace(p.charge_held);
+        let _ = jab;
         let mut uturn = false;
         if self.input.snake {
             uturn = Self::snake_steer(p, target);
