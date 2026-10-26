@@ -161,7 +161,8 @@ fn flank(seeds: std::ops::Range<u64>) -> (u32, u32) {
 /// tracking caught about 60% more of these; see the numbers below.)
 #[test]
 fn a_dash_breaks_the_bots_lock() {
-    let (deaths, caught) = flank(7..15);
+    // 24 matches: fewer swing the rate by several points either way
+    let (deaths, caught) = flank(7..31);
     eprintln!("flanking: {deaths} deaths, {caught} caught around a dash");
     assert!(deaths >= 5, "the bot still fights: {deaths} kills");
     // measured over 24 seeds: 15% while charging slowed you; 19% since
@@ -170,9 +171,3 @@ fn a_dash_breaks_the_bots_lock() {
     assert!(caught as f32 <= deaths as f32 * 0.22, "caught {caught} of {deaths} around dashes");
 }
 
-#[test]
-#[ignore]
-fn flank_wide() {
-    let (d, c) = flank(7..31);
-    eprintln!("24 seeds: {c} of {d} ({:.0}%)", c as f32 * 100.0 / d.max(1) as f32);
-}
