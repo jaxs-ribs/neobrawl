@@ -330,3 +330,24 @@ fn a_bank_shot_off_a_wall_still_kills() {
     assert!(e.game().kill_log.iter().any(|(_, b)| *b == 1), "logged as a one-bounce kill");
 }
 
+
+// ------------------------------------------------------------ aiming ----
+
+/// The riding reticle's assist: a little heavier right over the enemy,
+/// never below 0.7, and nothing at all a few degrees off.
+#[test]
+fn aim_friction_is_subtle_and_only_over_the_enemy() {
+    let e = start_match(18);
+    let g = e.game();
+    let me = g.w.position(g.w.with_tag("PlayerOneScreen1").unwrap());
+    let them = g.w.position(g.w.with_tag("PlayerOneScreen2").unwrap());
+    let d = them - me;
+    let on = e.aim_friction(d.x, d.y);
+    assert!(on < 0.75 && on >= 0.7 - 1e-4, "right over the enemy: {on}");
+    let a = d.y.atan2(d.x);
+    let near = e.aim_friction((a + 0.03).cos() * 3.0, (a + 0.03).sin() * 3.0);
+    assert!(near > on && near < 1.0, "the edge eases out: {near}");
+    for off in [0.2f32, 1.0, 2.5] {
+        assert_eq!(e.aim_friction((a + off).cos() * 3.0, (a + off).sin() * 3.0), 1.0, "{off} rad off");
+    }
+}

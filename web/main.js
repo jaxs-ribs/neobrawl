@@ -949,11 +949,32 @@ class Renderer {
 // take over both players (left stick move, right stick aim, release to throw).
 const keys = new Set();
 let mouseHeld = false;
-// Aim is at the absolute cursor point in the arena; ?orbit instead pointer-locks
-// the mouse and steers a reticle around player 1.
+// Aim rides with you: in play the pointer is locked (raw, without the OS's
+// acceleration where the browser allows it) and the finger steers a
+// reticle held at an offset from your soul, in world units, so walking
+// never makes you chase it - a stick, on a trackpad. ?abs aims at the
+// absolute cursor point instead (League-style).
 let locked = false;
-const orbit = { x: 1, y: 0 };
-const ORBIT_SENS = 0.012;
+const ride = !params.has("abs");
+const reticle = { x: 2.5, y: 0 }; // world units from your soul
+const RIDE = {
+  gain: 0.0105, // world units per raw count, slow finger
+  boost: 0.55, // extra gain per count/ms of finger speed (a flick turns far)
+  speedCap: 2.5,
+  rMin: 1.2, // never so close that direction gets twitchy
+  rMax: 6.0, // never lost off-screen: only direction matters past this
+};
+let lastMove = 0;
+// the reticle steered by one raw movement; `friction` < 1 over the enemy
+function steer(dx, dy, t, friction) {
+  const dt = Math.max(1, t - lastMove); lastMove = t;
+  const speed = Math.min(RIDE.speedCap, Math.hypot(dx, dy) / dt);
+  const g = RIDE.gain * (0.7 + RIDE.boost * speed) * friction;
+  reticle.x += dx * g; reticle.y -= dy * g;
+  const r = Math.hypot(reticle.x, reticle.y) || 1;
+  const want = Math.min(RIDE.rMax, Math.max(RIDE.rMin, r));
+  reticle.x *= want / r; reticle.y *= want / r;
+}
 // dash presses are latched so a quick tap between two game ticks still counts
 const dashLatch = [false, false];
 const dashPlayer = (e) => {
@@ -990,10 +1011,9 @@ function pollControls() {
     engine.dash(0, p.dash);
   } else {
     const [mx, my] = axis("KeyW", "KeyA", "KeyS", "KeyD");
-    // charge with the mouse button or by holding Space (aim stays on the
-    // cursor either way, so the click hand is free to just point)
+    // charge by holding Space (or the button): the aiming hand only points
     const charging = mouseHeld || keys.has("Space");
-    if (locked) engine.direct(0, mx, my, orbit.x, orbit.y, charging, false, true);
+    if (locked) engine.direct(0, mx, my, reticle.x, reticle.y, charging, false, true);
     else engine.direct(0, mx, my, 0, 0, charging, true, true);
     engine.dash(0, keys.has("ShiftLeft") || keys.has("Shift0") || dashLatch[0]);
   }
@@ -1049,17 +1069,25 @@ async function main() {
     if (e.button === 0) mouseHeld = true;
     if (locked) return; // clicks while locked are throws, not UI clicks
     ptr(0)(e);
-    // absolute cursor aim (League-style); opt back into orbit aim with ?orbit
-    if (inPlay() && params.has("orbit")) canvas.requestPointerLock?.()?.catch?.(() => {});
+    lockIfPlaying();
   });
-  canvas.addEventListener("pointermove", (e) => {
+  // the lock needs a gesture: the first click or key once a match is up
+  const lockIfPlaying = () => {
+    if (!ride || locked || !inPlay() || !canvas.requestPointerLock) return;
+    const p = canvas.requestPointerLock({ unadjustedMovement: true });
+    p?.catch?.(() => canvas.requestPointerLock()?.catch?.(() => {})); // no raw input here: plain lock
+  };
+  nb.lockIfPlaying = lockIfPlaying;
+  // raw updates arrive as soon as the hardware reports (not once a frame)
+  const moveEvent = "onpointerrawupdate" in window ? "pointerrawupdate" : "pointermove";
+  canvas.addEventListener(moveEvent, (e) => {
     if (locked) {
-      orbit.x += e.movementX * ORBIT_SENS;
-      orbit.y -= e.movementY * ORBIT_SENS;
-      const l = Math.hypot(orbit.x, orbit.y) || 1;
-      orbit.x /= l; orbit.y /= l;
+      steer(e.movementX, e.movementY, e.timeStamp, engine.aim_friction(reticle.x, reticle.y));
       return;
     }
+  });
+  canvas.addEventListener("pointermove", (e) => {
+    if (locked) return;
     const [x, y] = toGame(e); engine.cursor(x, y);
     if (e.buttons || e.pointerType === "touch") ptr(1)(e);
   });
@@ -1087,6 +1115,7 @@ async function main() {
     audio?.unlock();
     if (e.metaKey || e.ctrlKey) return;
     if (e.code === "Escape" && !e.repeat && !locked && !nb.online?.active) engine.toggle_pause();
+    if (!e.repeat && e.code !== "Escape") lockIfPlaying();
     const dp = dashPlayer(e);
     if (dp >= 0 && !e.repeat) { dashLatch[dp] = true; if (!e.code) keys.add("Shift" + dp); }
     keys.add(e.code);
@@ -1147,6 +1176,7 @@ async function main() {
       if (nb.perf) { r.adapt(1000 / nb.perf.hz); nb.perf.res = r.res; }
       perf.draw(nb.perf); perfT = now;
       if (lab) { nb.lag = engine.lag_stats(); lab.update(nb.lag); }
+      if (locked && !inPlay()) document.exitPointerLock?.(); // menus get the cursor back
       if (online) { nb.net = engine.net_stats(); online.stats(nb.net); online.menu(JSON.parse(engine.state()).screens); }
     }
     frames++;

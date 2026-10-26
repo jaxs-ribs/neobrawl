@@ -210,6 +210,39 @@ impl Engine {
         self.pointers = next;
     }
 
+    /// Aim friction for your riding reticle at (ax, ay) from your soul: 1
+    /// normally, dipping to ~0.7 as the line lies right over the enemy - the
+    /// reticle gets a little heavier there, it is never pulled.
+    pub fn aim_friction(&self, ax: f32, ay: f32) -> f32 {
+        let g = &self.game;
+        let me = self.net.as_ref().filter(|_| self.online).map(|n| n.me).unwrap_or(0);
+        let Some(k) = (0..g.players.len()).find(|&k| g.direct_slot_pub(&g.players[k]) == Some(me)) else { return 1.0 };
+        let lerp = g.interp_offsets();
+        let mine = g.shown_soul(&lerp, k);
+        let mut best = 1.0f32;
+        for o in 0..g.players.len() {
+            let p = &g.players[o];
+            if o == k || p.single || p.playback || !g.w.active_in_hierarchy(p.node) || g.w.position(p.node).x == -666.0 {
+                continue;
+            }
+            let d = g.shown_soul(&lerp, o) - mine;
+            let dist = (d.x * d.x + d.y * d.y).sqrt();
+            let al = (ax * ax + ay * ay).sqrt();
+            if dist < 0.5 || dist > 14.0 || al < 1e-3 {
+                continue;
+            }
+            let cos = ((d.x * ax + d.y * ay) / (dist * al)).clamp(-1.0, 1.0);
+            // within the soul's own angular size (plus a little), heavier
+            let width = (0.45 / dist).atan() + 0.03;
+            let off = cos.acos();
+            if off < width {
+                let t = 1.0 - off / width;
+                best = best.min(1.0 - 0.3 * t * t * (3.0 - 2.0 * t));
+            }
+        }
+        best
+    }
+
     /// Simulate a network link to the bot: one-way latency and jitter in
     /// ms, packet loss 0..1, and your input delay in ticks. The rollback
     /// session starts with the next match (now, if one is running).

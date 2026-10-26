@@ -348,6 +348,18 @@ export class Engine {
         wasm.engine_frame(this.__wbg_ptr);
     }
     /**
+     * Aim friction for your riding reticle at (ax, ay) from your soul: 1
+     * normally, dipping to ~0.7 as the line lies right over the enemy - the
+     * reticle gets a little heavier there, it is never pulled.
+     * @param {number} ax
+     * @param {number} ay
+     * @returns {number}
+     */
+    aim_friction(ax, ay) {
+        const ret = wasm.engine_aim_friction(this.__wbg_ptr, ax, ay);
+        return ret;
+    }
+    /**
      * Simulate a network link to the bot: one-way latency and jitter in
      * ms, packet loss 0..1, and your input delay in ticks. The rollback
      * session starts with the next match (now, if one is running).

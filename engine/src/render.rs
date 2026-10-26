@@ -75,7 +75,12 @@ impl Game {
             return None;
         }
         let mut dir = v3(p.touch[1].x, p.touch[1].y, 0.0);
-        if self.aims_live(pk) {
+        let live_stick = self.direct_slot_pub(p).map(|s| self.input.direct[s]).filter(|c| c.active && !c.use_cursor && c.aim.len() > 0.05);
+        let local = self.direct_slot_pub(p).map(|s| !self.input.remote[s] && !self.ai[s].on).unwrap_or(false);
+        if let (Some(c), true) = (live_stick, local) {
+            // your riding reticle (or stick): the blade follows it live
+            dir = v3(c.aim.x, c.aim.y, 0.0);
+        } else if self.aims_live(pk) {
             // through the camera as drawn, so cursor and soul move as one
             let cam_off = self.camera_main().and_then(|c| lerp.get(&c).copied()).unwrap_or(V3::ZERO);
             if let Some(cw) = self.cursor_world_through(pk, cam_off) {
@@ -316,9 +321,11 @@ impl Game {
                 // orbit-aim reticle (pointer-locked mouse / aim stick): always visible
                 if let Some(slot) = self.direct_slot_pub(p) {
                     let ctl = self.input.direct[slot];
-                    if ctl.active && !ctl.use_cursor && ctl.aim.len() > 0.05 && ring >= 0.0 {
-                        let a = ctl.aim.normalized();
-                        let c0 = pos + v3(a.x, a.y, 0.0) * 1.3;
+                    if ctl.active && !ctl.use_cursor && ctl.aim.len() > 0.05 && ring >= 0.0 && !self.input.remote[slot] {
+                        // the riding reticle sits where the finger put it; a
+                        // stick's unit aim draws at arm's length
+                        let a = if ctl.aim.len() > 1.05 { ctl.aim } else { let n = ctl.aim.normalized(); crate::game::v2(n.x * 1.3, n.y * 1.3) };
+                        let c0 = self.shown_soul(&lerp, pk) + v3(a.x, a.y, 0.0);
                         let rad = if ctl.aiming { 0.14 } else { 0.11 };
                         let mut c = color;
                         c[3] = if ctl.aiming { 0.9 } else { 0.55 };
