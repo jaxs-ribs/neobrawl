@@ -78,7 +78,9 @@ impl Game {
         let mut h = Fnv128::new();
         h.u64(self.frame);
         h.u64(self.rng.0);
-        for n in self.w.nodes.iter() {
+        // gameplay things only: whatever has a body or a collider (the
+        // camera and UI follow each machine's own screen)
+        for n in self.w.nodes.iter().filter(|n| n.body.is_some() || n.collider.is_some()) {
             h.u32(n.active as u32);
             for v in [n.lpos.x, n.lpos.y, n.lpos.z, n.lrot.x, n.lrot.y, n.lrot.z, n.lrot.w, n.lscale.x, n.lscale.y] {
                 h.f(v);

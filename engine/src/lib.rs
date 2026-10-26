@@ -35,6 +35,12 @@ pub struct Engine {
     lag: Option<(lagsim::Chaos, usize)>,
     net: Option<lagsim::LagSim>,
     net_live: bool,
+    /// a real opponent over the network (not the lab bot)
+    online: bool,
+    /// link events left over from a session that just ended
+    net_note: Vec<&'static str>,
+    /// the freshly loaded world, to build an online match from scratch
+    world0: scene::World,
 }
 
 #[wasm_bindgen]
@@ -46,8 +52,9 @@ impl Engine {
             prefs.map = m.into_iter().collect();
         }
         let w = scene::World::load(scene_json, assets_json);
+        let world0 = w.clone();
         let game = Game::new(w, Rng::new(seed), prefs, Screen { w: width.max(1.0), h: height.max(1.0) });
-        Engine { game, pointers: Vec::new(), sticks: [None, None], records: Vec::new(), live: Default::default(), lag: None, net: None, net_live: false }
+        Engine { game, pointers: Vec::new(), sticks: [None, None], records: Vec::new(), live: Default::default(), lag: None, net: None, net_live: false, online: false, net_note: Vec::new(), world0 }
     }
 
     /// Screen size in CSS pixels (Unity's Screen.width / height).
@@ -109,13 +116,16 @@ impl Engine {
         if let Some(a) = self.game.ai.get_mut(slot) {
             a.level = level.min(4);
         }
-        if let (1, Some(n)) = (slot, self.net.as_mut()) {
-            n.mind.level = level.min(4);
+        if let (1, Some(m)) = (slot, self.net.as_mut().and_then(|n| n.mind())) {
+            m.level = level.min(4);
         }
     }
 
     /// Hand an input slot (0 = P1, 1 = P2) to the wandering AI, or back.
     pub fn set_ai(&mut self, slot: usize, on: bool) {
+        if self.online {
+            return; // both souls belong to people
+        }
         if let Some(a) = self.game.ai.get_mut(slot) {
             a.on = on;
         }
@@ -246,18 +256,128 @@ impl Engine {
     }
 
     fn net_stop(&mut self) {
-        if let Some(n) = self.net.take() {
-            if self.net_live {
-                self.game.ai[1] = n.mind;
+        if let Some(mut n) = self.net.take() {
+            if let (true, Some(m)) = (self.net_live, n.take_mind()) {
+                self.game.ai[1] = m;
             }
         }
         self.net_live = false;
+        self.online = false;
         self.game.input.remote = [false; 2];
     }
 
+    /// Start an online match that both machines build identically: a fresh
+    /// game from the shared seed, through the same menu taps on the same
+    /// setup screen, then each switches to its own screen (which only moves
+    /// the camera framing and UI). You are player `me` (0 = P1, the host).
+    pub fn net_begin(&mut self, seed: u64, map_steps: u32, me: usize, delay: usize) {
+        self.net_stop();
+        self.lag = None;
+        let screen = self.game.screen;
+        let mut prefs = Prefs::default();
+        prefs.map.insert("FirstLaunch".into(), 1.into());
+        for k in ["Sound", "Music"] {
+            if let Some(v) = self.game.prefs.map.get(k) {
+                prefs.map.insert(k.into(), v.clone());
+            }
+        }
+        self.game = Game::new(self.world0.clone(), Rng::new(seed), prefs, Screen { w: 1280.0, h: 720.0 });
+        self.pointers.clear();
+        let run = |e: &mut Engine, n: usize| (0..n).for_each(|_| e.frame());
+        let tap = |e: &mut Engine, name: &str| {
+            let p = e.locate(name);
+            if p.len() == 2 {
+                e.pointer(1, p[0], p[1], 0);
+                e.frame();
+                e.pointer(1, p[0], p[1], 2);
+                e.frame();
+            }
+        };
+        run(self, 40);
+        tap(self, "StartingScreenButton");
+        run(self, 70);
+        for _ in 0..map_steps {
+            tap(self, "MapMenuArrowRight");
+            run(self, 40);
+        }
+        tap(self, "MapMenuGameStart");
+        run(self, 100);
+        self.set_desktop(true);
+        self.game.prefs.dirty = false;
+        self.game.screen = screen;
+        self.game.ai = Default::default();
+        self.game.input.remote = [me == 1, me == 0];
+        self.net = Some(lagsim::LagSim::online(me, delay));
+        self.online = true;
+    }
+
+    /// Leave the online match (the game stays where it is).
+    pub fn net_end(&mut self) {
+        self.net_stop();
+    }
+
+    /// A packet from the other player (the page's data channel).
+    pub fn net_recv(&mut self, bytes: &[u8]) {
+        if let Some(js) = self.net.as_ref().and_then(|n| n.js.as_ref()) {
+            js.borrow_mut().inbox.push(bytes.to_vec());
+        }
+    }
+
+    /// The next packet to send, or empty when there are none.
+    pub fn net_pop(&mut self) -> Vec<u8> {
+        let Some(js) = self.net.as_ref().and_then(|n| n.js.as_ref()) else { return Vec::new() };
+        let mut j = js.borrow_mut();
+        if j.outbox.is_empty() {
+            Vec::new()
+        } else {
+            j.outbox.remove(0)
+        }
+    }
+
+    /// Link events since the last call, comma separated ("synced",
+    /// "interrupted", "resumed", "disconnected", "desync", "ended").
+    pub fn net_events(&mut self) -> String {
+        let mut ev = std::mem::take(&mut self.net_note);
+        if let Some(n) = self.net.as_mut() {
+            ev.append(&mut n.events);
+        }
+        ev.join(",")
+    }
+
+    /// [online 0/1, running 0/1, then `LagSim::take_stats`]
+    pub fn net_stats(&mut self) -> Vec<f32> {
+        let mut out = vec![self.online as i32 as f32, self.net.as_ref().map(|n| n.running() as i32 as f32).unwrap_or(0.0)];
+        if let Some(n) = self.net.as_mut() {
+            out.extend(n.take_stats());
+        }
+        out
+    }
+
     /// One tick through the rollback session; false = run the game plainly
-    /// (no lag sim, no match, or still shaking hands).
+    /// (no netcode, no match, or the lab still shaking hands).
     fn net_frame(&mut self) -> bool {
+        if self.online {
+            if !self.in_match() {
+                // the match is over: the end screen plays out locally
+                if let Some(n) = self.net.as_mut() {
+                    n.events.push("ended");
+                    n.poll();
+                }
+                self.net_note = self.net.as_mut().map(|n| std::mem::take(&mut n.events)).unwrap_or_default();
+                self.net_stop();
+                return false;
+            }
+            let me = self.net.as_ref().map(|n| n.me).unwrap_or(0);
+            let local = lagsim::local_input(&self.game, me, self.live[0]);
+            let net = self.net.as_mut().unwrap();
+            if !net.running() {
+                net.poll();
+                return true; // both start from the same frame: hold until synced
+            }
+            net.tick(&mut self.game, local);
+            self.game.input.direct[me] = self.live[0];
+            return true;
+        }
         let Some((chaos, delay)) = self.lag else { return false };
         if !self.in_match() || self.game.paused {
             self.net_stop();
@@ -267,15 +387,16 @@ impl Engine {
             let seed = self.game.rng.0 ^ 0x51ab;
             self.net = Some(lagsim::LagSim::new(chaos, delay, Default::default(), seed));
         }
-        let local = lagsim::local_input(&self.game, self.live[0]);
+        let local = lagsim::local_input(&self.game, 0, self.live[0]);
         let net = self.net.as_mut().unwrap();
         if !self.net_live && !net.poll() {
             return false; // handshake: keep playing locally meanwhile
         }
         if !self.net_live {
             // hand the bot to the other machine
-            net.mind = std::mem::take(&mut self.game.ai[1]);
-            self.game.ai[1].level = net.mind.level;
+            let mind = std::mem::take(&mut self.game.ai[1]);
+            self.game.ai[1].level = mind.level;
+            net.set_mind(mind);
             self.game.input.remote = [false, true];
             self.net_live = true;
         }

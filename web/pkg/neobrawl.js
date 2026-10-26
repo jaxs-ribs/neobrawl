@@ -162,6 +162,18 @@ function getArrayF32FromWasm0(ptr, len) {
     return getFloat32ArrayMemory0().subarray(ptr / 4, ptr / 4 + len);
 }
 
+function passArray8ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 1, 1) >>> 0;
+    getUint8ArrayMemory0().set(arg, ptr / 1);
+    WASM_VECTOR_LEN = arg.length;
+    return ptr;
+}
+
+function getArrayU8FromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return getUint8ArrayMemory0().subarray(ptr / 1, ptr / 1 + len);
+}
+
 function addToExternrefTable0(obj) {
     const idx = wasm.__externref_table_alloc();
     wasm.__wbindgen_export_2.set(idx, obj);
@@ -364,6 +376,71 @@ export class Engine {
      */
     lag_stats() {
         const ret = wasm.engine_lag_stats(this.__wbg_ptr);
+        var v1 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * Start an online match that both machines build identically: a fresh
+     * game from the shared seed, through the same menu taps on the same
+     * setup screen, then each switches to its own screen (which only moves
+     * the camera framing and UI). You are player `me` (0 = P1, the host).
+     * @param {bigint} seed
+     * @param {number} map_steps
+     * @param {number} me
+     * @param {number} delay
+     */
+    net_begin(seed, map_steps, me, delay) {
+        wasm.engine_net_begin(this.__wbg_ptr, seed, map_steps, me, delay);
+    }
+    /**
+     * Leave the online match (the game stays where it is).
+     */
+    net_end() {
+        wasm.engine_net_end(this.__wbg_ptr);
+    }
+    /**
+     * A packet from the other player (the page's data channel).
+     * @param {Uint8Array} bytes
+     */
+    net_recv(bytes) {
+        const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.engine_net_recv(this.__wbg_ptr, ptr0, len0);
+    }
+    /**
+     * The next packet to send, or empty when there are none.
+     * @returns {Uint8Array}
+     */
+    net_pop() {
+        const ret = wasm.engine_net_pop(this.__wbg_ptr);
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+    /**
+     * Link events since the last call, comma separated ("synced",
+     * "interrupted", "resumed", "disconnected", "desync", "ended").
+     * @returns {string}
+     */
+    net_events() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.engine_net_events(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * [online 0/1, running 0/1, then `LagSim::take_stats`]
+     * @returns {Float32Array}
+     */
+    net_stats() {
+        const ret = wasm.engine_net_stats(this.__wbg_ptr);
         var v1 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
         wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
         return v1;

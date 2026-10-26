@@ -494,6 +494,149 @@ class LagLab {
   }
 }
 
+// -------------------------------------------------------------- online ---
+// Play a friend: "play a friend" makes a room and an invite link; opening
+// the link joins it. PeerJS's free broker introduces the two browsers (and
+// relays through its TURN servers when a direct path fails); after that the
+// game talks peer to peer. Two channels: PeerJS's own (reliable) for the
+// handshake and rematches, and a raw unordered, no-retransmit channel for
+// rollback packets, the way UDP-style netcode wants them.
+const PEERJS = "https://unpkg.com/peerjs@1.5.5/dist/peerjs.min.js";
+const ROOM_PREFIX = "neobrawl-v1-";
+class Online {
+  constructor(engine) {
+    this.engine = engine; this.peer = null; this.conn = null; this.chan = null;
+    this.role = null; this.state = "idle"; this.last = null; this.pings = [];
+    this.el = document.createElement("div"); this.el.id = "online"; document.body.appendChild(this.el);
+    this.entry = document.createElement("button"); this.entry.id = "friend"; this.entry.textContent = "play a friend";
+    this.entry.onclick = (e) => { e.stopPropagation(); this.host(); };
+    this.entry.onpointerdown = (e) => e.stopPropagation();
+    document.body.appendChild(this.entry);
+    this.hud = document.createElement("div"); this.hud.id = "nethud"; document.body.appendChild(this.hud);
+    addEventListener("keydown", (e) => this.key(e));
+    const m = location.hash.match(/^#vs-([a-z0-9]{4,12})$/);
+    if (m) this.join(m[1]);
+  }
+  get active() { return this.state !== "idle"; }
+  async lib() {
+    if (window.Peer) return window.Peer;
+    await new Promise((res, rej) => { const s = document.createElement("script"); s.src = PEERJS; s.onload = res; s.onerror = () => rej(new Error("couldn't load the connection library")); document.head.appendChild(s); });
+    return window.Peer;
+  }
+  show(html, sticky = true) { this.el.innerHTML = html; this.el.classList.toggle("on", !!html); this.el.classList.toggle("sticky", sticky); }
+  async host() {
+    if (this.active) return;
+    this.role = "host"; this.state = "waiting"; this.entry.hidden = true;
+    const code = Array.from(crypto.getRandomValues(new Uint8Array(6)), (b) => "abcdefghjkmnpqrstuvwxyz23456789"[b % 31]).join("");
+    const link = `${location.origin}${location.pathname}#vs-${code}`;
+    this.show(`<p>opening a room…</p>`);
+    try {
+      const Peer = await this.lib();
+      this.peer = new Peer(ROOM_PREFIX + code);
+      this.peer.on("error", (e) => this.fail(e));
+      this.peer.on("open", () => {
+        this.show(`<p>send this to your friend</p><p class="link"><span>${link}</span> <button id="copy">copy</button></p><p class="dim">waiting for them to open it… · <kbd>Esc</kbd> cancel</p>`);
+        $("copy").onclick = (e) => { e.stopPropagation(); navigator.clipboard?.writeText(link); $("copy").textContent = "copied"; };
+        $("copy").onpointerdown = (e) => e.stopPropagation();
+      });
+      this.peer.on("connection", (c) => { if (this.conn) { c.close(); return; } this.wire(c); });
+    } catch (e) { this.fail(e); }
+  }
+  async join(code) {
+    this.role = "guest"; this.state = "joining";
+    this.show(`<p>joining your friend…</p>`);
+    try {
+      const Peer = await this.lib();
+      this.peer = new Peer();
+      this.peer.on("error", (e) => this.fail(e));
+      this.peer.on("open", () => this.wire(this.peer.connect(ROOM_PREFIX + code, { reliable: true })));
+    } catch (e) { this.fail(e); }
+  }
+  wire(c) {
+    this.conn = c;
+    c.on("open", () => {
+      // the game channel: pre-agreed on both ends, so no renegotiation
+      const ch = c.peerConnection.createDataChannel("ggrs", { negotiated: true, id: 7, ordered: false, maxRetransmits: 0 });
+      ch.binaryType = "arraybuffer";
+      ch.onmessage = (ev) => this.engine.net_recv(new Uint8Array(ev.data));
+      this.chan = ch;
+      this.state = "connected";
+      this.show(`<p>connected · measuring the line…</p>`);
+      if (this.role === "host") this.measure();
+    });
+    c.on("data", (m) => this.control(m));
+    c.on("close", () => this.left());
+    c.on("error", (e) => this.fail(e));
+  }
+  // a few round trips over the control channel pick the input delay with
+  // the lab's rule (hide about half the one-way trip), then both start
+  async measure() {
+    this.pings = [];
+    for (let i = 0; i < 5; i++) { this.conn.send({ t: "ping", at: performance.now() }); await new Promise((r) => setTimeout(r, 120)); }
+    await new Promise((r) => setTimeout(r, 300));
+    const rtt = this.pings.length ? this.pings.sort((a, b) => a - b)[Math.floor(this.pings.length / 2)] : 100;
+    const delay = Math.max(1, Math.min(3, Math.round(rtt / 2 / 20 / 2)));
+    const start = { t: "start", seed: crypto.getRandomValues(new Uint32Array(1))[0], map: Math.floor(Math.random() * 3), delay, rtt: Math.round(rtt) };
+    this.conn.send(start); this.begin(start);
+  }
+  control(m) {
+    if (!m || typeof m !== "object") return;
+    if (m.t === "ping") this.conn.send({ t: "pong", at: m.at });
+    else if (m.t === "pong") this.pings.push(performance.now() - m.at);
+    else if (m.t === "start" && this.role === "guest") this.begin(m);
+    else if (m.t === "rematch") { if (this.role === "host") this.measure(); else this.show(`<p>rematch…</p>`); }
+  }
+  begin(s) {
+    this.engine.net_begin(BigInt(s.seed), s.map, this.role === "host" ? 0 : 1, s.delay);
+    this.state = "playing"; this.started = performance.now();
+    if (location.hash) history.replaceState(null, "", location.pathname + location.search);
+    this.show(`<p>${this.role === "host" ? "you're blue" : "you're red"} · first to strike</p>`, false);
+    setTimeout(() => { if (this.state === "playing") this.show(""); }, 2500);
+  }
+  // every rendered frame: hand GGRS's packets to the channel, read events
+  pump() {
+    if (this.state !== "playing") return;
+    for (let p = this.engine.net_pop(); p.length; p = this.engine.net_pop()) if (this.chan?.readyState === "open") this.chan.send(p);
+    const ev = this.engine.net_events();
+    if (!ev) return;
+    for (const e of ev.split(",")) {
+      if (e === "interrupted") this.show(`<p>connection hiccup…</p>`);
+      else if (e === "resumed") this.show("");
+      else if (e === "disconnected") this.left();
+      else if (e === "desync") { nb.errors.push("desync"); this.show(`<p>out of sync — that's a bug, sorry. <kbd>Esc</kbd> to leave</p>`); }
+      else if (e === "ended") { this.state = "over"; this.show(`<p>match over · <kbd>R</kbd> rematch · <kbd>Esc</kbd> leave</p>`); }
+    }
+  }
+  key(e) {
+    if (!this.active || e.repeat) return;
+    if (e.code === "Escape") { e.stopImmediatePropagation(); this.leave(); }
+    if (e.code === "KeyR" && this.state === "over") {
+      this.conn?.send({ t: "rematch" }); this.show(`<p>rematch…</p>`);
+      if (this.role === "host") this.measure();
+    }
+  }
+  stats(s) {
+    if (this.state !== "playing" || !s || !s[1]) { this.hud.textContent = ""; return; }
+    this.hud.textContent = `${Math.round(s[2])} ms`;
+    this.hud.title = `rollbacks ${s[3].toFixed(0)}/s · depth ${s[4].toFixed(1)} (max ${s[5]}) · delay ${s[11]}`;
+  }
+  left() {
+    if (this.state === "idle") return;
+    const was = this.state; this.state = "gone"; this.engine.net_end();
+    this.show(`<p>${was === "waiting" || was === "joining" ? "couldn't connect" : "your friend left"}</p><p class="dim">back to the menu in a moment</p>`);
+    setTimeout(() => this.home(), 2500);
+  }
+  leave() { this.conn?.close(); this.engine.net_end(); this.home(); }
+  home() { this.peer?.destroy(); location.href = location.pathname + location.search; }
+  fail(e) {
+    nb.errors.push("online: " + (e?.type || e?.message || e));
+    const msg = e?.type === "peer-unavailable" ? "that room is gone (or the link was mistyped)" : e?.type === "unavailable-id" ? "room clash, try again" : "couldn't connect";
+    this.show(`<p>${msg}</p><p class="dim"><kbd>Esc</kbd> back to the menu</p>`);
+  }
+  // the entry shows on the start and map screens only
+  menu(screens) { this.entry.hidden = this.active || !(screens.includes("start") || screens.includes("maps")); }
+}
+
 // ------------------------------------------------------------- renderer ---
 const WGSL = /* wgsl */ `
 struct Pass { vp: mat4x4f };
@@ -883,7 +1026,7 @@ async function main() {
   if (tables.font) {
     const f = Object.values(assets.fonts)[0];
     const face = new FontFace(f.name, `url(assets/${f.file})`);
-    try { await face.load(); document.fonts.add(face); family = f.name; } catch (e) { nb.errors.push(`font: ${e}`); }
+    try { await face.load(); document.fonts.add(face); family = f.name; document.documentElement.style.setProperty("--font", family); } catch (e) { nb.errors.push(`font: ${e}`); }
   }
   const r = await Renderer.create();
   await r.load(assets, tables);
@@ -934,7 +1077,7 @@ async function main() {
   addEventListener("keydown", (e) => {
     audio?.unlock();
     if (e.metaKey || e.ctrlKey) return;
-    if (e.code === "Escape" && !e.repeat && !locked) engine.toggle_pause();
+    if (e.code === "Escape" && !e.repeat && !locked && !nb.online?.active) engine.toggle_pause();
     const dp = dashPlayer(e);
     if (dp >= 0 && !e.repeat) { dashLatch[dp] = true; if (!e.code) keys.add("Shift" + dp); }
     keys.add(e.code);
@@ -950,6 +1093,7 @@ async function main() {
   let last = performance.now(), acc = 0, frames = 0, fpsT = last;
   const perf = new Perf(); nb.perfObj = perf; let perfT = performance.now();
   const lab = params.has("lag") ? new LagLab(engine, params.get("lag")) : null; nb.lab = lab;
+  const online = lab ? null : new Online(engine); nb.online = online;
   perf.show(params.has("perf"));
   addEventListener("keydown", (e) => { if (e.code === "F3") { e.preventDefault(); perf.show(!perf.shown); } });
   const loop = (now) => {
@@ -962,11 +1106,13 @@ async function main() {
     // and again before each tick
     pollControls();
     if (lab) engine.net_poll();
+    if (online?.state === "playing") engine.net_poll();
     while (acc >= TICK && steps < 8) {
       if (steps) pollControls();
       engine.frame(); acc -= TICK; steps++; nb.ticks++;
       dashLatch[0] = dashLatch[1] = false; // a quick tap is only spent once a tick has seen it
     }
+    online?.pump();
     const tB = performance.now();
     if (audio) {
       const s = engine.drain_sounds(); if (s !== "[]") for (const [c, v] of JSON.parse(s)) audio.shot(c, v);
@@ -992,6 +1138,7 @@ async function main() {
       if (nb.perf) { r.adapt(1000 / nb.perf.hz); nb.perf.res = r.res; }
       perf.draw(nb.perf); perfT = now;
       if (lab) { nb.lag = engine.lag_stats(); lab.update(nb.lag); }
+      if (online) { nb.net = engine.net_stats(); online.stats(nb.net); online.menu(JSON.parse(engine.state()).screens); }
     }
     frames++;
     if (now - fpsT >= 500) { nb.fps = Math.round((frames * 1000) / (now - fpsT)); frames = 0; fpsT = now; }
