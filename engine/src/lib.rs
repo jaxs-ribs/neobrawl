@@ -105,6 +105,17 @@ impl Engine {
         self.game.start_practice()
     }
 
+    /// From the title straight into a mode ("practice" or "anthill") on its
+    /// map; false when the title isn't showing.
+    pub fn play_mode(&mut self, mode: &str) -> bool {
+        let m = match mode {
+            "anthill" => game::Mode::Anthill,
+            "practice" => game::Mode::Practice,
+            _ => return false,
+        };
+        self.game.play_mode(m, 1)
+    }
+
     /// Turn the running match into the anthill. False until a match is up.
     pub fn start_anthill(&mut self) -> bool {
         self.game.start_anthill(Default::default())

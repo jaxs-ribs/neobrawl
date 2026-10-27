@@ -266,6 +266,18 @@ export class Engine {
         return ret !== 0;
     }
     /**
+     * From the title straight into a mode ("practice" or "anthill") on its
+     * map; false when the title isn't showing.
+     * @param {string} mode
+     * @returns {boolean}
+     */
+    play_mode(mode) {
+        const ptr0 = passStringToWasm0(mode, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.engine_play_mode(this.__wbg_ptr, ptr0, len0);
+        return ret !== 0;
+    }
+    /**
      * Turn the running match into the anthill. False until a match is up.
      * @returns {boolean}
      */

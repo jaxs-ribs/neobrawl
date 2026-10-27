@@ -8,6 +8,7 @@ mod boxes;
 mod fx;
 mod matchplay;
 mod menu;
+pub use menu::Mode;
 mod players;
 pub mod practice;
 pub mod anthill;
@@ -219,6 +220,8 @@ pub struct Game {
     pub practice: practice::Practice,
     /// the anthill (you against a colony)
     pub anthill: anthill::Anthill,
+    /// a mode asked for from the title, started once its arena is up
+    pub queued_mode: Option<menu::Mode>,
     /// per-phase timings (RefCell: render takes &self)
     pub prof: std::cell::RefCell<crate::prof::Prof>,
 }
@@ -261,6 +264,7 @@ impl Game {
             deaths: Vec::new(),
             scores: Vec::new(),
             cam_follow: Vec::new(),
+            queued_mode: None,
             blobs: Vec::new(),
             showers: Vec::new(),
             charge_bars: Vec::new(),
@@ -344,6 +348,7 @@ impl Game {
         self.prof.borrow_mut().begin();
         self.snapshot_movers();
         self.ai_step();
+        self.start_queued_mode();
         self.practice_step();
         self.anthill_step();
         lap(self, 0);

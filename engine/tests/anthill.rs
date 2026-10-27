@@ -10,14 +10,18 @@ use neobrawl::Engine;
 fn anthill(seed: u64, cfg: AntCfg) -> Engine {
     let mut e = engine(r#"{"FirstLaunch":1}"#, seed);
     run(&mut e, 40);
-    tap(&mut e, "StartingScreenButton");
-    run(&mut e, 70);
-    tap(&mut e, "MapMenuArrowRight");
-    run(&mut e, 30);
-    tap(&mut e, "MapMenuGameStart");
-    run(&mut e, 100);
     e.set_desktop(true);
-    assert!(e.game_mut().start_anthill(cfg), "anthill starts in a match");
+    e.game_mut().anthill.cfg = cfg;
+    // straight from the title, no menu screens on the way
+    assert!(e.play_mode("anthill"), "the title starts the anthill");
+    for _ in 0..200 {
+        if e.game().anthill.on {
+            break;
+        }
+        e.frame();
+    }
+    assert!(e.game().anthill.on, "the anthill is up");
+    assert!(e.game().menu.current_map == 1);
     e
 }
 

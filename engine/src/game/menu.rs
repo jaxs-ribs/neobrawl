@@ -238,18 +238,8 @@ impl Game {
             "MapMenuArrowLeft" => self.move_map(1),
             "MapMenuArrowRight" => self.move_map(-1),
             "MapMenuGameStart" => {
-                if !self.menu.start_round_failsafe {
-                    self.menu.start_round_failsafe = true;
-                    self.tasks.push(Task::Failsafe { wait: 30 });
-                    self.start_round();
-                    if let Some(t) = m.menu_theme {
-                        self.tasks.push(Task::FadeSound { src: t, fade_in: false, volume: 0.3, i: 0 });
-                        self.play_stop(t, false);
-                    }
-                    if let Some(t) = m.map_theme {
-                        self.play_stop(t, true);
-                        self.tasks.push(Task::FadeSound { src: t, fade_in: true, volume: 0.3, i: 0 });
-                    }
+                if let Some(mm) = m.map_menu {
+                    self.begin_match(mm);
                 }
             }
             "RageQuitButton" => {
@@ -376,11 +366,67 @@ impl Game {
         }
     }
 
-    fn start_round(&mut self) {
+    /// Into a match on the current map, from whichever screen shows now:
+    /// the round, the music swap, and a failsafe against a double start.
+    fn begin_match(&mut self, from: usize) {
+        if self.menu.start_round_failsafe {
+            return;
+        }
+        self.menu.start_round_failsafe = true;
+        self.tasks.push(Task::Failsafe { wait: 30 });
+        self.start_round(from);
+        if let Some(t) = self.menu.menu_theme {
+            self.tasks.push(Task::FadeSound { src: t, fade_in: false, volume: 0.3, i: 0 });
+            self.play_stop(t, false);
+        }
+        if let Some(t) = self.menu.map_theme {
+            self.play_stop(t, true);
+            self.tasks.push(Task::FadeSound { src: t, fade_in: true, volume: 0.3, i: 0 });
+        }
+    }
+
+    /// Straight from the title into a mode on `map` (no menu screens on
+    /// the way); the mode itself starts once the arena is up. False when
+    /// the title isn't showing.
+    pub fn play_mode(&mut self, mode: Mode, map: i32) -> bool {
+        let Some(st) = self.menu.starting.filter(|&n| self.w.active_in_hierarchy(n)) else { return false };
+        if self.practice.on || self.anthill.on || self.menu.start_round_failsafe {
+            return false;
+        }
+        // the map carousel turns with it, for the way back to the menu
+        let turn = (map - self.menu.current_map) as f32 * -600.0;
+        if let Some(mn) = self.menu.maps {
+            match self.w.nodes[mn].rect.as_mut() {
+                Some(r) => r.pos[0] += turn,
+                None => self.w.nodes[mn].lpos.x += turn,
+            }
+        }
+        self.menu.current_map = map;
+        self.menu.one_screen = true;
+        self.fade_intro(false, 20);
+        self.begin_match(st);
+        self.queued_mode = Some(mode);
+        true
+    }
+
+    /// The queued mode, once its arena is up.
+    pub(super) fn start_queued_mode(&mut self) {
+        let Some(mode) = self.queued_mode else { return };
+        let up = match mode {
+            Mode::Practice => self.start_practice(),
+            // the colony as tuned beforehand (the defaults unless set)
+            Mode::Anthill => self.start_anthill(self.anthill.cfg.clone()),
+        };
+        if up {
+            self.queued_mode = None;
+        }
+    }
+
+    fn start_round(&mut self, from: usize) {
         self.tasks.push(Task::SwitchMenuOnOff { on: false, i: 0 });
-        let (Some(mm), Some(single)) = (self.menu.map_menu, self.menu.single_scene) else { return };
+        let Some(single) = self.menu.single_scene else { return };
         self.tasks.push(Task::WhiteFade { dir: 1, i: 0 });
-        self.tasks.push(Task::SwitchMenu { prev: mm, new: single, i: 0 });
+        self.tasks.push(Task::SwitchMenu { prev: from, new: single, i: 0 });
         // enableCorrectMap
         let maps = self.w.nodes[single].children[0];
         let cm = self.menu.current_map as usize;
@@ -828,4 +874,11 @@ impl Game {
         let Some(k) = self.pauses.iter().position(|p| self.w.active_in_hierarchy(p.node)) else { return };
         self.pause_button(k, if self.paused { "ResumeButton" } else { "PauseButton" });
     }
+}
+
+/// The modes the title can start directly.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Mode {
+    Practice,
+    Anthill,
 }
