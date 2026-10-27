@@ -266,6 +266,25 @@ export class Engine {
         return ret !== 0;
     }
     /**
+     * Turn the running match into the anthill. False until a match is up.
+     * @returns {boolean}
+     */
+    start_anthill() {
+        const ret = wasm.engine_start_anthill(this.__wbg_ptr);
+        return ret !== 0;
+    }
+    /**
+     * The anthill for the page: [on, won, shield, deaths, kills, seconds,
+     * then per stacker: screen x, y, stored, ants left (hatch + alive), overflowed]
+     * @returns {Float32Array}
+     */
+    anthill_stats() {
+        const ret = wasm.engine_anthill_stats(this.__wbg_ptr);
+        var v1 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
      * [on, hits, streak] for the practice score
      * @returns {Float32Array}
      */

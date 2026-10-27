@@ -105,6 +105,27 @@ impl Engine {
         self.game.start_practice()
     }
 
+    /// Turn the running match into the anthill. False until a match is up.
+    pub fn start_anthill(&mut self) -> bool {
+        self.game.start_anthill(Default::default())
+    }
+
+    /// The anthill for the page: [on, won, shield, deaths, kills, seconds,
+    /// then per stacker: screen x, y, stored, ants left (hatch + alive), overflowed]
+    pub fn anthill_stats(&self) -> Vec<f32> {
+        let g = &self.game;
+        let a = &g.anthill;
+        let secs = (a.won_at.unwrap_or(g.frame).saturating_sub(a.started_at)) as f32 * crate::game::DT;
+        let mut v = vec![a.on as i32 as f32, a.won_at.is_some() as i32 as f32, a.shield as f32, a.deaths as f32, a.kills as f32, secs];
+        let cam = g.camera_main();
+        for (k, s) in a.stackers.iter().enumerate() {
+            let p = cam.and_then(|c| g.project(c, s.pos)).unwrap_or([-1.0, -1.0]);
+            let alive = a.ants.iter().filter(|x| !x.dead && x.stacker == k).count() as u32;
+            v.extend([p[0], p[1], s.boxes.len() as f32, (s.brood + alive) as f32, s.overflowed as i32 as f32]);
+        }
+        v
+    }
+
     /// [on, hits, streak] for the practice score
     pub fn practice_stats(&self) -> Vec<f32> {
         let p = &self.game.practice;

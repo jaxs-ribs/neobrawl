@@ -1277,9 +1277,9 @@ async function main() {
     return { frames: log.length, buffers: A.buffers.size + "/" + A.files.length, peak: +peak.toFixed(3), errors: nb.errors.join(";") };
   };
   // target practice (menu entry, or ?practice): straight in, on Map 2
-  const startPractice = async () => {
+  const startPractice = async (mode = "practice") => {
     if (nb.practicing) return;
-    nb.practicing = true;
+    nb.practicing = mode;
     $("menuextra").hidden = true;
     const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     const tap = async (name) => {
@@ -1300,6 +1300,10 @@ async function main() {
     await wait(500);
     await tap("MapMenuArrowRight"); await wait(700);
     await until("MapMenuGameStart", "game");
+    if (mode === "anthill") {
+      for (let i = 0; i < 200 && !engine.start_anthill(); i++) await wait(50);
+      return showAnthill();
+    }
     for (let i = 0; i < 200 && !engine.start_practice(); i++) await wait(50);
     $("practice").hidden = false;
     let shown = -1;
@@ -1311,6 +1315,43 @@ async function main() {
       $("streak").textContent = streak > 1 ? `x${streak}` : "";
     }, 100);
   };
+  // the anthill's page side: shield and tally up top, a count on each stacker
+  const showAnthill = () => {
+    $("ants").hidden = false;
+    const labels = $("antlabels"), hud = $("anthud"), win = $("antwin");
+    let last = [];
+    const step = () => {
+      const a = engine.anthill_stats();
+      if (!a[0]) return requestAnimationFrame(step);
+      const [, won, shield, deaths, kills, secs] = a;
+      const m = Math.floor(secs / 60), sec = String(Math.floor(secs % 60)).padStart(2, "0");
+      hud.innerHTML = `<b>${kills}</b> ants · ${m}:${sec}` + (shield ? ` · shield <b>${shield}</b>` : "") + (deaths ? ` · fallen ${deaths}` : "");
+      const n = (a.length - 6) / 5;
+      while (labels.children.length < n) labels.appendChild(document.createElement("span"));
+      for (let k = 0; k < n; k++) {
+        const [x, y, stored, left, over] = a.slice(6 + k * 5, 11 + k * 5);
+        const el = labels.children[k];
+        el.style.left = x + "px"; el.style.top = canvas.getBoundingClientRect().height - y + "px"; // y counts up from the bottom
+        const txt = over ? "" : String(stored);
+        if (el.textContent !== txt) {
+          el.textContent = txt;
+          if (last[k] !== undefined) { el.classList.remove("tick"); void el.offsetWidth; el.classList.add("tick"); }
+        }
+        last[k] = txt;
+        el.classList.toggle("gone", !!over);
+        el.title = `${left} ants left in this nest`;
+      }
+      if (won && win.hidden) {
+        win.hidden = false;
+        win.innerHTML = `<p class="big">the hill is empty</p><p>${kills} ants in ${m}:${sec}${deaths ? `, fallen ${deaths} time${deaths > 1 ? "s" : ""}` : ", untouched"}</p><p class="dim">click to go again</p>`;
+        win.onpointerdown = (e) => { e.stopPropagation(); nb.leaving = true; location.href = location.pathname + "?anthill"; };
+      }
+      requestAnimationFrame(step);
+    };
+    step();
+  };
+  $("antbtn").onclick = (e) => { e.stopPropagation(); startPractice("anthill"); };
+  $("antbtn").onpointerdown = (e) => e.stopPropagation();
   const aimBtn = $("aimbtn");
   const showAim = () => { aimBtn.innerHTML = `aim for a <b>${aimMode}</b> · switch to ${aimMode === "trackpad" ? "mouse" : "trackpad"}`; };
   showAim();
@@ -1328,5 +1369,6 @@ async function main() {
   $("practicebtn").onclick = (e) => { e.stopPropagation(); startPractice(); };
   $("practicebtn").onpointerdown = (e) => e.stopPropagation();
   if (params.has("practice")) startPractice();
+  if (params.has("anthill")) startPractice("anthill");
 }
 main().catch((e) => { console.error(e); nb.errors.push(String(e)); $("status").textContent = String(e.message || e); });

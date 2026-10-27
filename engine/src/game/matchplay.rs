@@ -451,7 +451,10 @@ impl Game {
                 (false, false) => (cur, cur),
             };
             // target practice: frame you and every target instead
-            let (pa, pb) = if self.practice.on {
+            // the anthill: the whole floor, steady
+            let (pa, pb) = if self.anthill.on {
+                (v3(self.anthill.lo.x + 1.0, self.anthill.lo.y + 1.0, pa.z), v3(self.anthill.hi.x - 1.0, self.anthill.hi.y - 1.0, pa.z))
+            } else if self.practice.on {
                 let pts: Vec<V3> = std::iter::once(pa).chain(self.practice.targets.iter().map(|t| self.w.position(t.node))).filter(|p| p.x != -666.0).collect();
                 let lo = pts.iter().fold(v3(f32::MAX, f32::MAX, pa.z), |a, p| v3(a.x.min(p.x), a.y.min(p.y), pa.z));
                 let hi = pts.iter().fold(v3(f32::MIN, f32::MIN, pa.z), |a, p| v3(a.x.max(p.x), a.y.max(p.y), pa.z));

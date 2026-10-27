@@ -158,6 +158,16 @@ impl Game {
             if let Some(&ob) = self.box_of.get(&other) {
                 self.box_single_explode(ob);
             }
+        } else if other_layer == crate::physics::LAYER_PLAYER && self.ant_of(other).is_some() && self.boxes[b].carried_by.map(|t| t == other || self.anthill.ants.iter().any(|a| a.node == t && a.kind == super::anthill::SOLDIER) && self.anthill.ants.iter().any(|a| a.node == other && a.kind == super::anthill::SOLDIER)).unwrap_or(false) {
+            // a soldier's throw passes its own kind
+            self.boxes[b].reflected = prev;
+        } else if other_layer == crate::physics::LAYER_PLAYER && self.ant_of(other).is_some() {
+            self.boxes[b].reflected = prev;
+            self.anthill_ant_hit(other, prev);
+        } else if other_layer == crate::physics::LAYER_PLAYER && self.anthill.on && self.player_of.contains_key(&other) {
+            self.boxes[b].reflected = prev;
+            let k = self.player_of[&other];
+            self.anthill_you_hit(k, prev);
         } else if other_layer == crate::physics::LAYER_PLAYER && self.practice_target(other).is_some() {
             self.boxes[b].reflected = prev;
             self.practice_hit(other, prev);
@@ -230,6 +240,8 @@ impl Game {
             self.w.set_active(dp, false);
         }
         let speed = (prev.x * prev.x + prev.y * prev.y).sqrt();
+        let thrower = self.boxes[b].carried_by;
+        self.anthill_splash(pos, prev, thrower);
         self.shards.shatter(pos.x, pos.y, pos.z, [refl.x, refl.y], speed, 14.0);
     }
 

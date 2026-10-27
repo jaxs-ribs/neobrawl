@@ -492,6 +492,38 @@ impl Game {
                     }
                 }
             }
+                // the anthill: stackers as ink squares, a soldier's wind-up as
+                // a line that thickens toward the release, your shield as rings
+                if self.anthill.on {
+                    let a = &self.anthill;
+                    let now = self.motion.render_now;
+                    for (k, st) in a.stackers.iter().enumerate() {
+                        let alpha = if st.overflowed { 0.12 } else { 0.55 };
+                        let r = 0.75 + (st.boxes.len() as f32).sqrt() * 0.08;
+                        let spin = now * 0.2 * if k % 2 == 0 { 1.0 } else { -1.0 };
+                        let pts: Vec<V3> = (0..=4).map(|j| { let q = spin + j as f32 * std::f32::consts::FRAC_PI_2 + std::f32::consts::FRAC_PI_4; st.pos + v3(q.cos(), q.sin(), 0.0) * r }).collect();
+                        let w = if st.kind == crate::game::anthill::SOLDIER { 0.07 } else { 0.035 };
+                        ribbon(&pts, w, [0.06, 0.06, 0.08, alpha], -1.0, |rec| items.push(Item { order: 1, dist: dist(st.pos), seq: 0, rec }));
+                    }
+                    for ant in a.ants.iter().filter(|x| !x.dead) {
+                        let (Some(at), Some(_)) = (ant.wind_until, ant.carry) else { continue };
+                        let left = (at.saturating_sub(self.frame)) as f32 / crate::game::ticks(a.cfg.windup) as f32;
+                        let p = w.position(ant.node);
+                        let len = 1.2 + (1.0 - left) * 5.0;
+                        let pts = [p, p + ant.aim * len];
+                        ribbon(&pts, 0.015 + (1.0 - left) * 0.03, [0.75, 0.12, 0.12, 0.25 + (1.0 - left) * 0.45], -1.0, |rec| items.push(Item { order: 1, dist: dist(p), seq: 0, rec }));
+                    }
+                    if let Some(me) = w.with_tag("PlayerOneScreen1") {
+                        let p = w.position(me);
+                        if p.x != -666.0 {
+                            for s in 0..a.shield {
+                                let r = 0.62 + s as f32 * 0.14;
+                                let pts: Vec<V3> = (0..=32).map(|j| { let q = j as f32 / 32.0 * std::f32::consts::TAU; p + v3(q.cos(), q.sin(), 0.0) * r }).collect();
+                                ribbon(&pts, 0.02, [0.1, 0.25, 0.75, 0.4], -1.0, |rec| items.push(Item { order: 1, dist: dist(p), seq: 0, rec }));
+                            }
+                        }
+                    }
+                }
             lap(15);
             // sort small keys, not the 112-byte records; the index keeps it stable
             let mut keys: Vec<(i32, f32, usize, u32)> = items.iter().enumerate().map(|(k, it)| (it.order, it.dist, it.seq, k as u32)).collect();

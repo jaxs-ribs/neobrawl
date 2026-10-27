@@ -10,6 +10,7 @@ mod matchplay;
 mod menu;
 mod players;
 pub mod practice;
+pub mod anthill;
 mod tasks;
 
 use std::collections::BTreeMap;
@@ -216,6 +217,8 @@ pub struct Game {
     pub paused: bool,
     /// target practice (an alternative to the versus match)
     pub practice: practice::Practice,
+    /// the anthill (you against a colony)
+    pub anthill: anthill::Anthill,
     /// per-phase timings (RefCell: render takes &self)
     pub prof: std::cell::RefCell<crate::prof::Prof>,
 }
@@ -286,6 +289,7 @@ impl Game {
             resim: false,
             paused: false,
             practice: Default::default(),
+            anthill: Default::default(),
             prof: Default::default(),
         };
         for i in 0..g.w.nodes.len() {
@@ -341,6 +345,7 @@ impl Game {
         self.snapshot_movers();
         self.ai_step();
         self.practice_step();
+        self.anthill_step();
         lap(self, 0);
         self.frame += 1;
         self.run_enables();
@@ -447,6 +452,7 @@ impl Game {
         let mut movers: Vec<usize> = self.players.iter().map(|p| p.node).collect();
         movers.extend(self.cam_follow.iter().map(|c| c.node));
         movers.extend(self.practice.targets.iter().map(|t| t.node));
+        movers.extend(self.anthill.ants.iter().filter(|a| !a.dead).map(|a| a.node));
         movers.extend(self.boxes.iter().map(|b| b.node).filter(|&n| self.w.nodes[n].body.as_ref().map(|b| b.constraints != crate::scene::FREEZE_ALL).unwrap_or(false)));
         for n in movers {
             if self.w.active_in_hierarchy(n) {

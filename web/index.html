@@ -62,6 +62,20 @@
   #online button:hover { border-color: #111; }
   #online button.main { background: #111; color: #fbfbfb; border-color: #111; }
   #online kbd { font: 11px ui-monospace, monospace; border: 1px solid #ccc; border-radius: 3px; padding: 0 3px; }
+  /* anthill: a quiet top line, a number on each stacker, the win */
+  #anthud { position: fixed; top: 16px; left: 0; right: 0; text-align: center; pointer-events: none;
+    font: 300 13px/1 var(--font, system-ui), sans-serif; letter-spacing: .3em; color: #555; }
+  #anthud b { font-weight: 400; color: #111; }
+  #antlabels span { position: fixed; transform: translate(-50%, -50%); pointer-events: none;
+    font: 300 15px/1 var(--font, system-ui), sans-serif; letter-spacing: .1em; color: #111; transition: opacity .4s; }
+  #antlabels span.gone { opacity: .2; }
+  #antlabels span.tick { animation: anttick .35s cubic-bezier(.2,1.8,.4,1); }
+  @keyframes anttick { from { transform: translate(-50%, -50%) scale(1.5); } }
+  #antwin { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; background: #fbfbfbd8;
+    font: 300 15px/1.7 var(--font, system-ui), sans-serif; letter-spacing: .1em; color: #111; text-align: center; }
+  #antwin[hidden] { display: none; }
+  #antwin .big { font-size: 22px; letter-spacing: .3em; margin-bottom: .6em; }
+  #antwin .dim { color: #888; font-size: 12px; }
   #nethud { position: fixed; right: 12px; top: 10px; font: 11px ui-monospace, monospace; color: #999; }
 </style>
 </head>
@@ -71,9 +85,10 @@
 <div id="help"><button id="aimbtn">aim: mouse</button><br>
 <b>move</b> <kbd>WASD</kbd> · <b>aim</b> the pointer · <b>charge</b> hold <kbd>Space</kbd> or click, let go to throw · <b>dash</b> <kbd>Shift</kbd> · <kbd>Esc</kbd> pause<br>
 a second player takes over the bot with a controller, or <kbd>←↑↓→</kbd> + <kbd>IJKL</kbd> and right <kbd>Shift</kbd></div>
-<div id="menuextra"><button id="botbtn">play the bot</button><button id="practicebtn">target practice</button></div>
+<div id="menuextra"><button id="botbtn">play the bot</button><button id="practicebtn">target practice</button><button id="antbtn">anthill</button></div>
+<div id="ants" hidden><div id="anthud"></div><div id="antlabels"></div><div id="antwin" hidden></div></div>
 <div id="debug" hidden></div>
 <div id="practice" hidden><span id="hits">0</span><span id="streak"></span></div>
-<script type="module" src="./main.js?v=23fd131e67"></script>
+<script type="module" src="./main.js?v=68f53ad95e"></script>
 </body>
 </html>
