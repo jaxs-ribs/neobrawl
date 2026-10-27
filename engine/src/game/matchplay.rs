@@ -35,6 +35,10 @@ pub struct CamFollow {
     pub started: bool,
     /// a respawn swoop in flight: start time (s) and where it left from
     pub swoop: Option<(f32, V3)>,
+    /// the solo camera's spring velocity (xy) and zoom distance
+    pub vel: V3,
+    pub dist: f32,
+    pub wide_until: f32,
 }
 
 /// MGE pacing: back in the fight half a second after dying.
@@ -435,6 +439,10 @@ impl Game {
                 self.cam_follow[c].players = [self.w.with_tag("PlayerOneScreen1"), self.w.with_tag("PlayerOneScreen2")];
                 self.cam_follow[c].should_follow = true;
             }
+            if self.anthill.on {
+                self.solo_camera(c);
+                continue;
+            }
             let [Some(a), Some(b)] = self.cam_follow[c].players else { continue };
             let pa = self.w.position(a);
             let pb = self.w.position(b);
@@ -451,10 +459,7 @@ impl Game {
                 (false, false) => (cur, cur),
             };
             // target practice: frame you and every target instead
-            // the anthill: the whole floor, steady
-            let (pa, pb) = if self.anthill.on {
-                (v3(self.anthill.lo.x + 1.0, self.anthill.lo.y + 1.0, pa.z), v3(self.anthill.hi.x - 1.0, self.anthill.hi.y - 1.0, pa.z))
-            } else if self.practice.on {
+            let (pa, pb) = if self.practice.on {
                 let pts: Vec<V3> = std::iter::once(pa).chain(self.practice.targets.iter().map(|t| self.w.position(t.node))).filter(|p| p.x != -666.0).collect();
                 let lo = pts.iter().fold(v3(f32::MAX, f32::MAX, pa.z), |a, p| v3(a.x.min(p.x), a.y.min(p.y), pa.z));
                 let hi = pts.iter().fold(v3(f32::MIN, f32::MIN, pa.z), |a, p| v3(a.x.max(p.x), a.y.max(p.y), pa.z));
@@ -506,6 +511,79 @@ impl Game {
             }
             self.w.set_position(node, np);
         }
+    }
+
+    /// The solo camera (anthill): you at the centre, leaning toward where
+    /// you aim, nudged by threats close by; a dead zone so small steps don't
+    /// drag the frame, a critically damped spring after it, and a zoom that
+    /// widens quickly when soldiers close in and settles back slowly.
+    fn solo_camera(&mut self, c: usize) {
+        let node = self.cam_follow[c].node;
+        let cur = self.w.position(node);
+        let Some(k) = self.players.iter().position(|p| &*self.w.nodes[p.node].tag == "PlayerOneScreen1") else { return };
+        let me = self.w.position(self.players[k].node);
+        let me = if me.x == -666.0 { self.anthill.start } else { me };
+        let lens = if self.w.nodes[node].camera.is_some() { Some(node) } else { self.camera_main() };
+        let fov = lens.and_then(|l| self.w.nodes[l].camera.as_ref()).map(|k| k.fov).unwrap_or(60.0);
+        let off = lens.map(|l| self.w.position(l) - cur).unwrap_or(V3::ZERO);
+        let t = (fov.to_radians() / 2.0).tan();
+        // lean: where you aim, further while charging
+        let aim = self.players[k].touch[1];
+        let charge = (self.players[k].charge_timer / 90.0).clamp(0.0, 1.0);
+        let lean = v3(aim.x, aim.y, 0.0) * (1.2 + 1.3 * charge);
+        // threats: soldiers within reach pull the frame a little their way
+        let reach = self.anthill.cfg.reach + 3.0;
+        let mut pull = V3::ZERO;
+        let mut near = 0.0f32;
+        for a in self.anthill.ants.iter().filter(|a| !a.dead && a.kind == super::anthill::SOLDIER) {
+            let d = self.w.position(a.node) - me;
+            let l = (d.x * d.x + d.y * d.y).sqrt();
+            if l < reach {
+                let wgt = if a.wind_until.is_some() { 0.3 } else { 0.15 } * (1.0 - l / reach);
+                pull = pull + v3(d.x, d.y, 0.0) * wgt;
+                near = near.max(l);
+            }
+        }
+        let focus = me + lean + pull;
+        // dead zone round the current centre
+        let here = v3(cur.x + off.x, cur.y + off.y, 0.0);
+        let d = v3(focus.x - here.x, focus.y - here.y, 0.0);
+        let dl = (d.x * d.x + d.y * d.y).sqrt();
+        let dz = 0.5;
+        let mut goal = if dl > dz { here + d * ((dl - dz) / dl) } else { here };
+        // keep the frame on the floor: no more than a sliver past the walls
+        let aspect = (self.screen.w / self.screen.h).max(0.5);
+        let shown_h = if self.cam_follow[c].dist > 0.0 { self.cam_follow[c].dist * t } else { 7.0 };
+        let (lo, hi) = (self.anthill.lo, self.anthill.hi);
+        for (g, lo, hi, half) in [(&mut goal.x, lo.x, hi.x, shown_h * aspect), (&mut goal.y, lo.y, hi.y, shown_h)] {
+            let (a, b) = (lo + half - 1.5, hi - half + 1.5);
+            *g = if a > b { (lo + hi) / 2.0 } else { g.clamp(a, b) };
+        }
+        // critically damped spring toward the goal
+        let dt = 0.02;
+        let w0 = 2.0 / 0.32;
+        let mut v = self.cam_follow[c].vel;
+        let x = v3(here.x - goal.x, here.y - goal.y, 0.0);
+        let acc = x * (-w0 * w0) - v * (2.0 * w0);
+        v = v + acc * dt;
+        let np = here + v * dt;
+        self.cam_follow[c].vel = v;
+        // zoom: show about 7 units up and down, more with a soldier closing in
+        let half_h = (7.0f32).max(if near > 0.0 { (near + 2.5) / aspect.min(1.6) } else { 0.0 }).min(12.0);
+        let want = half_h / t;
+        let now = self.motion.now;
+        let cf = &mut self.cam_follow[c];
+        if cf.dist == 0.0 {
+            cf.dist = want;
+        }
+        if want > cf.dist {
+            cf.dist += (want - cf.dist) * (1.0 - (-dt / 0.35f32).exp());
+            cf.wide_until = now + 1.2;
+        } else if now > cf.wide_until {
+            cf.dist += (want - cf.dist) * (1.0 - (-dt / 1.6f32).exp());
+        }
+        let dist = cf.dist;
+        self.w.set_position(node, v3(np.x - off.x, np.y - off.y, me.z - dist - off.z));
     }
 
     pub(super) fn shower_trigger(&mut self, s: usize) {

@@ -126,6 +126,27 @@ impl Engine {
         v
     }
 
+    /// Edge marks for the anthill: [x, y, kind] in screen pixels (y up)
+    /// for every soldier and live stacker; kind 0 soldier, 1 soldier
+    /// winding up, 2 stacker. The page shows the off-screen ones.
+    pub fn anthill_marks(&self) -> Vec<f32> {
+        let g = &self.game;
+        let a = &g.anthill;
+        let Some(cam) = g.camera_main() else { return vec![] };
+        let mut v = Vec::new();
+        for x in a.ants.iter().filter(|x| !x.dead && x.kind == crate::game::anthill::SOLDIER) {
+            if let Some(p) = g.project(cam, g.w.position(x.node)) {
+                v.extend([p[0], p[1], if x.wind_until.is_some() { 1.0 } else { 0.0 }]);
+            }
+        }
+        for s in a.stackers.iter().filter(|s| !s.overflowed) {
+            if let Some(p) = g.project(cam, s.pos) {
+                v.extend([p[0], p[1], 2.0]);
+            }
+        }
+        v
+    }
+
     /// [on, hits, streak] for the practice score
     pub fn practice_stats(&self) -> Vec<f32> {
         let p = &self.game.practice;

@@ -76,6 +76,9 @@
   #antwin[hidden] { display: none; }
   #antwin .big { font-size: 22px; letter-spacing: .3em; margin-bottom: .6em; }
   #antwin .dim { color: #888; font-size: 12px; }
+  #antmarks i { position: fixed; width: 0; height: 0; border: 6px solid transparent; border-left: 10px solid #2a52be; pointer-events: none; transform-origin: 0 50%; opacity: .7; }
+  #antmarks i.wind { border-left-color: #c22; opacity: 1; }
+  #antmarks i.nest { border-left-color: #111; opacity: .45; }
   #nethud { position: fixed; right: 12px; top: 10px; font: 11px ui-monospace, monospace; color: #999; }
 </style>
 </head>
@@ -86,9 +89,9 @@
 <b>move</b> <kbd>WASD</kbd> · <b>aim</b> the pointer · <b>charge</b> hold <kbd>Space</kbd> or click, let go to throw · <b>dash</b> <kbd>Shift</kbd> · <kbd>Esc</kbd> pause<br>
 a second player takes over the bot with a controller, or <kbd>←↑↓→</kbd> + <kbd>IJKL</kbd> and right <kbd>Shift</kbd></div>
 <div id="menuextra"><button id="botbtn">play the bot</button><button id="practicebtn">target practice</button><button id="antbtn">anthill</button></div>
-<div id="ants" hidden><div id="anthud"></div><div id="antlabels"></div><div id="antwin" hidden></div></div>
+<div id="ants" hidden><div id="anthud"></div><div id="antlabels"></div><div id="antmarks"></div><div id="antwin" hidden></div></div>
 <div id="debug" hidden></div>
 <div id="practice" hidden><span id="hits">0</span><span id="streak"></span></div>
-<script type="module" src="./main.js?v=68f53ad95e"></script>
+<script type="module" src="./main.js?v=767bd6ce77"></script>
 </body>
 </html>

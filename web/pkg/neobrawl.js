@@ -285,6 +285,18 @@ export class Engine {
         return v1;
     }
     /**
+     * Edge marks for the anthill: [x, y, kind] in screen pixels (y up)
+     * for every soldier and live stacker; kind 0 soldier, 1 soldier
+     * winding up, 2 stacker. The page shows the off-screen ones.
+     * @returns {Float32Array}
+     */
+    anthill_marks() {
+        const ret = wasm.engine_anthill_marks(this.__wbg_ptr);
+        var v1 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
      * [on, hits, streak] for the practice score
      * @returns {Float32Array}
      */

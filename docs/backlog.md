@@ -3,7 +3,8 @@
 Collected from design talks in the side session, 2026-10-26.
 
 ## Feel and mechanics
-- **Single-player camera:**
+- **Single-player camera:** shipped for the anthill (centred on you, aim lean, threat pull, dead zone, critically damped spring, delayed zoom-back, edge arrows). Still to do: a brief moment framing on kills, and using it beyond the anthill.
+- Original notes:
   - Anchored on the player, leaning toward the cursor (Gungeon-style).
   - Weighted points of interest, zoom limits with delay in both directions, a dead zone, critically damped springs.
   - Off-screen enemy edge marks; brief moment framing on kills.

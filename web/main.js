@@ -1332,6 +1332,7 @@ async function main() {
         const [x, y, stored, left, over] = a.slice(6 + k * 5, 11 + k * 5);
         const el = labels.children[k];
         el.style.left = x + "px"; el.style.top = canvas.getBoundingClientRect().height - y + "px"; // y counts up from the bottom
+        el.hidden = x < 0 || y < 0 || x > innerWidth || y > innerHeight;
         const txt = over ? "" : String(stored);
         if (el.textContent !== txt) {
           el.textContent = txt;
@@ -1341,6 +1342,22 @@ async function main() {
         el.classList.toggle("gone", !!over);
         el.title = `${left} ants left in this nest`;
       }
+      // off-screen soldiers and nests: a small arrow on the edge pointing at them
+      const mk = engine.anthill_marks(), marks = $("antmarks"), r = canvas.getBoundingClientRect();
+      const W = r.width, H = r.height, pad = 34;
+      let used = 0;
+      for (let i = 0; i < mk.length; i += 3) {
+        const x = mk[i], y = H - mk[i + 1], kind = mk[i + 2];
+        if (x > 0 && x < W && y > 0 && y < H) continue;
+        const cx = W / 2, cy = H / 2, dx = x - cx, dy = y - cy;
+        const s = Math.min((W / 2 - pad) / Math.abs(dx || 1e-3), (H / 2 - pad) / Math.abs(dy || 1e-3));
+        const el = marks.children[used] || marks.appendChild(document.createElement("i"));
+        el.style.left = cx + dx * s + "px"; el.style.top = cy + dy * s - 6 + "px";
+        el.style.transform = `rotate(${Math.atan2(dy, dx)}rad)`;
+        el.className = kind === 2 ? "nest" : kind === 1 ? "wind" : "";
+        el.hidden = false; used++;
+      }
+      for (let i = used; i < marks.children.length; i++) marks.children[i].hidden = true;
       if (won && win.hidden) {
         win.hidden = false;
         win.innerHTML = `<p class="big">the hill is empty</p><p>${kills} ants in ${m}:${sec}${deaths ? `, fallen ${deaths} time${deaths > 1 ? "s" : ""}` : ", untouched"}</p><p class="dim">click to go again</p>`;
