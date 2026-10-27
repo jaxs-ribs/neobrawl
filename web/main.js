@@ -518,9 +518,11 @@ class Online {
     this.role = null; this.state = "idle"; this.last = null; this.pings = [];
     this.el = document.createElement("div"); this.el.id = "online"; document.body.appendChild(this.el);
     this.entry = document.createElement("button"); this.entry.id = "friend"; this.entry.textContent = "play a friend";
+    this.el.addEventListener("pointerdown", (e) => e.stopPropagation());
+    this.el.addEventListener("click", (e) => { e.stopPropagation(); const a = e.target.closest("[data-act]")?.dataset.act; if (a) this.act(a); });
     this.entry.onclick = (e) => { e.stopPropagation(); this.host(); };
     this.entry.onpointerdown = (e) => e.stopPropagation();
-    $("menuextra").prepend(this.entry);
+    $("botbtn").after(this.entry);
     this.hud = document.createElement("div"); this.hud.id = "nethud"; document.body.appendChild(this.hud);
     addEventListener("keydown", (e) => this.key(e));
     const m = location.hash.match(/^#vs-([a-z0-9]{4,12})$/);
@@ -538,22 +540,22 @@ class Online {
     this.role = "host"; this.state = "waiting"; $("menuextra").hidden = true;
     const code = Array.from(crypto.getRandomValues(new Uint8Array(6)), (b) => "abcdefghjkmnpqrstuvwxyz23456789"[b % 31]).join("");
     const link = `${location.origin}${location.pathname}#vs-${code}`;
-    this.show(`<p>opening a room…</p>`);
+    this.show(`<p class="big">play a friend</p><p class="dim">opening a room…</p><div class="acts"><button data-act="leave">cancel</button></div>`);
     try {
       const Peer = await this.lib();
       this.peer = new Peer(ROOM_PREFIX + code);
       this.peer.on("error", (e) => this.fail(e));
       this.peer.on("open", () => {
-        this.show(`<p>send this to your friend</p><p class="link"><span>${link}</span> <button id="copy">copy</button></p><p class="dim">waiting for them to open it… · <kbd>Esc</kbd> cancel</p>`);
-        $("copy").onclick = (e) => { e.stopPropagation(); navigator.clipboard?.writeText(link); $("copy").textContent = "copied"; };
-        $("copy").onpointerdown = (e) => e.stopPropagation();
+        this.link = link;
+        this.show(`<p class="big">play a friend</p><p>send them this link</p><p class="link" data-act="copy">${link}</p><p class="dim">the match starts when they open it · <span id="wait">waiting</span></p><div class="acts"><button class="main" data-act="copy" id="copy">copy link</button><button data-act="leave">cancel</button></div>`);
+        let d = 0; const t = setInterval(() => { const w = $("wait"); if (!w || this.state !== "waiting") return clearInterval(t); w.textContent = "waiting" + ".".repeat(d++ % 4); }, 400);
       });
       this.peer.on("connection", (c) => { if (this.conn) { c.close(); return; } this.wire(c); });
     } catch (e) { this.fail(e); }
   }
   async join(code) {
     this.role = "guest"; this.state = "joining";
-    this.show(`<p>joining your friend…</p>`);
+    this.show(`<p class="big">play a friend</p><p class="dim">joining…</p><div class="acts"><button data-act="leave">cancel</button></div>`);
     try {
       const Peer = await this.lib();
       this.peer = new Peer();
@@ -570,7 +572,7 @@ class Online {
       ch.onmessage = (ev) => this.engine.net_recv(new Uint8Array(ev.data));
       this.chan = ch;
       this.state = "connected";
-      this.show(`<p>connected · measuring the line…</p>`);
+      this.show(`<p class="big">connected</p><p class="dim">measuring the line…</p>`);
       if (this.role === "host") this.measure();
     });
     c.on("data", (m) => this.control(m));
@@ -593,7 +595,7 @@ class Online {
     if (m.t === "ping") this.conn.send({ t: "pong", at: m.at });
     else if (m.t === "pong") this.pings.push(performance.now() - m.at);
     else if (m.t === "start" && this.role === "guest") this.begin(m);
-    else if (m.t === "rematch") { if (this.role === "host") this.measure(); else this.show(`<p>rematch…</p>`); }
+    else if (m.t === "rematch") { if (this.role === "host") this.measure(); else this.show(`<p class="big">rematch</p>`); }
   }
   begin(s) {
     this.engine.net_begin(BigInt(s.seed), s.map, this.role === "host" ? 0 : 1, s.delay);
@@ -609,18 +611,23 @@ class Online {
     const ev = this.engine.net_events();
     if (!ev) return;
     for (const e of ev.split(",")) {
-      if (e === "interrupted") this.show(`<p>connection hiccup…</p>`);
+      if (e === "interrupted") this.show(`<p>connection hiccup…</p>`, false);
       else if (e === "resumed") this.show("");
       else if (e === "disconnected") this.left();
-      else if (e === "desync") { nb.errors.push("desync"); this.show(`<p>out of sync — that's a bug, sorry. <kbd>Esc</kbd> to leave</p>`); }
-      else if (e === "ended") { this.state = "over"; this.show(`<p>match over · <kbd>R</kbd> rematch · <kbd>Esc</kbd> leave</p>`); }
+      else if (e === "desync") { nb.errors.push("desync"); this.show(`<p class="big">out of sync</p><p class="dim">that's a bug, sorry</p><div class="acts"><button class="main" data-act="leave">back to the menu</button></div>`); }
+      else if (e === "ended") { this.state = "over"; this.show(`<p class="big">match over</p><div class="acts"><button class="main" data-act="rematch">rematch <kbd>R</kbd></button><button data-act="leave">leave <kbd>Esc</kbd></button></div>`); }
     }
   }
   key(e) {
     if (!this.active || e.repeat) return;
-    if (e.code === "Escape") { e.stopImmediatePropagation(); this.leave(); }
-    if (e.code === "KeyR" && this.state === "over") {
-      this.conn?.send({ t: "rematch" }); this.show(`<p>rematch…</p>`);
+    if (e.code === "Escape") { e.stopImmediatePropagation(); this.act("leave"); }
+    if (e.code === "KeyR") this.act("rematch");
+  }
+  act(a) {
+    if (a === "leave") this.leave();
+    else if (a === "copy" && this.link) { navigator.clipboard?.writeText(this.link); const c = $("copy"); if (c) c.textContent = "copied"; }
+    else if (a === "rematch" && this.state === "over") {
+      this.state = "rematching"; this.conn?.send({ t: "rematch" }); this.show(`<p class="big">rematch</p>`);
       if (this.role === "host") this.measure();
     }
   }
@@ -632,7 +639,7 @@ class Online {
   left() {
     if (this.state === "idle") return;
     const was = this.state; this.state = "gone"; this.engine.net_end();
-    this.show(`<p>${was === "waiting" || was === "joining" ? "couldn't connect" : "your friend left"}</p><p class="dim">back to the menu in a moment</p>`);
+    this.show(`<p class="big">${was === "waiting" || was === "joining" ? "couldn't connect" : "your friend left"}</p><p class="dim">back to the menu in a moment</p>`);
     setTimeout(() => this.home(), 2500);
   }
   leave() { this.conn?.close(); this.engine.net_end(); this.home(); }
@@ -640,7 +647,7 @@ class Online {
   fail(e) {
     nb.errors.push("online: " + (e?.type || e?.message || e));
     const msg = e?.type === "peer-unavailable" ? "that room is gone (or the link was mistyped)" : e?.type === "unavailable-id" ? "room clash, try again" : "couldn't connect";
-    this.show(`<p>${msg}</p><p class="dim"><kbd>Esc</kbd> back to the menu</p>`);
+    this.show(`<p class="big">${msg}</p><div class="acts"><button class="main" data-act="leave">back to the menu</button></div>`);
   }
 }
 
@@ -1207,9 +1214,6 @@ async function main() {
       if (lab) { nb.lag = engine.lag_stats(); lab.update(nb.lag); }
       if (locked && !inPlay()) document.exitPointerLock?.(); // menus get the cursor back
       if (online) { nb.net = engine.net_stats(); online.stats(nb.net); }
-      // the menu row (friend, practice, aim) only on the title and map screens
-      const sc = JSON.parse(engine.state()).screens;
-      $("menuextra").hidden = !!online?.active || !!nb.practicing || !(sc.includes("start") || sc.includes("maps"));
     }
     frames++;
     if (now - fpsT >= 500) { nb.fps = Math.round((frames * 1000) / (now - fpsT)); frames = 0; fpsT = now; }
@@ -1217,6 +1221,11 @@ async function main() {
     requestAnimationFrame(loop);
   };
   requestAnimationFrame(loop);
+  // the mode row and the controls legend: the title screen only
+  setInterval(() => {
+    const title = !online?.active && !nb.practicing && !lab && JSON.parse(engine.state()).screens.includes("start");
+    $("menuextra").hidden = $("help").hidden = !title;
+  }, 120);
   nb.ready = true;
   // ---- recording (recordings/tool): offline capture at an exact frame rate,
   // each frame posted to the recorder's server, and the same audio code
@@ -1303,7 +1312,7 @@ async function main() {
     }, 100);
   };
   const aimBtn = $("aimbtn");
-  const showAim = () => { aimBtn.textContent = `aim: ${aimMode}`; };
+  const showAim = () => { aimBtn.innerHTML = `aim for a <b>${aimMode}</b> · switch to ${aimMode === "trackpad" ? "mouse" : "trackpad"}`; };
   showAim();
   aimBtn.onclick = (e) => {
     e.stopPropagation();
@@ -1313,6 +1322,9 @@ async function main() {
     showAim();
   };
   aimBtn.onpointerdown = (e) => e.stopPropagation();
+  // the start stack is the bot match too; this names it
+  $("botbtn").onclick = (e) => { e.stopPropagation(); const p = engine.locate("StartingScreenButton"); if (p.length) { engine.pointer(900, p[0], p[1], 0); engine.pointer(900, p[0], p[1], 2); } };
+  $("botbtn").onpointerdown = (e) => e.stopPropagation();
   $("practicebtn").onclick = (e) => { e.stopPropagation(); startPractice(); };
   $("practicebtn").onpointerdown = (e) => e.stopPropagation();
   if (params.has("practice")) startPractice();

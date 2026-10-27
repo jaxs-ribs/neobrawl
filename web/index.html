@@ -15,8 +15,13 @@
   #overlay[hidden] { display: none; }
   #overlay h1 { font-weight: 300; letter-spacing: .4em; margin: 0 0 .5em; }
   #overlay p { color: var(--dim); margin: .25em 0; }
-  #help { position: fixed; right: 12px; bottom: 10px; font-size: 12px; color: var(--dim); text-align: right; pointer-events: none; }
-  #help kbd { font: 11px ui-monospace, monospace; border: 1px solid #ccc; border-radius: 3px; padding: 0 3px; }
+  /* title-screen corner: the controls legend and the aim setting, nothing in play */
+  #help { position: fixed; left: 16px; bottom: 14px; font-size: 11px; line-height: 1.7; color: #999; pointer-events: none; max-width: calc(100vw - 32px); }
+  #help[hidden] { display: none; }
+  #help kbd { font: 10px ui-monospace, monospace; border: 1px solid #ddd; border-radius: 3px; padding: 0 3px; color: #777; }
+  #help button { pointer-events: auto; border: 0; background: none; padding: 0; margin: 0 0 4px; cursor: pointer; font: inherit; color: #777; }
+  #help button:hover { color: #111; }
+  #help b { font-weight: 500; color: #666; }
   #practice { position: fixed; top: 18px; left: 0; right: 0; text-align: center; pointer-events: none;
     font: 300 30px/1 var(--font, system-ui), sans-serif; letter-spacing: .3em; color: #111; }
   #practice #hits { display: inline-block; transition: transform .25s cubic-bezier(.2,1.8,.4,1); }
@@ -33,21 +38,29 @@
     font: 13px/1.4 ui-monospace, monospace; color: #111; opacity: 0; transform: translateY(6px);
     transition: opacity .35s, transform .35s cubic-bezier(.2,1.4,.4,1); padding: 0 16px; }
   #lagbanner.on { opacity: 1; transform: none; }
-  #menuextra { position: fixed; left: 0; right: 0; top: 87%; display: flex; justify-content: center; gap: 4px; flex-wrap: wrap; padding: 0 16px; }
+  /* the mode row: under the start stack, on the title screen only */
+  #menuextra { position: fixed; left: 0; right: 0; top: 66%; display: flex; justify-content: center; align-items: center; flex-wrap: wrap; padding: 0 16px; }
   #menuextra[hidden] { display: none; }
-  #menuextra button { border: 0; background: none; font: 300 13px/1 var(--font, system-ui), sans-serif; letter-spacing: .32em; color: #777;
-    cursor: pointer; padding: 8px 12px; transition: color .2s, letter-spacing .35s cubic-bezier(.2,1.4,.4,1); }
-  #menuextra button:hover { color: #111; letter-spacing: .4em; }
-  #menuextra #aimbtn { color: #aaa; font-size: 11px; }
-  #online { position: fixed; left: 0; right: 0; top: 38%; text-align: center; pointer-events: none; padding: 0 16px;
+  #menuextra button { border: 0; background: none; font: 300 14px/1 var(--font, system-ui), sans-serif; letter-spacing: .32em; color: #666;
+    cursor: pointer; padding: 10px 14px; transition: color .2s, letter-spacing .35s cubic-bezier(.2,1.4,.4,1); }
+  #menuextra button:hover, #menuextra button:focus-visible { color: #111; letter-spacing: .4em; outline: none; }
+  #menuextra button + button::before { content: "·"; color: #ccc; margin-right: 26px; letter-spacing: 0; }
+  /* online: a toast while playing; a full veil with one card while setting up */
+  #online { position: fixed; left: 0; right: 0; top: 14%; text-align: center; pointer-events: none; padding: 0 16px;
     font: 300 15px/1.6 var(--font, system-ui), sans-serif; letter-spacing: .08em; color: #111;
     opacity: 0; transform: translateY(8px); transition: opacity .3s, transform .4s cubic-bezier(.2,1.4,.4,1); }
   #online.on { opacity: 1; transform: none; }
-  #online.sticky.on { background: #fbfbfbe6; padding: 22px 16px; }
-  #online p { margin: .3em 0; }
+  #online.sticky { inset: 0; top: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; background: #fbfbfbf0; }
+  #online.sticky:not(.on) { visibility: hidden; }
+  #online.sticky.on { pointer-events: auto; }
+  #online p { margin: .35em 0; }
+  #online .big { font-size: 22px; letter-spacing: .3em; margin-bottom: .8em; }
   #online .dim { color: #888; font-size: 12px; }
-  #online .link { font: 13px ui-monospace, monospace; word-break: break-all; }
-  #online button { pointer-events: auto; font: 12px ui-monospace, monospace; border: 1px solid #ccc; background: #fff; border-radius: 3px; padding: 2px 8px; cursor: pointer; }
+  #online .link { font: 13px ui-monospace, monospace; word-break: break-all; padding: 10px 14px; border: 1px solid #ddd; border-radius: 4px; background: #fff; margin: .6em 0; cursor: copy; }
+  #online .acts { margin-top: 1.4em; display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+  #online button { pointer-events: auto; font: 300 13px/1 var(--font, system-ui), sans-serif; letter-spacing: .25em; border: 1px solid #ccc; background: #fff; color: #111; border-radius: 3px; padding: 10px 18px; cursor: pointer; }
+  #online button:hover { border-color: #111; }
+  #online button.main { background: #111; color: #fbfbfb; border-color: #111; }
   #online kbd { font: 11px ui-monospace, monospace; border: 1px solid #ccc; border-radius: 3px; padding: 0 3px; }
   #nethud { position: fixed; right: 12px; top: 10px; font: 11px ui-monospace, monospace; color: #999; }
 </style>
@@ -55,9 +68,10 @@
 <body>
 <canvas id="screen"></canvas>
 <div id="overlay"><div><h1>NEOBRAWL</h1><p id="status">loading…</p></div></div>
-<div id="help">P1 <kbd>WASD</kbd> move · slide a finger to aim · hold <kbd>Space</kbd> to charge, let go to throw · <kbd>Shift</kbd> dash<br>
-P2 controller (sticks, <kbd>A</kbd> dash) or <kbd>←↑↓→</kbd> + <kbd>I</kbd><kbd>J</kbd><kbd>K</kbd><kbd>L</kbd> aim + right <kbd>Shift</kbd> dash · <kbd>Esc</kbd> pause</div>
-<div id="menuextra"><button id="practicebtn">target practice</button><button id="aimbtn">aim: mouse</button></div>
+<div id="help"><button id="aimbtn">aim: mouse</button><br>
+<b>move</b> <kbd>WASD</kbd> · <b>aim</b> the pointer · <b>charge</b> hold <kbd>Space</kbd> or click, let go to throw · <b>dash</b> <kbd>Shift</kbd> · <kbd>Esc</kbd> pause<br>
+a second player takes over the bot with a controller, or <kbd>←↑↓→</kbd> + <kbd>IJKL</kbd> and right <kbd>Shift</kbd></div>
+<div id="menuextra"><button id="botbtn">play the bot</button><button id="practicebtn">target practice</button></div>
 <div id="debug" hidden></div>
 <div id="practice" hidden><span id="hits">0</span><span id="streak"></span></div>
 <script type="module" src="./main.js?v=23fd131e67"></script>
