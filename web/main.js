@@ -1032,12 +1032,9 @@ function pollControls() {
     // charge by holding Space (or the button): the aiming hand only points
     const charging = mouseHeld || keys.has("Space");
     if (locked) engine.direct(0, mx, my, reticle.x, reticle.y, charging, false, true);
-    else if (nb.mode === "anthill" && cursorPx) {
-      // where you point on the floor, re-read every tick as the frame moves
-      const w = engine.world_at(cursorPx[0], cursorPx[1]), me = engine.my_soul();
-      if (w.length && me.length) engine.direct(0, mx, my, w[0] - me[0], w[1] - me[1], charging, false, true);
-      else engine.direct(0, mx, my, 0, 0, charging, true, true);
-    } else if (aimMode === "trackpad" && charging && (tpAim || cursorPx)) {
+    // the anthill aims at the cursor, read by the engine every tick
+    else if (nb.mode === "anthill") engine.direct(0, mx, my, 0, 0, charging, true, true);
+    else if (aimMode === "trackpad" && charging && (tpAim || cursorPx)) {
       if (!tpAim) {
         // the charge begins: the reticle starts exactly where you pointed
         const w = engine.world_at(cursorPx[0], cursorPx[1]), me = engine.my_soul();

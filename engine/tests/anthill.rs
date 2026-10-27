@@ -189,3 +189,50 @@ fn stacks_never_pass_their_cap_across_settings() {
         assert!(most as u32 <= cap);
     }
 }
+
+#[test]
+fn a_throw_flies_at_the_cursor_even_on_the_run() {
+    let (w, h) = (1024.0, 768.0);
+    for (i, (cx, cy, mx, my)) in [(900.0, 400.0, 0.0, 1.0), (100.0, 100.0, 1.0, 0.0), (520.0, 700.0, -1.0, -1.0), (300.0, 600.0, 0.0, -1.0)].into_iter().enumerate() {
+        let mut e = anthill(30 + i as u64, AntCfg::default());
+        e.set_screen(w, h);
+        e.cursor(cx, cy);
+        // walk to a box and pick it up
+        for _ in 0..(50 * 20) {
+            let g = e.game();
+            let me_n = g.w.with_tag("PlayerOneScreen1").unwrap();
+            let k = g.player_of[&me_n];
+            if g.players[k].picked_box.is_some() {
+                break;
+            }
+            let me = g.w.position(me_n);
+            let bp = g.boxes.iter().filter(|b| g.w.active_in_hierarchy(b.node) && g.w.nodes[b.node].collider.as_ref().map(|c| c.enabled).unwrap_or(false)).map(|b| g.w.position(b.node)).min_by(|a, b| (*a - me).length().partial_cmp(&(*b - me).length()).unwrap()).unwrap();
+            let d = bp - me;
+            let l = d.length().max(1e-3);
+            e.direct(0, d.x / l, d.y / l, 0.0, 0.0, false, true, true);
+            e.frame();
+        }
+        let g = e.game();
+        let me_n = g.w.with_tag("PlayerOneScreen1").unwrap();
+        let k = g.player_of[&me_n];
+        let b = g.players[k].picked_box.expect("picked a box");
+        // charge on the run, then let go
+        let mut want = V3::ZERO;
+        for _ in 0..30 {
+            e.direct(0, mx, my, 0.0, 0.0, true, true, true);
+            e.frame();
+            let g = e.game();
+            let c = g.cursor_world(k).unwrap();
+            want = c - g.w.position(me_n);
+        }
+        for _ in 0..2 {
+            e.direct(0, mx, my, 0.0, 0.0, false, true, true);
+            e.frame();
+        }
+        let g = e.game();
+        let v = g.w.nodes[b].body.as_ref().unwrap().velocity;
+        let ang = (v.y.atan2(v.x) - want.y.atan2(want.x)).sin().asin().to_degrees().abs();
+        eprintln!("cursor ({cx},{cy}) running ({mx},{my}): off by {ang:.1} deg, speed {:.1}", (v.x * v.x + v.y * v.y).sqrt());
+        assert!(ang < 4.0, "the box flies at the cursor: off by {ang:.1} deg");
+    }
+}

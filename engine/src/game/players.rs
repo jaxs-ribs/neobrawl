@@ -475,7 +475,7 @@ impl Game {
     }
 
     /// The point under the mouse cursor on the player's plane (z of the player).
-    pub(crate) fn cursor_world(&self, k: usize) -> Option<V3> {
+    pub fn cursor_world(&self, k: usize) -> Option<V3> {
         self.cursor_world_through(k, V3::ZERO)
     }
 
@@ -918,7 +918,10 @@ impl Game {
             self.tasks.push(Task::ReinstateCollision { player: k, wait: 2 });
         }
         if let Some(body) = self.w.nodes[b].body.as_mut() {
-            body.velocity = body.velocity + v3(angle.x * power, angle.y * power, 0.0);
+            // the anthill throws exactly where you point: nothing the box was
+            // already doing (ants shoving it, you walking) bends it
+            let carry = if self.anthill.on { V3::ZERO } else { body.velocity };
+            body.velocity = carry + v3(angle.x * power, angle.y * power, 0.0);
         }
         // the box leaves from inside your body: whatever it overlaps right now
         // (the wall you hug, a neighbour) must not deflect the throw
