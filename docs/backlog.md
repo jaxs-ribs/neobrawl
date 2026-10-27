@@ -36,6 +36,9 @@ Collected from design talks in the side session, 2026-10-26.
 - **Elo ladder** plus a replay theater that picks close, high-rated matches.
 
 ## Anthill (prototypes/anthill)
-- Bring the box-carrying ants (`boxes.html`) into the realm; check long-run clustering.
-- A playable ant level: red defends, blue players raid. A GPU ant sim for thousands.
+- Shipped: the anthill mode (workers, soldiers, stackers, overflow, shields). Next:
+  - More ant kinds (a guard that holds the hill, a runner that steals your box).
+  - Workers need pathing once inner walls stay in (the mode clears them today).
+  - Tune with real play: idle for 90 s, the colony banks about half the floor.
+- A GPU ant sim for thousands.
 - The breeder's taste learning and the GPU batch solver, kept as tools.
