@@ -967,7 +967,8 @@ let locked = false;
 // (one thing on screen to aim with, never a cursor and a target apart)
 const AIM_KEY = "neobrawl.aim";
 let aimMode = (() => { try { return localStorage.getItem(AIM_KEY); } catch { return null; } })() || (/Mac/.test(navigator.platform) ? "trackpad" : "mouse");
-const rideOn = () => aimMode === "mouse" && !params.has("abs");
+// the anthill always aims at the map under the cursor: the frame follows you
+const rideOn = () => aimMode === "mouse" && !params.has("abs") && nb.mode !== "anthill";
 let cursorPx = null; // last pointer position, screen px (origin bottom-left)
 let tpAim = null; // trackpad: the riding reticle while a charge is held
 const reticle = { x: 2.5, y: 0 }; // world units from your soul
@@ -1031,7 +1032,12 @@ function pollControls() {
     // charge by holding Space (or the button): the aiming hand only points
     const charging = mouseHeld || keys.has("Space");
     if (locked) engine.direct(0, mx, my, reticle.x, reticle.y, charging, false, true);
-    else if (aimMode === "trackpad" && charging && (tpAim || cursorPx)) {
+    else if (nb.mode === "anthill" && cursorPx) {
+      // where you point on the floor, re-read every tick as the frame moves
+      const w = engine.world_at(cursorPx[0], cursorPx[1]), me = engine.my_soul();
+      if (w.length && me.length) engine.direct(0, mx, my, w[0] - me[0], w[1] - me[1], charging, false, true);
+      else engine.direct(0, mx, my, 0, 0, charging, true, true);
+    } else if (aimMode === "trackpad" && charging && (tpAim || cursorPx)) {
       if (!tpAim) {
         // the charge begins: the reticle starts exactly where you pointed
         const w = engine.world_at(cursorPx[0], cursorPx[1]), me = engine.my_soul();
@@ -1300,7 +1306,9 @@ async function main() {
     await wait(500);
     await tap("MapMenuArrowRight"); await wait(700);
     await until("MapMenuGameStart", "game");
+    nb.mode = mode;
     if (mode === "anthill") {
+      if (locked) document.exitPointerLock?.();
       for (let i = 0; i < 200 && !engine.start_anthill(); i++) await wait(50);
       return showAnthill();
     }

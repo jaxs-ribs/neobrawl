@@ -513,8 +513,9 @@ impl Game {
         }
     }
 
-    /// The solo camera (anthill): you at the centre, leaning toward where
-    /// you aim, nudged by threats close by; a dead zone so small steps don't
+    /// The solo camera (anthill): you at the centre (no lean toward the aim:
+    /// you aim at the map under the cursor, so a frame that chased it would
+    /// drift), nudged by threats close by; a dead zone so small steps don't
     /// drag the frame, a critically damped spring after it, and a zoom that
     /// widens quickly when soldiers close in and settles back slowly.
     fn solo_camera(&mut self, c: usize) {
@@ -527,10 +528,6 @@ impl Game {
         let fov = lens.and_then(|l| self.w.nodes[l].camera.as_ref()).map(|k| k.fov).unwrap_or(60.0);
         let off = lens.map(|l| self.w.position(l) - cur).unwrap_or(V3::ZERO);
         let t = (fov.to_radians() / 2.0).tan();
-        // lean: where you aim, further while charging
-        let aim = self.players[k].touch[1];
-        let charge = (self.players[k].charge_timer / 90.0).clamp(0.0, 1.0);
-        let lean = v3(aim.x, aim.y, 0.0) * (1.2 + 1.3 * charge);
         // threats: soldiers within reach pull the frame a little their way
         let reach = self.anthill.cfg.reach + 3.0;
         let mut pull = V3::ZERO;
@@ -544,7 +541,7 @@ impl Game {
                 near = near.max(l);
             }
         }
-        let focus = me + lean + pull;
+        let focus = me + pull;
         // dead zone round the current centre
         let here = v3(cur.x + off.x, cur.y + off.y, 0.0);
         let d = v3(focus.x - here.x, focus.y - here.y, 0.0);
