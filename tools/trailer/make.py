@@ -208,7 +208,9 @@ def mix():
     for s in e["shots"]:
         meta = json.load(open(os.path.join(REC, s["take"], "meta.json")))
         tick_of = meta["tickOf"]
-        if s.get("hitAt") is not None:
+        if s.get("from") is not None:
+            in_f = s["from"]
+        elif s.get("hitAt") is not None:
             hit_f = next((i for i, t in enumerate(tick_of) if t >= s["hit"]), len(tick_of) - 1)
             in_f = hit_f - round(s["hitAt"] * meta["fps"])
         else:

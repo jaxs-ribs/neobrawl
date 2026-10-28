@@ -62,13 +62,14 @@ const slot = (who) => (who <= 4 ? 0 : 1);
 
 // the virtual camera of a shot: centre and zoom
 function camera(shot, m, fi, hitF, local) {
-  const k = slot(shot.who), v = 1 - k;
+  const k = shot.act ?? slot(shot.who), v = shot.tgt === "act" ? k : 1 - k;
   const [px, py, pz] = m.pair[fi] || [W / 2, H / 2, 1];
   const killer = m.soul[k][fi] || [px, py], at = m.soul[v][clamp(hitF - 1, 0, m.soul[v].length - 1)] || [px, py];
   const u = clamp(local / shot.dur, 0, 1), toHit = clamp(local / Math.max(0.05, shot.hitAt), 0, 1);
   switch (shot.mode) {
     case "wide": return [W / 2 + (px - W / 2) * 0.25, H / 2 + (py - H / 2) * 0.25, 1 + 0.05 * u];
     case "pair": return [px, py, pz * (1 + 0.04 * u)];
+    case "follow": { const p = m.soul[k][fi] || [px, py]; return [p[0], p[1], 1.42 + 0.05 * u]; }
     case "killer": return [killer[0] * 0.75 + px * 0.25, killer[1] * 0.75 + py * 0.25, 1.5 + 0.06 * u];
     case "tight": return [at[0], at[1], 1.62 - 0.08 * u];
     case "push": { const e = smooth(toHit); return [px + (at[0] - px) * e, py + (at[1] - py) * e, pz + (1.55 - pz) * e]; }
@@ -88,8 +89,11 @@ function spaced(text, px, y, size, track, alpha) {
 
 async function drawShot(shot, local) {
   const m = metas[shot.take];
-  const hitF = frameOfTick(m, shot.hit);
-  const fi = clamp(hitF - Math.round(shot.hitAt * m.fps) + Math.round(local * m.fps), 0, m.tickOf.length - 1);
+  // a shot is either a start frame and a peak (the editor's cuts) or a hit tick placed in time
+  const cut = shot.from != null;
+  const hitF = cut ? shot.from + Math.round(shot.peak * m.fps) : frameOfTick(m, shot.hit);
+  if (cut) shot.hitAt = shot.peak;
+  const fi = clamp(cut ? shot.from + Math.round(local * m.fps) : hitF - Math.round(shot.hitAt * m.fps) + Math.round(local * m.fps), 0, m.tickOf.length - 1);
   const im = await frame(shot.take, fi);
   let [cx, cy, z] = camera(shot, m, fi, hitF, local);
   // a punch on the heavy hits only (a quick push, a little shake); a nudge on the rest
