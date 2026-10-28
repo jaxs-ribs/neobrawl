@@ -190,7 +190,10 @@ impl Game {
             let (id, ch, bo, flight) = (x.throw_id, x.thrown_charge, x.bounces as f32, (self.frame - x.thrown_at) as f32);
             let (kk, vk) = (self.k_of(killer), self.k_of(Some(other)));
             let note = self.plays.iter().rev().find(|p| p.throw == id && p.kind == super::plays::Kind::Throw).map(|p| p.note).unwrap_or("");
-            self.log_play(super::plays::Kind::Kill, kk, vk, pos, id, ch, bo + flight * 0.001, note);
+            // only kills the game counts (a soul's own box never kills it)
+            if kk.is_some() && kk != vk {
+                self.log_play(super::plays::Kind::Kill, kk, vk, pos, id, ch, bo + flight * 0.001, note);
+            }
             self.kill_log.push((self.boxes[b].thrown_charge, self.boxes[b].bounces));
             self.kill_impulse = prev;
             self.death(other, killer);

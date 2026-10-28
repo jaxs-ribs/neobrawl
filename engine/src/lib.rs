@@ -134,6 +134,11 @@ impl Engine {
         true
     }
 
+    /// True while the game holds still for a hit (slow motion mustn't stretch it).
+    pub fn in_hitstop(&self) -> bool {
+        self.game.motion.hitstop > 0
+    }
+
     /// The game's tick (what the play log's `t` counts; it holds still
     /// through hit-stops, unlike calls to `frame`).
     pub fn tick(&self) -> f64 {

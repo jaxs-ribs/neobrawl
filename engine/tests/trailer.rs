@@ -119,3 +119,24 @@ fn a_god_match_ignores_the_window_and_drawing() {
     assert_eq!(a, play(1920.0, 1080.0, false), "the window size changes the match");
     assert_eq!(a, play(640.0, 360.0, true), "drawing changes the match");
 }
+
+#[test]
+fn both_souls_glide_between_ticks() {
+    let mut e = god(193, 1);
+    run(&mut e, 600);
+    let mut moved = [0.0f32; 2];
+    for _ in 0..50 {
+        e.frame();
+        e.set_subtick(0.1);
+        let a = e.souls_on_screen();
+        e.set_subtick(0.9);
+        let b = e.souls_on_screen();
+        for k in 0..2 {
+            if a[k * 3 + 2] > 0.0 && b[k * 3 + 2] > 0.0 {
+                moved[k] += (a[k * 3] - b[k * 3]).abs() + (a[k * 3 + 1] - b[k * 3 + 1]).abs();
+            }
+        }
+    }
+    eprintln!("drawn motion within ticks: {moved:?}");
+    assert!(moved[0] > 20.0 && moved[1] > 20.0, "each soul moves between ticks as drawn: {moved:?}");
+}

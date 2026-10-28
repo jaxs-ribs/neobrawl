@@ -19,7 +19,8 @@ def clips_of(plays, seed, mp):
     for p in plays:
         by[p["kind"]].append(p)
     throws = {p["throw"]: p for p in by["throw"]}
-    kills = sorted(by["kill"], key=lambda p: p["t"])
+    # (older logs also listed a soul hit by its own box, which the game ignores)
+    kills = sorted((p for p in by["kill"] if p["who"] != p["other"] and p["who"] >= 0), key=lambda p: p["t"])
     out = []
 
     def near(kind, who_key, who, t0, t1, note=None):

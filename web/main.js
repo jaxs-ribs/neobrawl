@@ -1252,7 +1252,7 @@ async function main() {
       while (a2 >= TICK) { engine.frame(); a2 -= TICK; nb.ticks++; }
       nb.audioLog.push([engine.drain_sounds(), engine.drain_cues(), engine.mix(), engine.music()]);
       if (nb.ticks !== textsAt) { const v = engine.texts_version(); if (v !== textsVer) { texts = JSON.parse(engine.texts()); textsVer = v; } textsAt = nb.ticks; }
-      engine.set_subtick(a2 / TICK);
+      engine.set_subtick(a2 / TICK); nb.sub = a2 / TICK;
       const len = engine.render();
       r.draw(new Float32Array(wasm.memory.buffer, engine.records_ptr(), len), texts, family, cssW(), cssH());
       (nb.soulsAt ||= [])[i] = Array.from(engine.souls_on_screen()).map((v) => Math.round(v));
