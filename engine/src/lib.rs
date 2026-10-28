@@ -116,6 +116,57 @@ impl Engine {
         self.game.play_mode(m, 1)
     }
 
+    /// The trailer's god matches: from the title straight into a match on
+    /// `map` (0-3) with both souls played by the god AI and the play log on.
+    /// The same seed and map replay the same match, frame for frame.
+    pub fn god_match(&mut self, map: i32) -> bool {
+        self.set_desktop(true);
+        if !self.game.play_mode(game::Mode::Versus, map.clamp(0, 3)) {
+            return false;
+        }
+        self.game.recording = true;
+        self.game.ai_salt = (self.game.rng.0 ^ (self.game.rng.0 >> 32)) as u32;
+        self.game.plays.clear();
+        for s in 0..2 {
+            self.set_ai_level(s, 5);
+            self.set_ai(s, true);
+        }
+        true
+    }
+
+    /// The game's tick (what the play log's `t` counts; it holds still
+    /// through hit-stops, unlike calls to `frame`).
+    pub fn tick(&self) -> f64 {
+        self.game.frame as f64
+    }
+
+    /// Where the match's souls are drawn on screen: [x, y, alive] each, in
+    /// pixels from the bottom left (the trailer frames its shots by them).
+    pub fn souls_on_screen(&self) -> Vec<f32> {
+        let g = &self.game;
+        let lerp = g.interp_offsets();
+        let cam = g.camera_main();
+        let mut out = Vec::new();
+        for k in 0..g.players.len() {
+            let p = &g.players[k];
+            if p.single || p.playback || !g.w.active_in_hierarchy(p.node) {
+                continue;
+            }
+            let alive = g.w.position(p.node).x != -666.0;
+            let at = cam.filter(|_| alive).and_then(|c| g.project(c, g.shown_soul(&lerp, k)));
+            match at {
+                Some([x, y]) => out.extend([x, y, 1.0]),
+                None => out.extend([0.0, 0.0, 0.0]),
+            }
+        }
+        out
+    }
+
+    /// The play log so far, as JSON (see game::plays).
+    pub fn plays(&self) -> String {
+        self.game.plays_json()
+    }
+
     /// Turn the running match into the anthill. False until a match is up.
     pub fn start_anthill(&mut self) -> bool {
         self.game.start_anthill(Default::default())
@@ -167,10 +218,10 @@ impl Engine {
     /// AI temperament for a slot: 0 wanders, 1-3 fights (easy, normal, hard).
     pub fn set_ai_level(&mut self, slot: usize, level: u8) {
         if let Some(a) = self.game.ai.get_mut(slot) {
-            a.level = level.min(4);
+            a.level = level.min(5);
         }
         if let (1, Some(m)) = (slot, self.net.as_mut().and_then(|n| n.mind())) {
-            m.level = level.min(4);
+            m.level = level.min(5);
         }
     }
 

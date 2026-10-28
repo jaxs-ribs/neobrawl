@@ -32,6 +32,10 @@ pub struct BoxS {
     pub spent: bool,
     /// charge it was thrown with (tuning: jab vs loaded kills)
     pub thrown_charge: f32,
+    /// the play log's id for the current throw, and when and where it left
+    pub throw_id: u32,
+    pub thrown_at: u64,
+    pub thrown_from: V3,
 }
 
 /// A wall hit shatters the box only if it comes in nearly square
@@ -156,6 +160,11 @@ impl Game {
         } else if other_layer == crate::physics::LAYER_BOX {
             self.boxes[b].reflected = reflect(prev, normal);
             if let Some(&ob) = self.box_of.get(&other) {
+                if self.is_being_thrown(ob) {
+                    let (w1, w2) = (self.k_of(self.boxes[b].carried_by), self.k_of(self.boxes[ob].carried_by));
+                    let id = self.boxes[b].throw_id;
+                    self.log_play(super::plays::Kind::Clash, w1, w2, pos, id, prev.length(), self.boxes[ob].throw_id as f32, "");
+                }
                 self.box_single_explode(ob);
             }
         } else if other_layer == crate::physics::LAYER_PLAYER && self.ant_of(other).is_some() && self.boxes[b].carried_by.map(|t| t == other || self.anthill.ants.iter().any(|a| a.node == t && a.kind == super::anthill::SOLDIER) && self.anthill.ants.iter().any(|a| a.node == other && a.kind == super::anthill::SOLDIER)).unwrap_or(false) {
@@ -177,6 +186,11 @@ impl Game {
                 self.drop_box(k);
             }
             let killer = self.boxes[b].carried_by;
+            let x = &self.boxes[b];
+            let (id, ch, bo, flight) = (x.throw_id, x.thrown_charge, x.bounces as f32, (self.frame - x.thrown_at) as f32);
+            let (kk, vk) = (self.k_of(killer), self.k_of(Some(other)));
+            let note = self.plays.iter().rev().find(|p| p.throw == id && p.kind == super::plays::Kind::Throw).map(|p| p.note).unwrap_or("");
+            self.log_play(super::plays::Kind::Kill, kk, vk, pos, id, ch, bo + flight * 0.001, note);
             self.kill_log.push((self.boxes[b].thrown_charge, self.boxes[b].bounces));
             self.kill_impulse = prev;
             self.death(other, killer);
@@ -207,6 +221,10 @@ impl Game {
         let x = &mut self.boxes[b];
         x.bounces += 1;
         x.prev_vel = out;
+        let (id, th) = (x.throw_id, x.carried_by);
+        let who = self.k_of(th);
+        self.log_play(super::plays::Kind::Bounce, who, None, pos, id, sp, 0.0, "");
+        let x = &mut self.boxes[b];
         if x.bounces >= BOUNCES_LIVE || out.length() < 12.0 {
             x.spent = true;
             x.being_thrown = false;

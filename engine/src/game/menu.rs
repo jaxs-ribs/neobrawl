@@ -405,7 +405,7 @@ impl Game {
         self.menu.one_screen = true;
         self.fade_intro(false, 20);
         self.begin_match(st);
-        self.queued_mode = Some(mode);
+        self.queued_mode = (mode != Mode::Versus).then_some(mode);
         true
     }
 
@@ -416,6 +416,7 @@ impl Game {
             Mode::Practice => self.start_practice(),
             // the colony as tuned beforehand (the defaults unless set)
             Mode::Anthill => self.start_anthill(self.anthill.cfg.clone()),
+            Mode::Versus => true,
         };
         if up {
             self.queued_mode = None;
@@ -881,4 +882,6 @@ impl Game {
 pub enum Mode {
     Practice,
     Anthill,
+    /// a plain match (nothing to switch on once it's up)
+    Versus,
 }

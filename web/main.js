@@ -20,7 +20,7 @@ addEventListener("error", (e) => nb.errors.push(String(e.message || e)));
 addEventListener("unhandledrejection", (e) => nb.errors.push(String(e.reason)));
 let engine = null;
 
-const loadPrefs = () => { if (fresh) return "{}"; try { return localStorage.getItem(PREFS_KEY) || "{}"; } catch { return "{}"; } };
+const loadPrefs = () => { if (params.has("rec")) return `{"FirstLaunch":1}`; /* the recorder: the same match whatever this browser saved */ if (fresh) return "{}"; try { return localStorage.getItem(PREFS_KEY) || "{}"; } catch { return "{}"; } };
 const savePrefs = (s) => { if (fresh) return; try { localStorage.setItem(PREFS_KEY, s); } catch {} };
 
 // ---------------------------------------------------------------- audio ---
@@ -1174,7 +1174,7 @@ async function main() {
   perf.show(params.has("perf"));
   addEventListener("keydown", (e) => { if (e.code === "F3") { e.preventDefault(); perf.show(!perf.shown); } });
   const loop = (now) => {
-    if (nb.capturing) { last = now; requestAnimationFrame(loop); return; } // the recorder drives the frames
+    if (nb.capturing || params.has("rec")) { last = now; requestAnimationFrame(loop); return; } // the recorder drives the frames
     const dtFrame = now - last;
     acc += Math.min(0.25, dtFrame / 1000); last = now;
     let steps = 0;
@@ -1233,23 +1233,36 @@ async function main() {
   // ---- recording (recordings/tool): offline capture at an exact frame rate,
   // each frame posted to the recorder's server, and the same audio code
   // rendered offline from a per-frame log of what the live loop would play
-  nb.capture = async (seconds, fps) => {
-    nb.capturing = true; let a2 = 0; nb.audioLog = []; engine.drain_sounds(); engine.drain_cues(); // nothing from before the take
+  // the trailer (?rec&seed=S): a god match on a map, replayed tick for tick
+  // from the title, as the headless sweep played it
+  // (`upTo` is a game tick, as the play log counts them)
+  nb.godSetup = (map, upTo) => {
+    for (let i = 0; i < 40; i++) engine.frame();
+    if (!engine.god_match(map)) return false;
+    while (engine.tick() < upTo) engine.frame();
+    engine.drain_sounds(); engine.drain_cues();
+    return true;
+  };
+  nb.godPlays = (map, ticks) => { nb.godSetup(map, ticks); return engine.plays(); };
+  // `speed(i)`: game seconds per real second at output frame i (slow-mo)
+  nb.capture = async (seconds, fps, speed = () => 1) => {
+    nb.capturing = true; let a2 = 0; nb.audioLog = []; nb.soulsAt = []; engine.drain_sounds(); engine.drain_cues(); // nothing from before the take
     for (let i = 0; i < seconds * fps; i++) {
-      a2 += 1 / fps;
+      a2 += speed(i) / fps;
       while (a2 >= TICK) { engine.frame(); a2 -= TICK; nb.ticks++; }
       nb.audioLog.push([engine.drain_sounds(), engine.drain_cues(), engine.mix(), engine.music()]);
       if (nb.ticks !== textsAt) { const v = engine.texts_version(); if (v !== textsVer) { texts = JSON.parse(engine.texts()); textsVer = v; } textsAt = nb.ticks; }
       engine.set_subtick(a2 / TICK);
       const len = engine.render();
       r.draw(new Float32Array(wasm.memory.buffer, engine.records_ptr(), len), texts, family, cssW(), cssH());
+      (nb.soulsAt ||= [])[i] = Array.from(engine.souls_on_screen()).map((v) => Math.round(v));
       if (nb.capStop) break;
       // promise-based readback (toBlob is throttled in a hidden page)
       const bmp = await createImageBitmap(canvas);
       const oc = nb.oc || (nb.oc = new OffscreenCanvas(canvas.width, canvas.height)), ox = oc.getContext("2d");
       ox.drawImage(bmp, 0, 0); bmp.close();
       const blob = await oc.convertToBlob({ type: "image/jpeg", quality: 0.94 });
-      await fetch("/frame?i=" + i, { method: "POST", body: blob });
+      await fetch("/frame?i=" + i + "&take=" + (nb.take || "x"), { method: "POST", body: blob });
       nb.capFrame = i;
     }
     nb.capDone = true; nb.capturing = false;
@@ -1264,7 +1277,7 @@ async function main() {
       ctx.suspend(i / fps).then(() => {
         if (snd !== "[]") for (const [c, v] of JSON.parse(snd)) A.shot(c, v);
         if (q !== "[]") for (const [n, p, a] of JSON.parse(q)) A.cue(n, p, a);
-        A.mix(m); A.music(JSON.parse(mu));
+        A.mix(m); if (!nb.noMusic) A.music(JSON.parse(mu));
         ctx.resume();
       });
     });
@@ -1276,7 +1289,7 @@ async function main() {
     out.setUint32(24, rate, true); out.setUint32(28, rate * 4, true); out.setUint16(32, 4, true); out.setUint16(34, 16, true); w(36, "data"); out.setUint32(40, n * 4, true);
     let peak = 0;
     for (let k = 0; k < n; k++) { const a = Math.max(-1, Math.min(1, L[k])), b = Math.max(-1, Math.min(1, Rt[k])); peak = Math.max(peak, Math.abs(a), Math.abs(b)); out.setInt16(44 + k * 4, a * 32767, true); out.setInt16(46 + k * 4, b * 32767, true); }
-    await fetch("/audio", { method: "POST", body: out.buffer });
+    await fetch("/audio?take=" + (nb.take || "x"), { method: "POST", body: out.buffer });
     return { frames: log.length, buffers: A.buffers.size + "/" + A.files.length, peak: +peak.toFixed(3), errors: nb.errors.join(";") };
   };
   // target practice (menu entry, or ?practice): straight in, on Map 2

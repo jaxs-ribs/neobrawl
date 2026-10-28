@@ -369,6 +369,8 @@ impl Game {
             None
         };
         if dashed && self.w.position(node).x != -666.0 {
+            let at = self.w.position(node);
+            self.log_play(super::plays::Kind::Dash, Some(k), None, at, 0, 0.0, 0.0, "");
             let clip = self.menu.dash_clip.clone();
             self.play(&clip, 0.8);
             let dir = self.players[k].dash_dir;
@@ -866,12 +868,9 @@ impl Game {
             self.boxes[bi].carried_by = Some(node);
         }
         self.phys.set_ignore(b, node, true);
-        // pick-swing: grabbing a box refills the dash
-        let reset = self.input.desktop && self.players[k].dash_cd > 0;
-        if reset {
-            self.players[k].dash_cd = 0;
-        }
-        self.fx_pickup(k, b, reset);
+        let at = self.w.position(b);
+        self.log_play(super::plays::Kind::Pickup, Some(k), None, at, 0, 0.0, 0.0, "");
+        self.fx_pickup(k, b);
     }
 
     #[doc(hidden)]
@@ -956,6 +955,14 @@ impl Game {
             self.boxes[bi].bounces = 0;
             self.boxes[bi].spent = false;
             self.boxes[bi].thrown_charge = self.players[k].charge_timer;
+            self.next_throw += 1;
+            let (id, at) = (self.next_throw, self.w.position(b));
+            self.boxes[bi].throw_id = id;
+            self.boxes[bi].thrown_at = self.frame;
+            self.boxes[bi].thrown_from = at;
+            let ch = self.players[k].charge_timer;
+            let note = self.throw_note.remove(&k).unwrap_or("");
+            self.log_play(super::plays::Kind::Throw, Some(k), None, at, id, ch, 0.0, note);
             if !single {
                 self.throw_log.push(self.players[k].charge_timer);
             }

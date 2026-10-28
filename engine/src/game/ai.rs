@@ -28,6 +28,8 @@ pub struct Wanderer {
     rest: u32,
     /// steering, refreshed every third tick (raycasts aren't free)
     dir: V3,
+    /// the god's memory (level 5)
+    pub(super) god: super::god::Mind,
 }
 
 const MASK: u32 = 1 | (1 << 8) | (1 << crate::physics::LAYER_BOX);
@@ -130,11 +132,12 @@ fn flight_time(d: f32, v0: f32) -> Option<f32> {
 }
 
 /// The arena's solid shapes, gathered once per tick: (shape, centre, radius).
-pub(super) struct Solids(Vec<(crate::physics::Geo, f32, f32, f32)>);
+/// (shape, centre x, centre y, bounding radius, is a box)
+pub(super) struct Solids(pub(super) Vec<(crate::physics::Geo, f32, f32, f32, bool)>);
 
 impl Solids {
     /// Is the corridor from `from` to `to`, `half` wide each side, clear?
-    fn clear(&self, from: V3, to: V3, half: f32) -> bool {
+    pub(super) fn clear(&self, from: V3, to: V3, half: f32) -> bool {
         let d = to - from;
         let l = (d.x * d.x + d.y * d.y).sqrt();
         if l < 1e-3 {
@@ -142,7 +145,7 @@ impl Solids {
         }
         let dir = [d.x / l, d.y / l];
         let side = [-dir[1], dir[0]];
-        for (g, cx, cy, r) in &self.0 {
+        for (g, cx, cy, r, _) in &self.0 {
             // corridor vs bounding circle first
             let (ox, oy) = (cx - from.x, cy - from.y);
             let along = (ox * dir[0] + oy * dir[1]).clamp(0.0, l);
@@ -182,7 +185,7 @@ impl Game {
                     (cx, cy, r)
                 }
             };
-            out.push((g, cx, cy, r));
+            out.push((g, cx, cy, r, w.nodes[i].layer == crate::physics::LAYER_BOX));
         }
         Solids(out)
     }
@@ -214,6 +217,13 @@ impl Game {
             let others: Vec<V3> = (0..self.players.len()).filter(|&o| o != k).map(|o| self.w.position(self.players[o].node)).filter(|p| p.x != -666.0).collect();
             let seed = (self.frame as u32).wrapping_mul(2654435761) ^ (slot as u32 * 7919);
             let carrying = self.players[k].picked_box.is_some();
+            if self.ai[slot].level >= 5 {
+                let mut w = std::mem::take(&mut self.ai[slot]);
+                let d = self.god_step(slot, k, &mut w.god, &solids);
+                self.input.direct[slot] = d;
+                self.ai[slot] = w;
+                continue;
+            }
             if self.ai[slot].level > 0 {
                 let mut w = std::mem::take(&mut self.ai[slot]);
                 let d = self.fight_step(slot, k, &mut w, &solids);

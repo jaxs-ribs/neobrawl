@@ -1,0 +1,138 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>NeoBrawl trailer compositor</title>
+<style>html,body{margin:0;background:#fbfbfb}canvas{display:block}</style></head>
+<body><canvas id="c" width="1920" height="1080"></canvas>
+<script type="module">
+// The trailer compositor: an edit (edit.json) of shots cut from recorded
+// takes, drawn frame by frame with the game's type and motion graphics on
+// top - punch-ins on hits, white flashes on cuts, labels that track in, and
+// title cards - then posted to the recorder as the trailer's frames.
+const c = document.getElementById("c"), x = c.getContext("2d");
+const W = 1920, H = 1080, INK = "#111", BG = "#fbfbfb";
+const ease = (u) => 1 - Math.pow(1 - Math.min(1, Math.max(0, u)), 3);
+const back = (u) => { u = Math.min(1, Math.max(0, u)); const s = 1.7; return 1 + (s + 1) * Math.pow(u - 1, 3) + s * Math.pow(u - 1, 2); };
+const font = new FontFace("ALCUBIERRE", "url(/assets/fonts/ALCUBIERRE.ttf)");
+await font.load(); document.fonts.add(font);
+
+const edit = await (await fetch("/rec/edit.json?" + Date.now())).json();
+const metas = {};
+for (const s of edit.shots) metas[s.take] ??= await (await fetch(`/rec/${s.take}/meta.json`)).json();
+// a virtual camera per take: in on the two souls (both in frame, with room),
+// smoothed over half a second so it glides, holding still while one is dead
+for (const m of Object.values(metas)) {
+  const n = m.tickOf.length, raw = [];
+  let last = [W / 2, H / 2, 1];
+  for (let i = 0; i < n; i++) {
+    const s = m.souls?.[i] || [], alive = [];
+    for (let k = 0; k + 2 < s.length; k += 3) if (s[k + 2]) alive.push([s[k] * W / m.size[0], H - s[k + 1] * H / m.size[1]]);
+    if (alive.length === 2) {
+      const [a, b] = alive, cx = (a[0] + b[0]) / 2, cy = (a[1] + b[1]) / 2;
+      const z = Math.max(1, Math.min(1.3, 0.55 * W / (Math.abs(a[0] - b[0]) + 1), 0.6 * H / (Math.abs(a[1] - b[1]) + 1)));
+      last = [cx, cy, z];
+    } else if (alive.length === 1) last = [last[0] * 0.9 + alive[0][0] * 0.1, last[1] * 0.9 + alive[0][1] * 0.1, last[2] * 0.97 + 0.03];
+    raw.push(last);
+  }
+  const R = 18;
+  m.cam = raw.map((_, i) => {
+    let sx = 0, sy = 0, sz = 0, w = 0;
+    for (let j = Math.max(0, i - R); j <= Math.min(n - 1, i + R); j++) { const k = 1 - Math.abs(j - i) / (R + 1); sx += raw[j][0] * k; sy += raw[j][1] * k; sz += raw[j][2] * k; w += k; }
+    return [sx / w, sy / w, sz / w];
+  });
+}
+const cache = new Map();
+const frame = (take, i) => {
+  const key = take + "/" + i;
+  if (!cache.has(key)) {
+    cache.set(key, new Promise((res) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => res(null); im.src = `/rec/${take}/frames/${String(i).padStart(5, "0")}.jpg`; }));
+    if (cache.size > 400) cache.delete(cache.keys().next().value);
+  }
+  return cache.get(key);
+};
+// the output frame of a take where game tick `tick` shows
+const frameOfTick = (m, tick) => { const i = m.tickOf.findIndex((t) => t >= tick); return i < 0 ? m.tickOf.length - 1 : i; };
+
+function spaced(text, px, y, size, track, align = "center", alpha = 1, color = INK, weight = "") {
+  x.font = `${weight} ${size}px ALCUBIERRE`; x.fillStyle = color; x.globalAlpha = alpha; x.textBaseline = "middle";
+  const chars = [...text], ws = chars.map((ch) => x.measureText(ch).width);
+  const total = ws.reduce((a, b) => a + b, 0) + track * (chars.length - 1);
+  let cx = align === "center" ? px - total / 2 : align === "right" ? px - total : px;
+  chars.forEach((ch, i) => { x.fillText(ch, cx, y); cx += ws[i] + track; });
+  x.globalAlpha = 1;
+  return total;
+}
+
+async function draw(t) {
+  x.fillStyle = BG; x.fillRect(0, 0, W, H);
+  const shot = edit.shots.find((s) => t >= s.at && t < s.at + s.dur);
+  if (shot) {
+    const m = metas[shot.take];
+    const local = t - shot.at;
+    // `in` is seconds into the take; or line its hit up with `hitAt` (s into the shot)
+    const inF = shot.hitAt != null ? frameOfTick(m, shot.hit) - Math.round(shot.hitAt * m.fps) : Math.round((shot.in || 0) * m.fps);
+    const fi = Math.max(0, Math.min(m.tickOf.length - 1, inF + Math.round(local * m.fps)));
+    const im = await frame(shot.take, fi);
+    // punch: a quick zoom toward the hit and back, plus a slow push the whole shot
+    let z = 1 + (shot.push ?? 0.04) * (local / shot.dur), sx = 0, sy = 0;
+    if (shot.hitAt != null) {
+      const d = local - shot.hitAt;
+      if (d >= 0 && d < 0.5) { const k = Math.exp(-d * 9); z += 0.06 * k; sx = Math.sin(d * 90) * 14 * k; sy = Math.cos(d * 77) * 10 * k; }
+    }
+    if (im) {
+      // the virtual camera: zoom about the souls' midpoint, kept covering the frame
+      const [cx, cy, cz] = m.cam[fi] || [W / 2, H / 2, 1];
+      const zz = z * cz, w = W * zz, h = H * zz;
+      let ox = W / 2 - cx * zz, oy = H / 2 - cy * zz;
+      ox = Math.min(0, Math.max(W - w, ox)); oy = Math.min(0, Math.max(H - h, oy));
+      x.drawImage(im, ox + sx, oy + sy, w, h);
+    }
+    // the play's name, tracking in at the bottom left
+    if (shot.label) {
+      const u = ease((local - 0.08) / 0.35), out = 1 - ease((local - (shot.dur - 0.25)) / 0.25);
+      const a = Math.min(u, out);
+      // a white plate that wipes in under the type
+      x.font = "56px ALCUBIERRE";
+      const lw = [...shot.label].reduce((w, ch) => w + x.measureText(ch).width + 18, 0) + 40;
+      x.font = "20px ALCUBIERRE";
+      const sw = shot.sub ? [...shot.sub].reduce((w, ch) => w + x.measureText(ch).width + 7, 0) + 40 : 0;
+      x.fillStyle = BG; x.globalAlpha = 0.94;
+      x.fillRect(64, H - 196, Math.max(lw, sw) * ease((local - 0.02) / 0.3) * out, shot.sub ? 132 : 96); x.globalAlpha = 1;
+      x.fillStyle = INK; x.globalAlpha = a; x.fillRect(84, H - 180, 60 * a, 4); x.globalAlpha = 1;
+      spaced(shot.label, 84, H - 132, 56, 18 + 22 * (1 - u), "left", a);
+      if (shot.sub) spaced(shot.sub, 84, H - 86, 20, 7, "left", a * 0.6);
+    }
+    // a white flash on the cut
+    if (shot.flash !== false && local < 0.12) { x.fillStyle = BG; x.globalAlpha = 1 - local / 0.12; x.fillRect(0, 0, W, H); x.globalAlpha = 1; }
+  }
+  for (const k of edit.cards.filter((k) => t >= k.at && t < k.at + k.dur)) {
+    const local = t - k.at, u = local / k.dur;
+    const inn = back(local / 0.45), out = 1 - ease((local - (k.dur - 0.3)) / 0.3);
+    if (k.bg) { x.fillStyle = BG; x.globalAlpha = k.bg === "fade" ? Math.min(1, local / 0.2) * out : 1; x.fillRect(0, 0, W, H); x.globalAlpha = 1; }
+    const a = Math.min(1, local / 0.15) * out;
+    if (k.style === "title") {
+      spaced(k.text, W / 2, H / 2 - (k.sub ? 30 : 0), 120, 60 - 24 * inn + 8 * u, "center", a);
+      if (k.sub) spaced(k.sub, W / 2, H / 2 + 80, 22, 12, "center", a * 0.6);
+    } else if (k.style === "word") {
+      // one word, big, punched in on the beat
+      const s = 1 + 0.25 * (1 - inn);
+      x.save(); x.translate(W / 2, H / 2); x.scale(s, s);
+      spaced(k.text, 0, 0, 92, 34, "center", a);
+      x.restore();
+    } else {
+      spaced(k.text, W / 2, H * 0.84, 30, 14 + 10 * (1 - inn), "center", a * 0.85);
+    }
+  }
+}
+
+window.render = async (from = 0, to = edit.length) => {
+  const fps = edit.fps;
+  for (let f = Math.round(from * fps); f < Math.round(to * fps); f++) {
+    await draw(f / fps);
+    const blob = await c.convertToBlob?.({ type: "image/jpeg", quality: 0.95 }) ?? await new Promise((r) => c.toBlob(r, "image/jpeg", 0.95));
+    await fetch(`/frame?i=${f}&take=${edit.out || "trailer"}`, { method: "POST", body: blob });
+    window.done = f;
+  }
+  return window.done;
+};
+window.preview = (t) => draw(t);
+window.ready = true;
+</script></body></html>

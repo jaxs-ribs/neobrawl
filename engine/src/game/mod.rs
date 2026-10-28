@@ -3,6 +3,7 @@
 //! methods on `Game`; coroutines become `Task`s stepped once per FixedUpdate.
 
 pub mod ai;
+mod god;
 mod body;
 mod boxes;
 mod fx;
@@ -12,6 +13,7 @@ pub use menu::Mode;
 mod players;
 pub mod practice;
 pub mod anthill;
+pub mod plays;
 mod tasks;
 
 use std::collections::BTreeMap;
@@ -223,6 +225,16 @@ pub struct Game {
     /// a mode asked for from the title, started once its arena is up
     pub queued_mode: Option<menu::Mode>,
     /// per-phase timings (RefCell: render takes &self)
+    /// the play log (only while recording: rollback clones the game)
+    pub recording: bool,
+    pub plays: Vec<plays::Play>,
+    pub next_throw: u32,
+    /// mixed into the god AI's choices so each match seed plays its own match
+    pub ai_salt: u32,
+    /// what the next throw is for, per player (the god's strategy name)
+    pub throw_note: HashMap<usize, &'static str>,
+    pub graze_best: HashMap<(u32, usize), (f32, V3, u64)>,
+    pub graze_done: crate::det::HashSet<(u32, usize)>,
     pub prof: std::cell::RefCell<crate::prof::Prof>,
 }
 
@@ -294,6 +306,13 @@ impl Game {
             paused: false,
             practice: Default::default(),
             anthill: Default::default(),
+            recording: false,
+            plays: Vec::new(),
+            next_throw: 0,
+            ai_salt: 0,
+            throw_note: HashMap::default(),
+            graze_best: HashMap::default(),
+            graze_done: Default::default(),
             prof: Default::default(),
         };
         for i in 0..g.w.nodes.len() {
@@ -351,6 +370,7 @@ impl Game {
         self.start_queued_mode();
         self.practice_step();
         self.anthill_step();
+        self.watch_grazes();
         lap(self, 0);
         self.frame += 1;
         self.run_enables();

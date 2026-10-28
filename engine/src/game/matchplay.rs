@@ -175,6 +175,15 @@ impl Game {
         });
         let Some(d) = dm else { return };
         self.fx_kill(player, killer);
+        // a kill refills the killer's dash: kills chain
+        let at = self.w.position(player);
+        if let Some(&kk) = self.player_of.get(&killer) {
+            if self.input.desktop && self.players[kk].dash_cd > 0 {
+                self.players[kk].dash_cd = 0;
+                self.fx_refill(kk, at);
+                self.log_play(super::plays::Kind::Refill, Some(kk), None, at, 0, 0.0, 0.0, "");
+            }
+        }
         self.attach_camera(d, false);
         // showScore
         if self.deaths[d].double {
@@ -197,6 +206,11 @@ impl Game {
         self.phys.forget(player);
         self.last_killer.insert(player, killer);
         self.tasks.push(Task::Respawn { dm: d, player, wait: ticks(RESPAWN_SECS) });
+    }
+
+    /// `player` (a soul node) killed by `killer`, for tests.
+    pub fn kill_pub(&mut self, player: usize, killer: usize) {
+        self.death(player, Some(killer));
     }
 
     pub(super) fn attach_camera(&mut self, d: usize, on: bool) {

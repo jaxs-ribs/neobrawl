@@ -315,7 +315,21 @@ impl Game {
         self.cue("assemble", mid, (sprites.len() as f32 / 40.0).clamp(0.3, 1.0));
     }
 
-    pub(super) fn fx_pickup(&mut self, k: usize, b: usize, reset: bool) {
+    /// The dash comes back: lightning cracks from `from` into the soul.
+    pub(super) fn fx_refill(&mut self, k: usize, from: V3) {
+        let Some(p) = self.soul_pos(k) else { return };
+        let mut hot = self.soul_color(self.players[k].node);
+        hot[3] = 1.0;
+        self.motion.arc(false, from, p, 0.06, 0.18, 0.28, hot);
+        self.motion.arc(false, from, p, 0.03, 0.35, 0.22, INK);
+        self.motion.flash(false, p, 0.9, 0.3, hot);
+        self.motion.trace_circle(false, 0.0, p, 0.34, std::f32::consts::FRAC_PI_2, 0.035, 0.3, hot);
+        self.motion.burst(false, p, 10, 7.0, 0.05, 0.35, hot, None);
+        self.cue("refill", p, 1.0);
+        self.fx_dash_ready(k);
+    }
+
+    pub(super) fn fx_pickup(&mut self, k: usize, b: usize) {
         let Some(p) = self.soul_pos(k) else { return };
         let bp = self.w.position(b);
         let col = self.soul_color(self.players[k].node);
@@ -324,18 +338,6 @@ impl Game {
         }
         self.motion.ring(false, bp, 0.15, 0.55, 0.035, 0.3, col);
         self.body_land(k, 0.5);
-        if reset {
-            // the dash comes back: lightning cracks from the box into the soul
-            let mut hot = col;
-            hot[3] = 1.0;
-            self.motion.arc(false, bp, p, 0.06, 0.18, 0.28, hot);
-            self.motion.arc(false, bp, p, 0.03, 0.35, 0.22, INK);
-            self.motion.flash(false, p, 0.9, 0.3, hot);
-            self.motion.trace_circle(false, 0.0, p, 0.34, std::f32::consts::FRAC_PI_2, 0.035, 0.3, hot);
-            self.motion.burst(false, p, 10, 7.0, 0.05, 0.35, hot, None);
-            self.cue("refill", p, 1.0);
-            self.fx_dash_ready(k);
-        }
         self.motion.last_action = self.motion.now;
     }
 
