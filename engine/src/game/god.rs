@@ -14,9 +14,12 @@
 //! - chain: a kill gave the dash back; go straight for the next one
 //! - matrix: a dodge left to the very last instant
 //!
-//! It sees boxes like the souls do: a direct throw after 2 ticks, a box
-//! coming off a wall only 6 ticks after the bounce (round a corner is
-//! where a god can still be caught).
+//! It plays like a very good human, not a machine: it sees the other soul
+//! 120 ms late (and carries it forward), notices a throw after ~180 ms and
+//! a box off a wall after ~280 ms, turns its aim at a hand's speed and lets
+//! go only once it has settled, misses by a hair now and then, jukes out of
+//! a loaded aim before the throw comes, and holds a movement plan for a
+//! beat instead of twitching every tick.
 
 use crate::motion::{hash, hf};
 use crate::shared::math::{v3, V3};
@@ -30,8 +33,13 @@ const HIT_R: f32 = 0.6;
 /// Box drag: speed falls 5 per unit travelled.
 const DRAG: f32 = 5.0;
 /// Seen after this many ticks: a direct throw, a box off a wall.
-const SEE_DIRECT: f32 = 2.0;
-const SEE_BANK: f32 = 6.0;
+const SEE_DIRECT: f32 = 9.0;
+const SEE_BANK: f32 = 14.0;
+/// the other soul is seen this many ticks late
+const LAG: usize = 6;
+/// the aim's top turn (rad per tick) and how close counts as on target
+const TURN: f32 = 0.2;
+const ON_AIM: f32 = 0.05;
 const WALK: f32 = 8.0;
 const DASH_V: f32 = super::players::DASH_SPEED;
 const DASH_LEN: f32 = DASH_V * super::players::DASH_TICKS as f32 * DT;
@@ -61,6 +69,15 @@ pub struct Mind {
     /// last intent logged (no repeats every tick)
     said: &'static str,
     said_at: u64,
+    /// what it has seen of the other soul (newest last), for the late view
+    seen: std::collections::VecDeque<V3>,
+    /// where its aim points now, the shot it is lining up, and for how long it's been on
+    aim_cur: V3,
+    lining: Option<(V3, &'static str)>,
+    settled: u32,
+    /// a movement plan held for a beat
+    plan_mv: V3,
+    plan_mv_until: u64,
 }
 
 /// One straight stretch of a box's flight: from a to b, times since release.
@@ -255,7 +272,26 @@ impl Game {
 
         // the enemy: perfect information, velocity from the last tick
         let ek = (0..self.players.len()).find(|&o| o != k && !self.players[o].playback && !self.players[o].single && self.w.position(self.players[o].node).x != -666.0);
-        let enemy = ek.map(|o| (o, self.w.position(self.players[o].node)));
+        let enemy_now = ek.map(|o| (o, self.w.position(self.players[o].node)));
+        // seen late: where it was LAG ticks ago, carried forward at the speed it had then
+        if let Some((_, p)) = enemy_now {
+            m.seen.push_back(p);
+            while m.seen.len() > LAG + 4 {
+                m.seen.pop_front();
+            }
+        } else {
+            m.seen.clear();
+        }
+        let enemy = enemy_now.map(|(o, p)| {
+            let n = m.seen.len();
+            if n < LAG + 4 {
+                return (o, p);
+            }
+            let (old, older) = (m.seen[n - 1 - LAG], m.seen[n - 4 - LAG]);
+            let v = (old - older) * (1.0 / (3.0 * DT));
+            let v = if v.length() > 12.0 { v * (12.0 / v.length()) } else { v };
+            (o, old + v * (LAG as f32 * DT))
+        });
         if let Some((_, ep)) = enemy {
             if let Some(lp) = m.last_enemy {
                 let v = (ep - lp) * (1.0 / DT);
@@ -365,8 +401,46 @@ impl Game {
                 }
             }
         }
+        // a loaded aim on us: juke before it comes (a read, not a reflex;
+        // sometimes a feint, sometimes the same way twice)
+        if let Some((eo, ep)) = enemy {
+            let p = &self.players[eo];
+            let to_me = me - ep;
+            let l = to_me.length().max(1e-3);
+            let lined = (p.touch[1].x * to_me.x + p.touch[1].y * to_me.y) / l;
+            if p.picked_box.is_some() && p.charge_timer > 20.0 && lined > 0.94 && t >= m.dodge_until && hf(seed ^ 0xa1) * 0.5 + 0.5 < 0.07 * (p.charge_timer / 90.0) {
+                let side = v3(-to_me.y / l, to_me.x / l, 0.0) * if hash(seed ^ 0xa2) & 1 == 0 { 1.0 } else { -1.0 };
+                let side = if walls.clear(me, me + side * 1.2, 0.25) { side } else { side * -1.0 };
+                m.dodge = side;
+                m.dodge_until = t + 6 + (hash(seed ^ 0xa3) % 6) as u64;
+                if p.charge_timer > 60.0 && dash_ready && hash(seed ^ 0xa4) % 4 == 0 {
+                    dash = true;
+                }
+                self.say(k, m, "juke");
+            }
+        }
         if t < m.dodge_until {
             mv = m.dodge;
+        }
+
+        // lining up: the aim turns at a hand's speed; it goes once it has settled
+        if let Some((goal, why)) = m.lining {
+            if !carrying {
+                m.lining = None;
+            } else {
+                let cur = m.aim_cur.y.atan2(m.aim_cur.x);
+                let mut d = goal.y.atan2(goal.x) - cur;
+                d = d.sin().atan2(d.cos());
+                let na = cur + d.clamp(-TURN, TURN);
+                m.aim_cur = v3(na.cos(), na.sin(), 0.0);
+                m.settled = if d.abs() < ON_AIM { m.settled + 1 } else { 0 };
+                if m.settled >= 2 {
+                    m.lining = None;
+                    m.shot = Some((m.aim_cur, 1, why));
+                } else {
+                    return Self::pack(mv, V2 { x: m.aim_cur.x, y: m.aim_cur.y }, true, dash);
+                }
+            }
         }
 
         // 2) a held shot: aim stays put, then it goes
@@ -399,8 +473,16 @@ impl Game {
         let tangent = v3(-dir.y, dir.x, 0.0) * m.strafe;
 
         if carrying {
-            // the blade points at them while it charges
-            aim = V2 { x: dir.x, y: dir.y };
+            // the blade follows them while it charges, at a hand's speed
+            if m.aim_cur == V3::ZERO {
+                m.aim_cur = dir;
+            }
+            let cur = m.aim_cur.y.atan2(m.aim_cur.x);
+            let mut dd = dir.y.atan2(dir.x) - cur;
+            dd = dd.sin().atan2(dd.cos());
+            let na = cur + dd.clamp(-TURN, TURN);
+            m.aim_cur = v3(na.cos(), na.sin(), 0.0);
+            aim = V2 { x: m.aim_cur.x, y: m.aim_cur.y };
             let v0 = (charge * 1.11).clamp(20.0, 100.0);
             // where we'll be at release (2 ticks of aim hold)
             let my_v = if self.players[k].dash_t > 0 { v3(self.players[k].dash_dir.x, self.players[k].dash_dir.y, 0.0) * DASH_V } else { V3::ZERO };
@@ -427,8 +509,11 @@ impl Game {
                             "snipe"
                         };
                         self.say(k, m, why);
-                        m.shot = Some((d, 1, why));
-                        aim = V2 { x: d.x, y: d.y };
+                        // a hair off, like a hand
+                        let err = hf(seed ^ 0x5e) * 0.035;
+                        let (sn, cs) = err.sin_cos();
+                        m.lining = Some((v3(d.x * cs - d.y * sn, d.x * sn + d.y * cs, 0.0), why));
+                        m.settled = 0;
                         return Self::pack(mv, aim, true, dash);
                     }
                 }
@@ -501,6 +586,18 @@ impl Game {
         }
         if m.plan != "" && t >= m.plan_until {
             m.plan = "";
+        }
+        // a plan held for a beat, unless something urgent cut in
+        if t < m.dodge_until || dash {
+            m.plan_mv_until = 0;
+        } else if t < m.plan_mv_until {
+            mv = m.plan_mv;
+        } else {
+            m.plan_mv = mv;
+            m.plan_mv_until = t + 4 + (hash(seed ^ 0xb1) % 5) as u64;
+        }
+        if !carrying {
+            m.aim_cur = V3::ZERO;
         }
         Self::pack(mv, aim, aiming, dash)
     }

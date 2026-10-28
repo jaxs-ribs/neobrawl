@@ -1,11 +1,13 @@
-"""The editor: cuts the recorded takes into a trailer without new footage.
+"""The editor: cuts the long gameplay takes (windows.py, make.py long) into
+the trailer, without new footage.
 
-It reads what happens in every take (from the sweep's play logs: jukes,
-dashes, banks, clashes, throws, kills), cuts each take into plays - stretches
-with a beginning and a turn, not just a kill - and lays them on the theme:
-irregular lengths counted in eighths, cuts on action, the turn of each play
-on a beat, and an order that never repeats a take, an arena, a framing or a
-winner's colour back to back, and keeps motion flowing across cuts.
+Gameplay is the subject: shots are stretches of play chosen for what's going
+on in them (jukes, near misses, banks, clashes, dashes, throws), entered and
+left on action, in irregular lengths counted in eighths of the theme. A kill
+can happen inside a shot, but the cut comes a beat after it - a soul that's
+dead is never on screen. The order never repeats a take or arena back to
+back and keeps motion flowing across cuts; the framing follows what the
+shot holds.
 
     python3 cut.py   -> recordings/trailer/edit.json (then compose.mjs, make.py mix)
 """
@@ -19,34 +21,39 @@ E8 = BEAT / 2
 B0 = beats["beat0"]
 FPS = 60
 LENGTH = 32 * beats["bar"]
-t8 = lambda n: B0 + n * E8  # time of eighth n
-old = json.load(open(os.path.join(REC, "edit.json")))
-plan_shots = {s["take"]: s for s in old["shots"]} if "clip" in old["shots"][0] else json.load(open(os.path.join(REC, "takes.json")))
-json.dump(plan_shots, open(os.path.join(REC, "takes.json"), "w"))
+t8 = lambda n: B0 + n * E8
+W = {"graze": 6, "clash": 6, "bounce": 4, "juke": 2.5, "throw": 2, "dash": 1.5, "kill": 4}
+AFTER_KILL = 15  # frames of a kill's burst we may keep
 
-# ---- every take: its frames, its events, and the plays in it
+# ---- the takes: frames, who's alive, and what happens when
 takes = {}
-for name, s in plan_shots.items():
+for i, w in enumerate(json.load(open(os.path.join(REC, "windows.json")))):
+    name = f"w{i}"
     m = json.load(open(os.path.join(REC, name, "meta.json")))
-    c = s["clip"]
-    log = json.load(open(os.path.join(REC, "sweep", f"s{c['seed']}-m{c['map']}.json")))
-    t = m["tickOf"]
-    fr = lambda tick: next((i for i, x in enumerate(t) if x >= tick), len(t) - 1)
+    t, souls = m["tickOf"], m["souls"]
+    n = len(t)
+    fr = lambda tick: next((j for j, x in enumerate(t) if x >= tick), n - 1)
+    log = json.load(open(os.path.join(REC, "sweep", f"s{w['seed']}-m{w['map']}.json")))
     evs = []
     for p in log:
-        if t[0] + 2 <= p["t"] <= t[-1] - 2 and p["kind"] in ("dash", "throw", "kill", "graze", "bounce", "clash"):
-            who = p["other"] if p["kind"] == "graze" else p["who"]
-            evs.append({"f": fr(p["t"]), "kind": p["kind"], "who": who, "throw": p["throw"]})
-    # the souls' motion per frame (screen px), for direction matching
-    souls = m["souls"]
-    takes[name] = {"n": len(t), "map": c["map"], "seed": c["seed"], "evs": evs, "souls": souls, "size": m["size"], "slowmo": bool(m["spans"])}
+        if not (t[0] + 1 <= p["t"] <= t[-1] - 1):
+            continue
+        kind = "juke" if p["kind"] == "intent" and p["note"] == "juke" else p["kind"]
+        if kind not in W or (kind == "kill" and p["who"] == p["other"]):
+            continue
+        who = p["other"] if kind == "graze" else p["who"]
+        evs.append({"f": fr(p["t"]), "kind": kind, "who": who, "victim": p["other"] if kind == "kill" else None})
+    alive = [bool(s[2] and s[5]) for s in souls]
+    # a kill's burst may stay on screen a moment; past that, dead time
+    ok = alive[:]
+    for e in evs:
+        if e["kind"] == "kill":
+            for j in range(max(0, e["f"] - 2), min(n, e["f"] + AFTER_KILL)):  # (frames are stamped a tick early)
+                ok[j] = True
+    takes[name] = {"n": n, "map": w["map"], "evs": evs, "ok": ok, "souls": souls}
 
-WEIGHT = {"graze": 5, "clash": 5, "bounce": 4, "dash": 1.5, "throw": 1.5, "kill": 2}
 
-
-def motion(tk, f, who):
-    """Screen direction the soul `who` is moving at frame f (unit vector or None)."""
-    k = 0 if who <= 4 else 1
+def motion(tk, f, k):
     s = tk["souls"]
     a, b = s[max(0, f - 4)], s[min(len(s) - 1, f + 4)]
     if not (a[k * 3 + 2] and b[k * 3 + 2]):
@@ -56,156 +63,168 @@ def motion(tk, f, who):
     return (dx / l, dy / l) if l > 8 else None
 
 
-def plays(name, tk):
-    """Candidate plays: around each interesting event, the stretch that sets
-    it up and resolves it; its kind, actor, turn frame and what it holds."""
-    out = []
-    evs = tk["evs"]
-    for e in evs:
-        if e["kind"] not in ("graze", "clash", "bounce", "kill", "dash"):
-            continue
-        turn = e["f"]
-        near = [x for x in evs if abs(x["f"] - turn) <= 70]
-        score = sum(WEIGHT[x["kind"]] for x in near)
-        kills = [x for x in near if x["kind"] == "kill"]
-        out.append({"take": name, "turn": turn, "kind": e["kind"], "who": e["who"], "score": score, "kill": bool(kills),
-                    "kill_f": kills[0]["f"] if kills else None, "map": tk["map"], "seed": tk["seed"],
-                    # where the play can start (the action before it) and end
-                    "lo": max(0, turn - 150), "hi": min(tk["n"] - 1, turn + 60), "events": near})
-    return out
+def score(tk, a, b):
+    """What a stretch holds: its events, entering and leaving on action, and
+    a kill only if the cut follows it."""
+    inside = [e for e in tk["evs"] if a <= e["f"] < b]
+    if not all(tk["ok"][a:b]):
+        return None, None
+    for e in inside:
+        if e["kind"] == "kill" and e["f"] < b - AFTER_KILL - 2:
+            return None, None  # the cut must come right after a kill
+    s = sum(W[e["kind"]] for e in inside)
+    if any(a <= e["f"] < a + 10 for e in inside):
+        s += 2  # in on action
+    if any(b - 10 <= e["f"] < b for e in inside):
+        s += 2  # out on action
+    # the shot's centre of gravity: its biggest moment
+    kill = [e for e in inside if e["kind"] == "kill"]
+    main = kill[0] if kill else max(inside, key=lambda e: (W[e["kind"]], -abs(e["f"] - (a + b) / 2)), default=None)
+    return s, main
 
 
-cands = [p for name, tk in takes.items() for p in plays(name, tk)]
-
-# ---- the rhythm: shot lengths in eighths, phrase by phrase, and what each wants
-# (kinds: "play" a whole play with its setup; "juke"/"clash"/"bank" a moment;
-# "any" whatever fits; "kill" a payoff). Irregular on purpose, like sentences.
-OPEN = [("open", 20)]  # bars 0-1: the dance before the drop, 20 eighths, into the drop
-A = [("play", 12), ("juke", 3), ("bank", 5), ("play", 10), ("clash", 4), ("any", 2), ("play", 9), ("juke", 3), ("kill", 4), ("play", 8)]
-B = [("bank", 4), ("juke", 2), ("play", 6), ("any", 2), ("clash", 3), ("play", 7), ("kill", 2), ("juke", 3), ("bank", 4), ("play", 9), ("any", 3), ("clash", 2), ("play", 6), ("juke", 3), ("kill", 4), ("play", 4)]
-HERO = [("hero", 32)]
-RUN = [("juke", 3), ("kill", 2), ("clash", 2), ("any", 3), ("bank", 2), ("kill", 2), ("juke", 2), ("any", 2), ("kill", 2), ("clash", 2), ("juke", 2), ("kill", 2), ("play", 6)]
-MONEY = [("money", 24)]
-for name, seq, want in (("A", A, 60), ("B", B, 64), ("RUN", RUN, 32)):
-    assert sum(L for _, L in seq) == want, (name, sum(L for _, L in seq))
-
-MODES = {"play": ["wide", "pair", "pull", "follow"], "juke": ["follow", "tight", "killer"], "bank": ["pair", "push", "wide"],
-         "clash": ["tight", "push", "pair"], "kill": ["push", "killer", "tight"], "any": ["pair", "follow", "wide"], "dash": ["follow"]}
-
-used = collections.defaultdict(list)  # take -> [(lo, hi)] frames already shown
-shots = []
+used = collections.defaultdict(list)
+shots, prev, n8, last_mode = [], None, 0, [None]
+mode_turn = collections.Counter()
 
 
-def overlaps(take, a, b):
-    return any(not (b < x or a > y) for x, y in used[take])
+def free(take, a, b):
+    return all(b + 4 < x or a - 4 > y for x, y in used[take])
 
 
-def choose(want, L, prev):
-    dur_f = round(L * E8 * FPS)
-    best = None
-    for p in cands:
-        tk = takes[p["take"]]
-        if p["take"] in ("hero", "money"):
-            continue
-        # what this slot wants
-        if want in ("juke", "clash", "bank", "kill", "dash"):
-            k = {"juke": "graze", "clash": "clash", "bank": "bounce", "kill": "kill", "dash": "dash"}[want]
-            if p["kind"] != k:
-                continue
-        # where the turn sits: plays give it room to build (late in the shot), moments hit early
-        lead = {"play": 0.72, "open": 0.95, "any": 0.55}.get(want, 0.4 if L > 2 else 0.3)
-        a = p["turn"] - round(dur_f * lead)
-        b = a + dur_f
-        if a < 0 or b >= tk["n"] or overlaps(p["take"], a - 6, b + 6):
-            continue
-        # a kill in a play is fine, but cut soon after it; kills shouldn't be everywhere
-        if p["kill"] and want not in ("kill", "any") and p["kill_f"] < b - 40:
-            continue
-        s = p["score"]
-        if want == "play":
-            s += 3 * sum(1 for e in p["events"] if a <= e["f"] <= b and e["kind"] in ("graze", "bounce", "clash", "dash"))
-            s -= 6 if p["kill"] else 0
-        if prev:
-            if prev["take"] == p["take"]:
-                s -= 100
-            if prev["map"] == p["map"]:
-                s -= 8
-            if prev.get("winner") is not None and prev["winner"] == p["who"]:
-                s -= 4  # the other soul gets its moment
-            # match on action: motion out of the last shot continues into this one
-            m0 = prev.get("dir_out")
-            m1 = motion(tk, a + 3, p["who"])
-            if m0 and m1:
-                s += 4 * (m0[0] * m1[0] + m0[1] * m1[1])
-        if best is None or s > best[0]:
-            best = (s, p, a, b)
-    return best
+def framing(main, L):
+    """Framing from what the shot holds and how long it is."""
+    kind = main["kind"] if main else "dash"
+    if L >= 9:
+        opts = ["wide", "pair", "pull"]
+    elif kind in ("graze", "juke", "dash"):
+        opts = ["follow", "killer", "pair"]
+    elif kind == "kill":
+        opts = ["push", "tight"]
+    elif kind in ("clash", "bounce"):
+        opts = ["pair", "push", "wide"]
+    else:
+        opts = ["pair", "follow"]
+    i = mode_turn[tuple(opts)]
+    m = opts[i % len(opts)]
+    if m == last_mode[0]:
+        m = opts[(i + 1) % len(opts)]
+    mode_turn[tuple(opts)] += 1
+    last_mode[0] = m
+    return m
 
 
-prev = None
-n8 = 0
-mode_i = collections.Counter()
-last_mode = None
-
-
-def place(want, L, p, a, b, trans="cut", heavy=False, mode=None):
-    global prev, n8, last_mode
+def place(take, a, L, main, trans="cut", mode=None, heavy=False):
+    global prev, n8
     at = 0.0 if n8 == 0 else t8(n8)
     dur = t8(n8 + L) - at
-    if mode is None:
-        opts = MODES.get(want, ["pair"])
-        mode = opts[mode_i[want] % len(opts)]
-        mode_i[want] += 1
-        if mode == last_mode:
-            mode = opts[mode_i[want] % len(opts)]
-            mode_i[want] += 1
-    last_mode = mode
-    roll = [0, 2.5, 0, -2, 0, 0, 3, 0, -2.5][len(shots) % 9] if mode in ("follow", "tight", "killer", "push") else 0
-    peak = (p["kill_f"] if (p["kill"] and want in ("kill", "money", "hero")) else p["turn"]) - a
-    shots.append({"take": p["take"], "from": a, "at": round(at, 4), "dur": round(dur, 4), "mode": mode, "roll": roll, "trans": trans,
-                  "act": 0 if p["who"] <= 4 else 1, "tgt": "other" if want in ("kill", "money") else "act", "peak": round(peak / FPS, 3), "heavy": heavy, "want": want})
-    used[p["take"]].append((a, b))
-    tk = takes[p["take"]]
-    prev = {"take": p["take"], "map": p["map"], "winner": p["who"], "dir_out": motion(tk, b - 3, p["who"])}
+    b = a + round(dur * FPS)
+    mode = mode or framing(main, L)
+    who = main["who"] if main else 4
+    act = 0 if who <= 4 else 1
+    tgt = "other" if main and main["kind"] == "kill" else "act"
+    roll = [0, 2, 0, -2.5, 0, 0, 2.5, 0][len(shots) % 8] if mode in ("follow", "killer", "tight") else 0
+    peak = (main["f"] - a) / FPS if main else dur * 0.6
+    shots.append({"take": take, "from": a, "at": round(at, 4), "dur": round(dur, 4), "mode": mode, "roll": roll, "trans": trans,
+                  "act": act, "tgt": tgt, "peak": round(peak, 3), "heavy": heavy or bool(main and main["kind"] == "kill"),
+                  "what": main["kind"] if main else "-"})
+    used[take].append((a, b))
+    tk = takes[take]
+    prev = {"take": take, "map": tk["map"], "dir": motion(tk, b - 3, act), "who": who, "end": b, "killed": bool(main and main["kind"] == "kill")}
     n8 += L
 
 
-def run(seq, first_trans="cut"):
-    for i, (want, L) in enumerate(seq):
-        got = choose(want, L, prev)
-        if got is None:
-            got = choose("any", L, prev)
-        _, p, a, b = got
-        place(want, L, p, a, b, trans=first_trans if i == 0 else "cut", heavy=(want == "kill" and L >= 2))
+def best_for(L, want=None, at_frac=None):
+    """The best free stretch of L eighths; `want` a kind of moment, landing
+    at `at_frac` of the shot if given."""
+    dur = (t8(n8 + L) - (0.0 if n8 == 0 else t8(n8)))
+    df = round(dur * FPS)
+    best = None
+    for name, tk in takes.items():
+        starts = range(0, tk["n"] - df, 3)
+        if want:
+            # a kill sits just before the cut (its burst, then out); other moments at at_frac
+            starts = [e["f"] - (df - 13 if e["kind"] == "kill" else round(df * at_frac)) for e in tk["evs"] if e["kind"] in want]
+        for a in starts:
+            b = a + df
+            if a < 0 or b > tk["n"] or not free(name, a, b):
+                continue
+            s, main = score(tk, a, b)
+            if s is None:
+                continue
+            if prev:
+                if prev["take"] == name:
+                    s -= 50
+                if prev["map"] == tk["map"]:
+                    s -= 4
+                if main and prev["who"] == main["who"]:
+                    s -= 1.5
+                m1 = motion(tk, a + 3, 0 if (main and main["who"] <= 4) else 1)
+                if prev["dir"] and m1:
+                    s += 3 * (prev["dir"][0] * m1[0] + prev["dir"][1] * m1[1])
+            # density per second, so short shots aren't starved
+            s = s / max(1.0, dur ** 0.6)
+            if want == ("kill",):
+                s += 20
+            if best is None or s > best[0]:
+                best = (s, name, a, main)
+    return best
 
 
-# the opener: the longest dance in the opener take, its turn on the drop
-op = max((p for p in cands if p["take"] == "opener"), key=lambda p: (p["kind"] in ("graze", "clash"), p["score"]))
-dur_f = round(t8(20) * FPS)
-a = max(0, op["turn"] - dur_f)
-place("open", 20, dict(op), a, a + dur_f, mode="pull", heavy=True)
+# the opener: 20 eighths of play, its biggest moment landing on the drop
+op = best_for(20, want=("clash", "bounce", "kill", "graze"), at_frac=t8(16) / t8(20))
+place(op[1], op[2], 20, op[3], mode="pull", heavy=True)
 cards = [{"text": "NEOBRAWL", "style": "drop", "at": t8(16), "dur": 2 * BEAT}]
-run(A, "flash")
-run(B, "whip")
-# the long take: the streak as one shot, held
-h = max((p for p in cands if p["take"] == "hero"), key=lambda p: p["score"])
-hk = takes["hero"]
-L = 32
-dur_f = round((t8(n8 + L) - t8(n8)) * FPS)
-a = max(0, hk["n"] - dur_f - 20)
-place("hero", L, dict(h, turn=a + dur_f - 30, kill=False), a, a + dur_f, trans="flash", mode="pair")
-run(RUN)
-# the breakdown: the money play, whole
-mp = max((p for p in cands if p["take"] == "money" and p["kill"]), key=lambda p: p["score"])
-mk = takes["money"]
-L = 24
-dur_f = round((t8(n8 + L) - t8(n8)) * FPS)
-a = max(0, min(mk["n"] - dur_f - 1, mp["kill_f"] - round(dur_f * 0.7)))
-place("money", L, mp, a, a + dur_f, trans="flash", heavy=True, mode="push")
+RHYTHM = [
+    # phrase A: establishing; plays given room
+    [12, 5, 7, 4, 10, 3, 9, 6, 4],
+    # phrase B: quicker, a few long breaths
+    [6, 4, 8, 3, 5, 10, 4, 3, 7, 6, 8],
+    # phrase C: the peak, tightening into the breakdown
+    [10, 6, 4, 8, 3, 3, 6, 4, 2, 2, 4, 12],
+]
+# where a kill lands (now and then, inside the play), per phrase
+KILLS = [{3, 7}, {2, 6, 9}, {1, 4, 7, 10}]
+cont = [0]
+
+
+def continuation(L):
+    """The same duel picked up again right after the respawn (a jump cut)."""
+    tk = takes[prev["take"]]
+    df = round((t8(n8 + L) - t8(n8)) * FPS)
+    a = prev["end"]
+    while a < tk["n"] and not (tk["souls"][a][2] and tk["souls"][a][5]):
+        a += 1
+    a += 2
+    if a + df > tk["n"] or not free(prev["take"], a, a + df):
+        return None
+    s, main = score(tk, a, a + df)
+    return None if s is None else (s, prev["take"], a, main)
+
+
+for k, phrase in enumerate(RHYTHM):
+    for i, L in enumerate(phrase):
+        got = None
+        if prev and prev["killed"] and cont[0] % 2 == 0 and L >= 3:
+            got = continuation(L)
+        if prev and prev["killed"]:
+            cont[0] += 1
+        if not got and i in KILLS[k]:
+            got = best_for(L, want=("kill",), at_frac=0.78)
+        if not got:
+            got = best_for(L)
+        if not got:
+            raise SystemExit(f"no footage left for a {L}-eighth shot")
+        place(got[1], got[2], L, got[3], trans=("flash", "whip", "flash")[k] if i == 0 else "cut")
+# the breakdown: long breaths of play, wide and held (one shot if the footage has it)
+for split in ([24], [14, 10], [8, 8, 8]):
+    if best_for(split[0]):
+        break
+for i, L in enumerate(split):
+    got = best_for(L)
+    place(got[1], got[2], L, got[3], trans="flash" if i == 0 else "cut", mode=["wide", "pull", "pair"][i])
 cards.append({"text": "NEOBRAWL", "sub": "JAXS-RIBS.GITHUB.IO/NEOBRAWL", "style": "title", "at": t8(n8), "dur": LENGTH - t8(n8) + 0.05})
-edit = {"fps": FPS, "length": LENGTH, "out": "trailer", "shots": shots, "cards": cards}
-json.dump(edit, open(os.path.join(REC, "edit.json"), "w"), indent=1)
-kinds = collections.Counter(s["want"] for s in shots)
-print(len(shots), "shots; ends", round(t8(n8), 2), "s;", dict(kinds))
+json.dump({"fps": FPS, "length": LENGTH, "out": "trailer", "shots": shots, "cards": cards}, open(os.path.join(REC, "edit.json"), "w"), indent=1)
+print(len(shots), "shots; ends", round(t8(n8), 2), "s; holds", dict(collections.Counter(s["what"] for s in shots)))
 for s in shots:
-    print(f'{s["at"]:6.2f} {s["dur"]:5.2f}s {s["want"]:6} {s["mode"]:7} {s["take"]:7} from {s["from"]}')
+    print(f'{s["at"]:6.2f} {s["dur"]:5.2f}s {s["take"]:4} from {s["from"]:4} {s["mode"]:7} {s["what"]}')

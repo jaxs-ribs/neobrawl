@@ -89,7 +89,13 @@ def takes():
     return out
 
 
-def record():
+def long_takes():
+    """The long takes: the densest stretches of play (windows.py), whole."""
+    ws = json.load(open(os.path.join(REC, "windows.json")))
+    return [(f"w{i}", dict(w, who=-1), w["from"], w["to"], []) for i, w in enumerate(ws)]
+
+
+def record(which=None):
     def one(it):
         i, (name, c, a, b, spans) = it
         real = sum(l / s - l for _, l, s in spans) / TPS + (b - a) / TPS + 0.6  # hit-stops hold the tick still
@@ -98,7 +104,7 @@ def record():
         return name, (r.stdout + r.stderr).strip().splitlines()[-1:]
     only = set(sys.argv[2:]) if sys.argv[1] == "record" else set()
     with cf.ThreadPoolExecutor(4) as ex:
-        for name, msg in ex.map(one, enumerate(t for t in takes() if not only or t[0] in only)):
+        for name, msg in ex.map(one, enumerate(t for t in (which or takes)() if not only or t[0] in only)):
             print(name, msg)
 
 
@@ -229,7 +235,7 @@ def mix():
     print(out)
 
 
-steps = {"check": check, "pick": pick, "record": record, "edit": edit, "compose": compose, "mix": mix}
+steps = {"long": lambda: record(long_takes), "check": check, "pick": pick, "record": record, "edit": edit, "compose": compose, "mix": mix}
 if sys.argv[1] == "all":
     for s in ["pick", "record", "edit", "compose", "mix"]:
         steps[s]()
