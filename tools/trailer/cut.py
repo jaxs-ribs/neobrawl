@@ -95,16 +95,12 @@ def free(take, a, b):
 def framing(main, L):
     """Framing from what the shot holds and how long it is."""
     kind = main["kind"] if main else "dash"
-    if L >= 9:
-        opts = ["wide", "pair", "pull"]
-    elif kind in ("graze", "juke", "dash"):
-        opts = ["follow", "killer", "pair"]
-    elif kind == "kill":
-        opts = ["push", "tight"]
-    elif kind in ("clash", "bounce"):
-        opts = ["pair", "push", "wide"]
+    if kind == "kill":
+        opts = ["push", "pair"]
+    elif L >= 14:
+        opts = ["pair", "wide", "pull"]
     else:
-        opts = ["pair", "follow"]
+        opts = ["pair", "follow", "wide"]
     i = mode_turn[tuple(opts)]
     m = opts[i % len(opts)]
     if m == last_mode[0]:
@@ -123,7 +119,7 @@ def place(take, a, L, main, trans="cut", mode=None, heavy=False):
     who = main["who"] if main else 4
     act = 0 if who <= 4 else 1
     tgt = "other" if main and main["kind"] == "kill" else "act"
-    roll = [0, 2, 0, -2.5, 0, 0, 2.5, 0][len(shots) % 8] if mode in ("follow", "killer", "tight") else 0
+    roll = 0
     peak = (main["f"] - a) / FPS if main else dur * 0.6
     shots.append({"take": take, "from": a, "at": round(at, 4), "dur": round(dur, 4), "mode": mode, "roll": roll, "trans": trans,
                   "act": act, "tgt": tgt, "peak": round(peak, 3), "heavy": heavy or bool(main and main["kind"] == "kill"),
@@ -175,16 +171,14 @@ def best_for(L, want=None, at_frac=None):
 op = best_for(20, want=("clash", "bounce", "kill", "graze"), at_frac=t8(16) / t8(20))
 place(op[1], op[2], 20, op[3], mode="pull", heavy=True)
 cards = [{"text": "NEOBRAWL", "style": "drop", "at": t8(16), "dur": 2 * BEAT}]
+# long, readable shots for people who've never seen the game: the plays breathe
 RHYTHM = [
-    # phrase A: establishing; plays given room
-    [12, 5, 7, 4, 10, 3, 9, 6, 4],
-    # phrase B: quicker, a few long breaths
-    [6, 4, 8, 3, 5, 10, 4, 3, 7, 6, 8],
-    # phrase C: the peak, tightening into the breakdown
-    [10, 6, 4, 8, 3, 3, 6, 4, 2, 2, 4, 12],
+    [16, 12, 16, 16],
+    [12, 16, 8, 12, 16],
+    [16, 12, 12, 8, 16],
 ]
 # where a kill lands (now and then, inside the play), per phrase
-KILLS = [{3, 7}, {2, 6, 9}, {1, 4, 7, 10}]
+KILLS = [{1, 3}, {1, 4}, {2, 4}]
 cont = [0]
 
 
@@ -214,15 +208,19 @@ for k, phrase in enumerate(RHYTHM):
         if not got:
             got = best_for(L)
         if not got:
-            raise SystemExit(f"no footage left for a {L}-eighth shot")
-        place(got[1], got[2], L, got[3], trans=("flash", "whip", "flash")[k] if i == 0 else "cut")
+            # no stretch that long left: two shorter ones in its place
+            for part in (L // 2, L - L // 2):
+                g = best_for(part)
+                place(g[1], g[2], part, g[3])
+            continue
+        place(got[1], got[2], L, got[3])
 # the breakdown: long breaths of play, wide and held (one shot if the footage has it)
 for split in ([24], [14, 10], [8, 8, 8]):
     if best_for(split[0]):
         break
 for i, L in enumerate(split):
     got = best_for(L)
-    place(got[1], got[2], L, got[3], trans="flash" if i == 0 else "cut", mode=["wide", "pull", "pair"][i])
+    place(got[1], got[2], L, got[3], mode=["wide", "pull", "pair"][i])
 cards.append({"text": "NEOBRAWL", "sub": "JAXS-RIBS.GITHUB.IO/NEOBRAWL", "style": "title", "at": t8(n8), "dur": LENGTH - t8(n8) + 0.05})
 json.dump({"fps": FPS, "length": LENGTH, "out": "trailer", "shots": shots, "cards": cards}, open(os.path.join(REC, "edit.json"), "w"), indent=1)
 print(len(shots), "shots; ends", round(t8(n8), 2), "s; holds", dict(collections.Counter(s["what"] for s in shots)))
